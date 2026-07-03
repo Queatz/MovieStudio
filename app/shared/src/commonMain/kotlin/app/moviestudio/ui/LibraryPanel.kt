@@ -1,0 +1,421 @@
+package app.moviestudio.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import app.moviestudio.AppViewModel
+import app.moviestudio.Asset
+import app.moviestudio.AssetType
+import app.moviestudio.Character
+import app.moviestudio.Scene
+
+/** Library tabs: the global asset library by type, plus saved characters and scenes. */
+private sealed interface LibTab {
+    data object All : LibTab
+    data class OfType(val type: AssetType) : LibTab
+    data object Characters : LibTab
+    data object Scenes : LibTab
+}
+
+private fun tabLabel(tab: LibTab): String = when (tab) {
+    LibTab.All -> "All"
+    is LibTab.OfType -> when (tab.type) {
+        AssetType.VIDEO -> "Video"
+        AssetType.IMAGE -> "Images"
+        AssetType.MUSIC -> "Music"
+        AssetType.AUDIO -> "Sound FX"
+        AssetType.VOICE -> "Voice"
+        AssetType.TEXT -> "Text"
+    }
+    LibTab.Characters -> "Characters"
+    LibTab.Scenes -> "Scenes"
+}
+
+/**
+ * The right-hand library: every asset in the studio (the library is global — one holistic
+ * suite), the saved characters/scenes libraries and the "Add" menu with all creation flows.
+ */
+@Composable
+fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
+    var tab by remember { mutableStateOf<LibTab>(LibTab.All) }
+
+    // Dialog state
+    var detailAsset by remember { mutableStateOf<Asset?>(null) }
+    var showGenerateMedia by remember { mutableStateOf(false) }
+    var showGenerateMusic by remember { mutableStateOf(false) }
+    var sequencerAsset by remember { mutableStateOf<Asset?>(null) }
+    var showSequencer by remember { mutableStateOf(false) }
+    var showSfx by remember { mutableStateOf(false) }
+    var showTts by remember { mutableStateOf(false) }
+    var showDescribe by remember { mutableStateOf(false) }
+    var characterEditor by remember { mutableStateOf<Character?>(null) }
+    var showNewCharacter by remember { mutableStateOf(false) }
+    var sceneEditor by remember { mutableStateOf<Scene?>(null) }
+    var showNewScene by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Library",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+            AddMenu(
+                onGenerateMedia = { showGenerateMedia = true },
+                onGenerateMusic = { showGenerateMusic = true },
+                onSequencer = { sequencerAsset = null; showSequencer = true },
+                onSoundEffect = { showSfx = true },
+                onTts = { showTts = true },
+                onDescribe = { showDescribe = true },
+                onUpload = { type -> viewModel.uploadAsset(type) },
+                onNewCharacter = { showNewCharacter = true },
+                onNewScene = { showNewScene = true }
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // Tab chips
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            val tabs = listOf(
+                LibTab.All,
+                LibTab.OfType(AssetType.VIDEO),
+                LibTab.OfType(AssetType.IMAGE),
+                LibTab.OfType(AssetType.MUSIC),
+                LibTab.OfType(AssetType.AUDIO),
+                LibTab.OfType(AssetType.VOICE),
+                LibTab.OfType(AssetType.TEXT),
+                LibTab.Characters,
+                LibTab.Scenes
+            )
+            tabs.forEach { candidate ->
+                val selected = candidate == tab
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50)) // clip BEFORE clickable: pill hover
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                        .clickable { tab = candidate }
+                        .padding(horizontal = 12.dp, vertical = 5.dp)
+                ) {
+                    Text(
+                        tabLabel(candidate),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (selected) MaterialTheme.colorScheme.onPrimary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+        when (val current = tab) {
+            LibTab.Characters -> CharacterList(viewModel) { characterEditor = it }
+            LibTab.Scenes -> SceneList(viewModel) { sceneEditor = it }
+            else -> {
+                val assets = when (current) {
+                    LibTab.All -> viewModel.libraryAssets
+                    is LibTab.OfType -> viewModel.libraryAssets.filter { it.type == current.type }
+                    else -> emptyList()
+                }
+                if (assets.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            "Nothing here yet.\nUse ＋ Add to create or upload media.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(assets, key = { it.id }) { asset ->
+                            AssetCard(
+                                asset = asset,
+                                onOpen = { detailAsset = asset },
+                                onAddToTimeline = { viewModel.addAssetToTimeline(asset) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------- dialogs
+    detailAsset?.let { asset ->
+        // Always render the freshest copy of the asset from the library.
+        val fresh = viewModel.libraryAssets.firstOrNull { it.id == asset.id } ?: asset
+        AssetDetailsDialog(
+            viewModel = viewModel,
+            asset = fresh,
+            onDismiss = { detailAsset = null },
+            onEditSequence = { seqAsset ->
+                detailAsset = null
+                sequencerAsset = seqAsset
+                showSequencer = true
+            }
+        )
+    }
+    if (showGenerateMedia) {
+        GenerateMediaDialog(viewModel, initialAsset = null) { showGenerateMedia = false }
+    }
+    if (showGenerateMusic) {
+        GenerateMusicDialog(viewModel) { showGenerateMusic = false }
+    }
+    if (showSequencer) {
+        SequencerDialog(viewModel, sequencerAsset) { showSequencer = false }
+    }
+    if (showSfx) {
+        SoundEffectDialog(viewModel) { showSfx = false }
+    }
+    if (showTts) {
+        TtsDialog(viewModel) { showTts = false }
+    }
+    if (showDescribe) {
+        DescribeAssetDialog(viewModel) { showDescribe = false }
+    }
+    if (showNewCharacter) {
+        CharacterEditorDialog(viewModel, existing = null) { showNewCharacter = false }
+    }
+    characterEditor?.let { character ->
+        CharacterEditorDialog(viewModel, existing = character) { characterEditor = null }
+    }
+    if (showNewScene) {
+        SceneEditorDialog(viewModel, existing = null) { showNewScene = false }
+    }
+    sceneEditor?.let { scene ->
+        SceneEditorDialog(viewModel, existing = scene) { sceneEditor = null }
+    }
+}
+
+/** The "＋ Add" menu: all the ways media enters the studio. */
+@Composable
+private fun AddMenu(
+    onGenerateMedia: () -> Unit,
+    onGenerateMusic: () -> Unit,
+    onSequencer: () -> Unit,
+    onSoundEffect: () -> Unit,
+    onTts: () -> Unit,
+    onDescribe: () -> Unit,
+    onUpload: (AssetType) -> Unit,
+    onNewCharacter: () -> Unit,
+    onNewScene: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        PillButton("＋ Add", compact = true) { expanded = true }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            @Composable
+            fun item(label: String, action: () -> Unit) {
+                DropdownMenuItem(text = { Text(label) }, onClick = { expanded = false; action() })
+            }
+            item("✨ Generate video / image...") { onGenerateMedia() }
+            item("🎵 Generate music (AI)...") { onGenerateMusic() }
+            item("🎹 Music sequencer...") { onSequencer() }
+            item("💥 Generate sound effect...") { onSoundEffect() }
+            item("🗣️ Text to speech...") { onTts() }
+            item("📝 Describe media (placeholder)...") { onDescribe() }
+            item("📤 Upload video") { onUpload(AssetType.VIDEO) }
+            item("📤 Upload image") { onUpload(AssetType.IMAGE) }
+            item("📤 Upload music") { onUpload(AssetType.MUSIC) }
+            item("📤 Upload sound effect") { onUpload(AssetType.AUDIO) }
+            item("📤 Upload voice recording") { onUpload(AssetType.VOICE) }
+            item("👤 New character") { onNewCharacter() }
+            item("🏞️ New scene") { onNewScene() }
+        }
+    }
+}
+
+/** Emoji identity per asset type. */
+fun assetGlyph(type: AssetType): String = when (type) {
+    AssetType.VIDEO -> "🎬"
+    AssetType.AUDIO -> "💥"
+    AssetType.MUSIC -> "🎵"
+    AssetType.VOICE -> "🎙️"
+    AssetType.IMAGE -> "🖼️"
+    AssetType.TEXT -> "📝"
+}
+
+@Composable
+private fun AssetCard(asset: Asset, onOpen: () -> Unit, onAddToTimeline: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp)) // clip BEFORE clickable: rounded hover highlight
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .clickable { onOpen() }
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(assetGlyph(asset.type), fontSize = 20.sp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                asset.description ?: asset.aiPrompt ?: "Untitled",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    formatDuration(asset.durationSeconds),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (asset.isDescriptionOnly) {
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(MaterialTheme.colorScheme.tertiaryContainer)
+                            .padding(horizontal = 7.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            "description only",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+        }
+        RoundIconButton("➕", contentDescription = "Add to timeline", size = 28.dp) { onAddToTimeline() }
+    }
+}
+
+@Composable
+private fun CharacterList(viewModel: AppViewModel, onEdit: (Character) -> Unit) {
+    if (viewModel.characters.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "No saved characters.\nUse ＋ Add → New character.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        return
+    }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        items(viewModel.characters, key = { it.id }) { character ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    .clickable { onEdit(character) }
+                    .padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("👤", fontSize = 20.sp)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        character.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        "${character.referenceImages.size} reference image(s) • ${character.description.take(40)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                RoundIconButton("🗑", size = 26.dp) { viewModel.deleteCharacter(character.id) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SceneList(viewModel: AppViewModel, onEdit: (Scene) -> Unit) {
+    if (viewModel.scenes.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "No saved scenes.\nUse ＋ Add → New scene.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        return
+    }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        items(viewModel.scenes, key = { it.id }) { scene ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    .clickable { onEdit(scene) }
+                    .padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("🏞️", fontSize = 20.sp)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        scene.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        "${scene.referenceImages.size} reference image(s) • ${scene.description.take(40)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                RoundIconButton("🗑", size = 26.dp) { viewModel.deleteScene(scene.id) }
+            }
+        }
+    }
+}

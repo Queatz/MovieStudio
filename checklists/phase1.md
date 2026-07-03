@@ -1,0 +1,53 @@
+# Phase 1: Project Setup & KMP Structure
+*Focuses on establishing KMP dependencies, setting up serializers, initializing Ktor and WebSockets, configuring Wasm basic routing, and drafting shared data models.*
+
+## Tasks
+- [x] **KMP Dependency Configuration**
+  - [x] Add kotlinx-serialization plugin to root build.gradle.kts.
+  - [x] Apply kotlinx-serialization to :core and :server build scripts.
+  - [x] In :core/build.gradle.kts, add dependencies for serialization in commonMain (org.jetbrains.kotlinx:kotlinx-serialization-json).
+  - [x] In :server/build.gradle.kts, ensure Ktor server modules for ContentNegotiation (io.ktor:ktor-server-content-negotiation) and Kotlin Serialization (io.ktor:ktor-serialization-kotlinx-json) are declared.
+  - [x] Add Ktor WebSockets dependency (io.ktor:ktor-server-websockets) to the server build script.
+- [x] **Shared Data Models (:core/src/commonMain/)**
+  - [x] Create @Serializable data class Film with properties:
+    - id: String (ArangoDB key)
+    - title: String
+    - totalDuration: Double
+    - status: FilmStatus (Enum: DRAFT, RENDERING, COMPLETED)
+    - createdAt: Long
+  - [x] Create @Serializable data class Asset with properties:
+    - id: String
+    - type: AssetType (Enum: VIDEO, AUDIO, MUSIC, VO, IMAGE)
+    - ossUrl: String
+    - durationSeconds: Double
+    - filmId: String? (nullable; null denotes a global asset)
+    - tags: List of Strings
+    - aiPrompt: String? (nullable)
+  - [x] Create @Serializable data class Track with properties:
+    - id: String
+    - filmId: String
+    - type: TrackType (Enum: VIDEO, MUSIC, VO, EFFECTS)
+    - zIndex: Int
+  - [x] Create @Serializable data class Clip with properties:
+    - id: String
+    - trackId: String
+    - assetId: String
+    - timelineStart: Float (seconds)
+    - trimIn: Float (seconds)
+    - trimOut: Float (seconds)
+    - effectsConfig: String (serialized JSON configuration)
+  - [x] Create @Serializable data class Job with properties:
+    - id: String
+    - filmId: String
+    - type: JobType (Enum: AI_GEN, FFMPEG_RENDER)
+    - status: JobStatus (Enum: PENDING, RUNNING, COMPLETED, FAILED)
+    - payload: String (JSON payload)
+    - resultUrl: String? (nullable)
+- [x] **Ktor Server Setup (:server)**
+  - [x] Install ContentNegotiation with JSON serializer in Ktor.
+  - [x] Install WebSockets plugin for job update streaming.
+  - [x] Install CORS to allow connections from the Compose Web Wasm client.
+  - [x] Implement a basic health check endpoint (GET /api/health).
+- [x] **Compose Web Setup (:app:webApp / :app:shared)**
+  - [x] Verify Compose Web Wasm configuration.
+  - [x] Create a basic frontend router (e.g., using a state-based layout manager or navigation helper) to switch between Dashboard and Editor.
