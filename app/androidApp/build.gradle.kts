@@ -12,11 +12,13 @@ kotlin {
     }
 }
 
-// Compose Multiplatform 1.12.0-beta01 maps its Android target onto androidx.compose 1.12.0-beta01,
-// whose AAR metadata demands AGP 9.1.0 while this project is pinned to AGP 9.0.1 (see
-// libs.versions.toml). The 1.12 upgrade is only needed for the Skia-based Desktop/Web font fallback
-// fix; Android resolves emoji/fallback glyphs through the OS font machinery, so keep the Android
-// androidx.compose artifacts on the AGP-9.0.1-compatible 1.11.2.
+// Compose Multiplatform 1.12.0-beta01 (and CMP material3 1.12.0-alpha03) map their Android target
+// onto androidx.compose 1.12.0-beta01 / androidx.compose.material3 1.5.0-alpha22, whose AAR metadata
+// demands AGP 9.1.0 while this project is pinned to AGP 9.0.1 (see libs.versions.toml). The 1.12
+// upgrade is only needed for the Skia-based Desktop/Web font fallback fix and the matching Web
+// material3 fix; Android resolves emoji/fallback glyphs through the OS font machinery, so keep the
+// Android androidx.compose(.material/.material3) artifacts on the AGP-9.0.1-compatible versions
+// (1.11.2 / material3 1.5.0-alpha13).
 //
 // Coil 3.5 transitively pulls androidx.lifecycle 2.11.0, whose AAR metadata likewise demands AGP
 // 9.1.0. Keep the atomic lifecycle group at the AGP-9.0.1-compatible 2.9.4 (already present in the
@@ -27,12 +29,17 @@ configurations.all {
         if (requested.group in setOf(
                 "androidx.compose.animation",
                 "androidx.compose.foundation",
+                "androidx.compose.material",
                 "androidx.compose.runtime",
                 "androidx.compose.ui",
             )
         ) {
             useVersion("1.11.2")
             because("androidx.compose 1.12.0-beta01 requires AGP 9.1.0; project uses AGP 9.0.1")
+        }
+        if (requested.group == "androidx.compose.material3") {
+            useVersion("1.5.0-alpha13")
+            because("androidx.compose.material3 1.5.0-alpha22 requires AGP 9.1.0; project uses AGP 9.0.1")
         }
         if (requested.group == "androidx.lifecycle") {
             useVersion("2.9.4")
