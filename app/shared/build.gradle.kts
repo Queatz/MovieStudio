@@ -8,6 +8,34 @@ plugins {
     alias(libs.plugins.composeCompiler)
 }
 
+// Compose Multiplatform 1.12.0-beta01 maps its Android target onto androidx.compose 1.12.0-beta01,
+// whose AAR metadata demands AGP 9.1.0 while this project is pinned to AGP 9.0.1 (see
+// libs.versions.toml). The 1.12 upgrade is only needed for the Skia-based Desktop/Web font fallback
+// fix; Android resolves emoji/fallback glyphs through the OS font machinery, so keep the Android
+// androidx.compose artifacts on the AGP-9.0.1-compatible 1.11.2. Likewise, keep androidx.lifecycle
+// (pulled transitively at 2.11.0, which also demands AGP 9.1.0) on the compatible 2.9.4.
+//
+// Scope this to the Android configurations only: the JS/WasmJs targets resolve their own KMP
+// variants of these artifacts, so forcing versions there breaks their dependency resolution.
+configurations.matching { it.name.contains("android", ignoreCase = true) }.configureEach {
+    resolutionStrategy.eachDependency {
+        if (requested.group in setOf(
+                "androidx.compose.animation",
+                "androidx.compose.foundation",
+                "androidx.compose.runtime",
+                "androidx.compose.ui",
+            )
+        ) {
+            useVersion("1.11.2")
+            because("androidx.compose 1.12.0-beta01 requires AGP 9.1.0; project uses AGP 9.0.1")
+        }
+        if (requested.group == "androidx.lifecycle") {
+            useVersion("2.9.4")
+            because("androidx.lifecycle 2.11.0 requires AGP 9.1.0; project uses AGP 9.0.1")
+        }
+    }
+}
+
 val generateBuildConfig = tasks.register("generateBuildConfig") {
     val outputDir = layout.buildDirectory.dir("generated/source/buildconfig/commonMain/kotlin")
     outputs.dir(outputDir)
