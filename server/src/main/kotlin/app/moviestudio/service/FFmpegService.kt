@@ -198,8 +198,21 @@ object FFmpegService {
                 if (transition != null && transition.type != TransitionType.NONE) {
                     when (transition.type) {
                         TransitionType.SLIDE -> {
-                            // Slide in from the right across the transition window.
-                            overlayExtra = ":x='if(lt(t-$start,$transitionDur),W-W*(t-$start)/$transitionDur,0)'"
+                            // Slide the clip in from the chosen edge across the transition window.
+                            // progress p = (t-start)/dur; the off-screen offset is W|H*(1-p). The
+                            // signs mirror TransitionSpec.visualAt(...) so the export matches the
+                            // preview (see core Models.kt): FROM_RIGHT enters from +W and moves to 0.
+                            val p = "(t-$start)/$transitionDur"
+                            overlayExtra = when (transition.direction) {
+                                SlideDirection.FROM_RIGHT ->
+                                    ":x='if(lt(t-$start,$transitionDur),W-W*$p,0)'"
+                                SlideDirection.FROM_LEFT ->
+                                    ":x='if(lt(t-$start,$transitionDur),-W+W*$p,0)'"
+                                SlideDirection.FROM_TOP ->
+                                    ":y='if(lt(t-$start,$transitionDur),-H+H*$p,0)'"
+                                SlideDirection.FROM_BOTTOM ->
+                                    ":y='if(lt(t-$start,$transitionDur),H-H*$p,0)'"
+                            }
                         }
                         else -> {
                             videoFilters.add("format=yuva420p")

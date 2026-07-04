@@ -25,7 +25,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -38,11 +40,15 @@ import app.moviestudio.AssetType
 import app.moviestudio.AudioPlayItem
 import app.moviestudio.CaptionConfig
 import app.moviestudio.Clip
+import app.moviestudio.NO_TRANSITION
 import app.moviestudio.TrackType
+import app.moviestudio.TransitionVisual
 import app.moviestudio.VideoPlayer
 import app.moviestudio.aspectRatioToFloat
 import app.moviestudio.calculatedDuration
 import app.moviestudio.parseEffectsConfig
+import app.moviestudio.progressAt
+import app.moviestudio.visualAt
 import app.moviestudio.setPreviewObjectPosition
 import app.moviestudio.shared.resources.Res
 import app.moviestudio.shared.resources.asap
@@ -148,6 +154,7 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                 Box(
                     modifier = Modifier
                         .aspectRatio(ratio)
+                        .clipToBounds() // keep sliding-in clips inside the movie frame (like FFmpeg)
                         .background(Color.Black),
                     contentAlignment = Alignment.Center
                 ) {
@@ -155,11 +162,15 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                     // tracks (higher zIndex) stack on top: still images, the active video and
                     // description-only text cards all live together here.
                     visualClips.forEach { active ->
+                        // Transition-in over whatever plays beneath this clip, evaluated at the
+                        // playhead from the SAME shared spec the FFmpeg export uses, so the preview
+                        // matches the render (fade / slide, honoring slide direction).
+                        val transitionVisual = active.transitionVisual(playhead)
                         when {
                             // A clip with no media yet is a description card: large centered text.
                             active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
                             // Still images: plain Compose AsyncImage, center-cropped + offset.
-                            active.asset.type == AssetType.IMAGE -> ClipImage(active)
+                            active.asset.type == AssetType.IMAGE -> ClipImage(active, transitionVisual)
                             // The single video that owns the shared <video> element.
                             active === activeVideo -> {
                                 val mediaTime = active.asset.sourceOffsetSeconds.toFloat() +
@@ -169,7 +180,10 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                                     isPlaying = viewModel.isPlaying,
                                     playhead = mediaTime,
                                     onTimeUpdate = { /* the ticker is the master clock */ },
-                                    modifier = Modifier.fillMaxSize()
+                                    modifier = Modifier.fillMaxSize(),
+                                    alpha = transitionVisual.alpha,
+                                    offsetXFraction = transitionVisual.translateXFraction,
+                                    offsetYFraction = transitionVisual.translateYFraction
                                 )
                             }
                             // Any further simultaneous videos can't share the one <video> element.
@@ -199,17 +213,37 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
 }
 
 /**
+ * The transition-in transform for this clip at [playhead], derived from the clip's shared
+ * [app.moviestudio.TransitionSpec] the same way the FFmpeg export is — so still images and video
+ * fade / slide identically in the preview and the render. Returns [NO_TRANSITION] once the playhead
+ * is past the transition window (or when there is no transition).
+ */
+private fun ActiveClip.transitionVisual(playhead: Float): TransitionVisual {
+    val transition = parseEffectsConfig(clip.effectsConfig).transition ?: return NO_TRANSITION
+    val clipLocal = (playhead - clip.timelineStart).toDouble()
+    val clipDuration = (clip.trimOut - clip.trimIn).toDouble()
+    return transition.visualAt(transition.progressAt(clipLocal, clipDuration))
+}
+
+/**
  * A still-image clip, drawn with a plain Compose [AsyncImage]. [ContentScale.Crop] fills the
  * (aspect-constrained) stage and crops the overflow; the clip's 0-100 crop offsets (50 = center)
- * map to a [BiasAlignment] so the visible window can be nudged, matching the FFmpeg render.
+ * map to a [BiasAlignment] so the visible window can be nudged, matching the FFmpeg render. The
+ * [transitionVisual] fades / slides the image in over whatever plays beneath it.
  */
 @Composable
-private fun ClipImage(active: ActiveClip) {
+private fun ClipImage(active: ActiveClip, transitionVisual: TransitionVisual) {
     val effects = parseEffectsConfig(active.clip.effectsConfig)
     AsyncImage(
         model = active.asset.ossUrl,
         contentDescription = active.asset.description ?: active.asset.aiPrompt,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                alpha = transitionVisual.alpha
+                translationX = transitionVisual.translateXFraction * size.width
+                translationY = transitionVisual.translateYFraction * size.height
+            },
         contentScale = ContentScale.Crop,
         alignment = BiasAlignment(
             horizontalBias = ((effects.offsetX - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f),

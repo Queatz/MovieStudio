@@ -3,10 +3,13 @@ package app.moviestudio.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -118,10 +121,28 @@ fun TimelinePanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 onRetry = { viewModel.refreshTimeline() }
             )
         } else {
-            Row(Modifier.weight(1f)) {
-                TrackHeaderColumn(viewModel)
-                Spacer(Modifier.width(6.dp))
-                TimelineCanvas(viewModel, Modifier.weight(1f).fillMaxHeight())
+            // Vertical scroll so every track stays reachable when they overflow the panel
+            // height. Headers and the canvas share one scroll state so they move together.
+            val trackScroll = rememberScrollState()
+            val density = LocalDensity.current
+            val trackCount = timeline?.tracks?.size ?: 0
+            val contentHeightDp = with(density) {
+                (RULER_HEIGHT + TRACK_GAP + trackCount * (TRACK_HEIGHT + TRACK_GAP)).toDp()
+            }
+            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                // Grow with the tracks, but never shrink below the visible viewport so a few
+                // tracks still fill the editor as before.
+                val rowHeightDp = maxOf(contentHeightDp, maxHeight)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(trackScroll)
+                        .height(rowHeightDp)
+                ) {
+                    TrackHeaderColumn(viewModel)
+                    Spacer(Modifier.width(6.dp))
+                    TimelineCanvas(viewModel, Modifier.weight(1f).fillMaxHeight())
+                }
             }
         }
 
@@ -401,16 +422,17 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
             }
             .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF1D1A24))
-            // Mouse-wheel scrubbing: horizontal or vertical wheel input moves the playhead.
+            // Mouse-wheel: horizontal wheel scrubs the playhead, vertical wheel scrolls tracks.
             .pointerInput(Unit) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
                         if (event.type == PointerEventType.Scroll) {
                             val delta = event.changes.fold(Offset.Zero) { acc, change -> acc + change.scrollDelta }
-                            if (delta != Offset.Zero) {
-                                // One wheel notch = one second, both axes scrub.
-                                viewModel.seekBy(delta.x + delta.y)
+                            // Horizontal wheel scrubs the playhead; vertical wheel is left
+                            // unconsumed so the timeline's vertical scroll can move through tracks.
+                            if (delta.x != 0f) {
+                                viewModel.seekBy(delta.x)
                                 event.changes.forEach { it.consume() }
                             }
                         }

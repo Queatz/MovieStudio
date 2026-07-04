@@ -60,15 +60,45 @@ private external fun jsUpdateVideoState(url: String, isPlaying: Boolean, playhea
 (x, y, w, h) => {
     const video = document.getElementById('compose-video-preview');
     if (video) {
-        video.style.left = x + 'px';
-        video.style.top = y + 'px';
+        // Remember the un-transformed stage bounds so the transition (opacity + slide offset) can
+        // be re-applied on top of them independently of layout changes.
+        video.dataset.baseX = x;
+        video.dataset.baseY = y;
+        video.dataset.baseW = w;
+        video.dataset.baseH = h;
+        const dx = parseFloat(video.dataset.trDx || '0');
+        const dy = parseFloat(video.dataset.trDy || '0');
+        const op = video.dataset.trOp || '1';
+        video.style.left = (x + dx * w) + 'px';
+        video.style.top = (y + dy * h) + 'px';
         video.style.width = w + 'px';
         video.style.height = h + 'px';
+        video.style.opacity = op;
         video.style.display = 'block';
     }
 }
 """)
 private external fun jsUpdateVideoBounds(x: Double, y: Double, w: Double, h: Double)
+
+@JsFun("""
+(opacity, dx, dy) => {
+    const video = document.getElementById('compose-video-preview');
+    if (video) {
+        // Transition-in state (cross-fade + slide), re-applied over the last known stage bounds.
+        video.dataset.trOp = opacity;
+        video.dataset.trDx = dx;
+        video.dataset.trDy = dy;
+        const x = parseFloat(video.dataset.baseX || '0');
+        const y = parseFloat(video.dataset.baseY || '0');
+        const w = parseFloat(video.dataset.baseW || '0');
+        const h = parseFloat(video.dataset.baseH || '0');
+        video.style.left = (x + dx * w) + 'px';
+        video.style.top = (y + dy * h) + 'px';
+        video.style.opacity = opacity;
+    }
+}
+""")
+private external fun jsUpdateVideoTransition(opacity: Double, dx: Double, dy: Double)
 
 @JsFun("""
 () => {
@@ -87,7 +117,10 @@ actual fun VideoPlayer(
     isPlaying: Boolean,
     playhead: Float,
     onTimeUpdate: (Float) -> Unit,
-    modifier: Modifier
+    modifier: Modifier,
+    alpha: Float,
+    offsetXFraction: Float,
+    offsetYFraction: Float
 ) {
     LaunchedEffect(Unit) {
         jsSetupVideoCallback { sec ->
@@ -100,6 +133,12 @@ actual fun VideoPlayer(
     // DisposableEffect onDispose keyed on playhead did) blanked the <video> after the first frame.
     LaunchedEffect(url, isPlaying, playhead) {
         jsUpdateVideoState(url, isPlaying, playhead.toDouble())
+    }
+
+    // Drive the transition-in (cross-fade + slide) onto the shared <video> overlay. Kept separate
+    // from bounds so it re-applies every tick as the progress advances.
+    LaunchedEffect(alpha, offsetXFraction, offsetYFraction) {
+        jsUpdateVideoTransition(alpha.toDouble(), offsetXFraction.toDouble(), offsetYFraction.toDouble())
     }
 
     // Hide the shared <video> only when this player actually leaves the composition (no video clip

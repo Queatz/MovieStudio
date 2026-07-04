@@ -16,7 +16,10 @@ actual fun VideoPlayer(
     isPlaying: Boolean,
     playhead: Float,
     onTimeUpdate: (Float) -> Unit,
-    modifier: Modifier
+    modifier: Modifier,
+    alpha: Float,
+    offsetXFraction: Float,
+    offsetYFraction: Float
 ) {
     LaunchedEffect(Unit) {
         val setupCallback = js("""
@@ -71,6 +74,29 @@ actual fun VideoPlayer(
         updateState(url, isPlaying, playhead.toDouble())
     }
 
+    // Drive the transition-in (cross-fade + slide) onto the shared <video> overlay. Kept separate
+    // from bounds so it re-applies every tick as the progress advances.
+    LaunchedEffect(alpha, offsetXFraction, offsetYFraction) {
+        val updateTransition = js("""
+            function(opacity, dx, dy) {
+                const video = document.getElementById('compose-video-preview');
+                if (video) {
+                    video.dataset.trOp = opacity;
+                    video.dataset.trDx = dx;
+                    video.dataset.trDy = dy;
+                    const x = parseFloat(video.dataset.baseX || '0');
+                    const y = parseFloat(video.dataset.baseY || '0');
+                    const w = parseFloat(video.dataset.baseW || '0');
+                    const h = parseFloat(video.dataset.baseH || '0');
+                    video.style.left = (x + dx * w) + 'px';
+                    video.style.top = (y + dy * h) + 'px';
+                    video.style.opacity = opacity;
+                }
+            }
+        """)
+        updateTransition(alpha.toDouble(), offsetXFraction.toDouble(), offsetYFraction.toDouble())
+    }
+
     // Hide the shared <video> only when this player actually leaves the composition (no video clip
     // under the playhead anymore) — not on every state change.
     DisposableEffect(Unit) {
@@ -103,10 +129,20 @@ actual fun VideoPlayer(
                     function(x, y, w, h) {
                         const video = document.getElementById('compose-video-preview');
                         if (video) {
-                            video.style.left = x + 'px';
-                            video.style.top = y + 'px';
+                            // Remember the un-transformed stage bounds so the transition (opacity +
+                            // slide offset) can be re-applied over them independently of layout.
+                            video.dataset.baseX = x;
+                            video.dataset.baseY = y;
+                            video.dataset.baseW = w;
+                            video.dataset.baseH = h;
+                            const dx = parseFloat(video.dataset.trDx || '0');
+                            const dy = parseFloat(video.dataset.trDy || '0');
+                            const op = video.dataset.trOp || '1';
+                            video.style.left = (x + dx * w) + 'px';
+                            video.style.top = (y + dy * h) + 'px';
                             video.style.width = w + 'px';
                             video.style.height = h + 'px';
+                            video.style.opacity = op;
                             video.style.display = 'block';
                         }
                     }

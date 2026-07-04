@@ -138,7 +138,7 @@ fun GenerateMediaDialog(
     val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
 
     StudioDialog(
-        title = if (initialAsset != null) "Tweak & regenerate" else "Generate video or image",
+        title = if (initialAsset != null) "Edit" else "Generate video or image",
         onDismiss = onDismiss,
         width = 620.dp
     ) {

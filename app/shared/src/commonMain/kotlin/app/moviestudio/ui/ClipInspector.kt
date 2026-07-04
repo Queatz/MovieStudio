@@ -44,6 +44,7 @@ import app.moviestudio.CaptionConfig
 import app.moviestudio.Clip
 import app.moviestudio.EffectsConfig
 import app.moviestudio.MAX_CLIP_VOLUME
+import app.moviestudio.SlideDirection
 import app.moviestudio.Track
 import app.moviestudio.TrackType
 import app.moviestudio.TransitionSpec
@@ -140,6 +141,23 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
                                 }
                             )
                         }
+                    }
+                }
+                // Slide direction: which edge the clip enters from (SLIDE only).
+                val transition = effects.transition
+                if (transition != null && transition.type == TransitionType.SLIDE) {
+                    Spacer(Modifier.height(6.dp))
+                    DropdownSelector(
+                        label = "Direction",
+                        options = SlideDirection.entries.toList(),
+                        selected = transition.direction,
+                        display = { it.displayName() },
+                        modifier = Modifier.width(150.dp)
+                    ) { direction ->
+                        viewModel.updateClipEffects(
+                            clip,
+                            effects.copy(transition = transition.copy(direction = direction))
+                        )
                     }
                 }
             }

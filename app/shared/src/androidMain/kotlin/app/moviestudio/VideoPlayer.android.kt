@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 
 @Composable
 actual fun VideoPlayer(
@@ -14,10 +15,19 @@ actual fun VideoPlayer(
     isPlaying: Boolean,
     playhead: Float,
     onTimeUpdate: (Float) -> Unit,
-    modifier: Modifier
+    modifier: Modifier,
+    alpha: Float,
+    offsetXFraction: Float,
+    offsetYFraction: Float
 ) {
     Box(
-        modifier = modifier.background(Color.Black),
+        modifier = modifier
+            .graphicsLayer {
+                this.alpha = alpha
+                translationX = offsetXFraction * size.width
+                translationY = offsetYFraction * size.height
+            }
+            .background(Color.Black),
         contentAlignment = Alignment.Center
     ) {
         Text(

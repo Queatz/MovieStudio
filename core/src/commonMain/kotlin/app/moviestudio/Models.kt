@@ -291,15 +291,92 @@ fun TransitionType.displayName(): String = when (this) {
 }
 
 /**
+ * The edge a [TransitionType.SLIDE] transition slides the incoming clip in *from*. The clip starts
+ * fully off-screen on that edge and travels to its final centered position over the transition
+ * window. [FROM_RIGHT] reproduces the original slide behavior (enter from the right, move left).
+ */
+enum class SlideDirection {
+    FROM_LEFT,
+    FROM_RIGHT,
+    FROM_TOP,
+    FROM_BOTTOM,
+}
+
+/** Human-readable label for a slide direction. */
+fun SlideDirection.displayName(): String = when (this) {
+    SlideDirection.FROM_LEFT -> "From left"
+    SlideDirection.FROM_RIGHT -> "From right"
+    SlideDirection.FROM_TOP -> "From top"
+    SlideDirection.FROM_BOTTOM -> "From bottom"
+}
+
+/**
  * Parsed transition settings stored inside a clip's [Clip.effectsConfig] JSON under the
  * `"transition"` key. [durationSeconds] is the length of the transition window measured from the
- * start of the clip.
+ * start of the clip. [direction] is only meaningful for [TransitionType.SLIDE].
  */
 @Serializable
 data class TransitionSpec(
     val type: TransitionType = TransitionType.NONE,
-    val durationSeconds: Double = 1.0
+    val durationSeconds: Double = 1.0,
+    val direction: SlideDirection = SlideDirection.FROM_RIGHT
 )
+
+/** The shortest transition window we render, shared by the preview and the FFmpeg export. */
+const val TRANSITION_MIN_SECONDS: Double = 0.05
+
+/**
+ * The visual transform applied to the *incoming* clip at a given point in its transition. This is
+ * the single definition shared by the live preview and the FFmpeg render so they stay in lock-step.
+ *
+ * [alpha] is the clip's opacity (0 = fully transparent, 1 = opaque). [translateXFraction] and
+ * [translateYFraction] offset the clip as a fraction of the stage size (+X = right, +Y = down);
+ * a slide starts fully off-screen (|fraction| = 1) and settles at 0.
+ */
+data class TransitionVisual(
+    val alpha: Float = 1f,
+    val translateXFraction: Float = 0f,
+    val translateYFraction: Float = 0f
+)
+
+/** A clip with no transition: fully opaque and un-offset. */
+val NO_TRANSITION: TransitionVisual = TransitionVisual()
+
+/**
+ * Progress of the transition at [clipLocalSeconds] (seconds from the clip's start), clamped to the
+ * clip's [clipDuration]. Returns 1f (fully settled, i.e. no effect) when there is no transition or
+ * the playhead is past the transition window. Shared by the preview and the FFmpeg export so the
+ * window math can't drift between them.
+ */
+fun TransitionSpec?.progressAt(clipLocalSeconds: Double, clipDuration: Double): Float {
+    if (this == null || type == TransitionType.NONE) return 1f
+    val window = durationSeconds.coerceIn(TRANSITION_MIN_SECONDS, clipDuration.coerceAtLeast(TRANSITION_MIN_SECONDS))
+    if (clipLocalSeconds <= 0.0) return 0f
+    if (clipLocalSeconds >= window) return 1f
+    return (clipLocalSeconds / window).toFloat().coerceIn(0f, 1f)
+}
+
+/**
+ * The [TransitionVisual] for this transition at the given [progress] (0..1). [TransitionType.SLIDE]
+ * translates the clip in from its [TransitionSpec.direction] at full opacity; every other type is a
+ * cross-fade (the noise / pixelate / voronoi grain the FFmpeg render layers on top can't be
+ * reproduced in the Compose preview, so it approximates them as the dominant alpha fade).
+ */
+fun TransitionSpec.visualAt(progress: Float): TransitionVisual {
+    if (type == TransitionType.NONE) return NO_TRANSITION
+    val p = progress.coerceIn(0f, 1f)
+    return if (type == TransitionType.SLIDE) {
+        val off = 1f - p
+        when (direction) {
+            SlideDirection.FROM_RIGHT -> TransitionVisual(translateXFraction = off)
+            SlideDirection.FROM_LEFT -> TransitionVisual(translateXFraction = -off)
+            SlideDirection.FROM_TOP -> TransitionVisual(translateYFraction = -off)
+            SlideDirection.FROM_BOTTOM -> TransitionVisual(translateYFraction = off)
+        }
+    } else {
+        TransitionVisual(alpha = p)
+    }
+}
 
 /**
  * Caption rendering settings for a voice clip, stored inside [Clip.effectsConfig] under the

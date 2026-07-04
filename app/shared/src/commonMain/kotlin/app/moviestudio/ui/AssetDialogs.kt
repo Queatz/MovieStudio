@@ -117,7 +117,7 @@ fun AssetDetailsDialog(
                 onDismiss()
             }
             if (asset.type == AssetType.VIDEO || asset.type == AssetType.IMAGE) {
-                GhostPillButton("🎛 Tweak & regenerate", compact = true) { showTweak = true }
+                GhostPillButton("✏ Edit", compact = true) { showTweak = true }
             }
             GhostPillButton("➕ Add to timeline", compact = true) {
                 viewModel.addAssetToTimeline(asset)
