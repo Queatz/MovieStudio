@@ -158,6 +158,12 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
         }
         Spacer(Modifier.height(8.dp))
 
+        // Live upload progress bar for any device upload started from the "＋ Add" menu.
+        viewModel.uploadState?.let { upload ->
+            UploadProgressBar(upload)
+            Spacer(Modifier.height(8.dp))
+        }
+
         when (val current = tab) {
             LibTab.Characters -> CharacterList(viewModel) { characterEditor = it }
             LibTab.Scenes -> SceneList(viewModel) { sceneEditor = it }

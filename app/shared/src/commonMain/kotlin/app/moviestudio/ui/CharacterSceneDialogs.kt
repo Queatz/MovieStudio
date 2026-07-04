@@ -72,6 +72,11 @@ private fun ReferenceImagePicker(
             showRepose = true
         }
     }
+    // Live progress while a reference image uploads from the device.
+    viewModel.uploadState?.let { upload ->
+        Spacer(Modifier.height(6.dp))
+        UploadProgressBar(upload)
+    }
     Text(
         "AI images generate in the background and appear in the list above when ready.",
         style = MaterialTheme.typography.bodySmall,

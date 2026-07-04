@@ -8,7 +8,7 @@ import kotlinx.coroutines.await
 // cancels. The PUT must send exactly the server-signed Content-Type (it is part of the upload
 // URL's signature) and the persisted read URL is the signed downloadUrl (objects are private).
 @JsFun("""
-(baseUrl, accept) => new Promise((resolve) => {
+(baseUrl, accept, onProgress) => new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = accept;
@@ -54,13 +54,22 @@ import kotlinx.coroutines.await
         }).then((urlJson) => {
             downloadUrl = urlJson.downloadUrl || urlJson.uploadUrl.split('?')[0];
             const contentType = urlJson.contentType || 'application/octet-stream';
-            return fetch(urlJson.uploadUrl, {
-                method: 'PUT',
-                headers: { 'Content-Type': contentType },
-                body: file
+            return new Promise((res, rej) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('PUT', urlJson.uploadUrl, true);
+                xhr.setRequestHeader('Content-Type', contentType);
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) { onProgress(e.loaded / e.total); }
+                };
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) { onProgress(1); res(); }
+                    else { rej(new Error('upload PUT failed: ' + xhr.status)); }
+                };
+                xhr.onerror = () => rej(new Error('upload PUT network error'));
+                onProgress(0);
+                xhr.send(file);
             });
-        }).then((putResp) => {
-            if (!putResp.ok) { throw new Error('upload PUT failed: ' + putResp.status); }
+        }).then(() => {
             return readDuration(file);
         }).then((duration) => {
             finish(JSON.stringify({ fileName: file.name, ossUrl: downloadUrl, durationSeconds: duration }));
@@ -73,12 +82,15 @@ import kotlinx.coroutines.await
     input.click();
 })
 """)
-private external fun jsPickAndUpload(baseUrl: String, accept: String): Promise<JsString?>
+private external fun jsPickAndUpload(baseUrl: String, accept: String, onProgress: (Double) -> Unit): Promise<JsString?>
 
-actual suspend fun pickAndUploadDeviceFile(type: AssetType): UploadedDeviceFile? {
+actual suspend fun pickAndUploadDeviceFile(
+    type: AssetType,
+    onProgress: (Float) -> Unit
+): UploadedDeviceFile? {
     val baseUrl = getBaseUrl().removeSuffix("/")
     val accept = acceptFilterFor(type)
-    val result = jsPickAndUpload(baseUrl, accept).await() ?: return null
+    val result = jsPickAndUpload(baseUrl, accept) { onProgress(it.toFloat()) }.await() ?: return null
     return parseUploadedDeviceFile(result.toString())
 }
 
@@ -110,7 +122,7 @@ private external fun jsStartMicRecording(): Promise<JsNumber>
 // Stops the recorder, uploads the blob to OSS via a pre-signed URL and resolves with the same
 // JSON payload as the file picker ({ fileName, ossUrl, durationSeconds }), or null on failure.
 @JsFun("""
-(baseUrl) => new Promise((resolve) => {
+(baseUrl, onProgress) => new Promise((resolve) => {
     try {
         const state = window.__msMicRecorder;
         if (!state) { resolve(null); return; }
@@ -136,13 +148,22 @@ private external fun jsStartMicRecording(): Promise<JsNumber>
             }).then((urlJson) => {
                 downloadUrl = urlJson.downloadUrl || urlJson.uploadUrl.split('?')[0];
                 const contentType = urlJson.contentType || 'application/octet-stream';
-                return fetch(urlJson.uploadUrl, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': contentType },
-                    body: blob
+                return new Promise((res, rej) => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('PUT', urlJson.uploadUrl, true);
+                    xhr.setRequestHeader('Content-Type', contentType);
+                    xhr.upload.onprogress = (e) => {
+                        if (e.lengthComputable) { onProgress(e.loaded / e.total); }
+                    };
+                    xhr.onload = () => {
+                        if (xhr.status >= 200 && xhr.status < 300) { onProgress(1); res(); }
+                        else { rej(new Error('upload PUT failed: ' + xhr.status)); }
+                    };
+                    xhr.onerror = () => rej(new Error('upload PUT network error'));
+                    onProgress(0);
+                    xhr.send(blob);
                 });
-            }).then((putResp) => {
-                if (!putResp.ok) { throw new Error('upload PUT failed: ' + putResp.status); }
+            }).then(() => {
                 resolve(JSON.stringify({ fileName: fileName, ossUrl: downloadUrl, durationSeconds: durationSeconds }));
             }).catch((e) => resolve(null));
         };
@@ -150,7 +171,7 @@ private external fun jsStartMicRecording(): Promise<JsNumber>
     } catch (e) { resolve(null); }
 })
 """)
-private external fun jsStopMicRecordingAndUpload(baseUrl: String): Promise<JsString?>
+private external fun jsStopMicRecordingAndUpload(baseUrl: String, onProgress: (Double) -> Unit): Promise<JsString?>
 
 @JsFun("""
 () => {
@@ -172,10 +193,10 @@ actual suspend fun startMicRecording(): Boolean = try {
     false
 }
 
-actual suspend fun stopMicRecordingAndUpload(): UploadedDeviceFile? {
+actual suspend fun stopMicRecordingAndUpload(onProgress: (Float) -> Unit): UploadedDeviceFile? {
     val baseUrl = getBaseUrl().removeSuffix("/")
     val result = try {
-        jsStopMicRecordingAndUpload(baseUrl).await()
+        jsStopMicRecordingAndUpload(baseUrl) { onProgress(it.toFloat()) }.await()
     } catch (e: Throwable) {
         null
     } ?: return null

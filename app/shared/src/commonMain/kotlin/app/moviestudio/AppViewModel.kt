@@ -18,6 +18,17 @@ enum class Screen {
 }
 
 /**
+ * Live progress of a device upload in flight.
+ *
+ * @property label a short human-readable description of what is being uploaded.
+ * @property fraction the completion ratio, from 0f (just started) to 1f (finished).
+ */
+data class UploadState(
+    val label: String,
+    val fraction: Float
+)
+
+/**
  * Central state holder for the studio: movie list, the open movie's timeline, the global asset
  * library, saved characters/scenes/voices, render history and live background-job tracking
  * (WebSocket push with polling fallback).
@@ -103,6 +114,14 @@ class AppViewModel : ViewModel() {
 
     /** The render job currently shown in the render dialog (if any). */
     var renderJobId by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * Live state of the device upload currently in flight (file pick, reference image, voice
+     * sample or mic recording), or null when nothing is uploading. Drives the upload progress
+     * bars shown across the studio. [fraction] is the completion ratio (0f..1f).
+     */
+    var uploadState by mutableStateOf<UploadState?>(null)
         private set
 
     private var wsConnection: JobEventsConnection? = null
@@ -577,13 +596,32 @@ class AppViewModel : ViewModel() {
     }
 
     /**
+     * Runs an upload [block] while publishing its progress to [uploadState]: shows the bar at 0%
+     * as soon as the upload starts, forwards every progress tick and always clears the state when
+     * the block finishes (success, cancellation or error).
+     */
+    private suspend fun <T> withUploadProgress(
+        label: String,
+        block: suspend (onProgress: (Float) -> Unit) -> T
+    ): T {
+        uploadState = UploadState(label, 0f)
+        return try {
+            block { fraction -> uploadState = UploadState(label, fraction.coerceIn(0f, 1f)) }
+        } finally {
+            uploadState = null
+        }
+    }
+
+    /**
      * Picks an image from the device, uploads it into the image library and hands back its URL —
      * used by the generate dialog to attach custom reference images.
      */
     fun uploadReferenceImage(onDone: (String?) -> Unit) {
         viewModelScope.launch {
             try {
-                val uploaded = pickAndUploadDeviceFile(AssetType.IMAGE)
+                val uploaded = withUploadProgress("Uploading reference image") { onProgress ->
+                    pickAndUploadDeviceFile(AssetType.IMAGE, onProgress)
+                }
                 if (uploaded == null) {
                     onDone(null)
                     return@launch
@@ -636,7 +674,9 @@ class AppViewModel : ViewModel() {
     fun uploadAsset(type: AssetType, description: String = "") {
         viewModelScope.launch {
             try {
-                val uploaded = pickAndUploadDeviceFile(type) ?: return@launch
+                val uploaded = withUploadProgress("Uploading ${type.name.lowercase()}") { onProgress ->
+                    pickAndUploadDeviceFile(type, onProgress)
+                } ?: return@launch
                 val asset = Asset(
                     id = generateId(),
                     type = type,
@@ -907,7 +947,9 @@ class AppViewModel : ViewModel() {
     fun createVoiceCloneFromDevice(name: String, onDone: (VoiceClone?) -> Unit) {
         viewModelScope.launch {
             try {
-                val uploaded = pickAndUploadDeviceFile(AssetType.AUDIO)
+                val uploaded = withUploadProgress("Uploading voice sample") { onProgress ->
+                    pickAndUploadDeviceFile(AssetType.AUDIO, onProgress)
+                }
                 if (uploaded == null) {
                     onDone(null)
                     return@launch
@@ -919,6 +961,25 @@ class AppViewModel : ViewModel() {
                 errorMessage = "Voice cloning failed: ${e.message}"
                 onDone(null)
             }
+        }
+    }
+
+    /**
+     * Stops the in-progress microphone recording and uploads it, publishing the upload progress to
+     * [uploadState] so the record dialog can show a progress bar. Hands the uploaded sample (or
+     * null on failure) back to [onDone].
+     */
+    fun stopRecordingAndUpload(onDone: (UploadedDeviceFile?) -> Unit) {
+        viewModelScope.launch {
+            val uploaded = try {
+                withUploadProgress("Uploading recording") { onProgress ->
+                    stopMicRecordingAndUpload(onProgress)
+                }
+            } catch (e: Exception) {
+                errorMessage = "Recording upload failed: ${e.message}"
+                null
+            }
+            onDone(uploaded)
         }
     }
 

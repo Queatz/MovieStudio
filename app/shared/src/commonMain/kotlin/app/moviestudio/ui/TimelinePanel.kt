@@ -472,7 +472,13 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
                     if (offset.y <= RULER_HEIGHT) {
                         val note = noteHit(offset)
                         if (note != null) {
-                            viewModel.focusNote(note)
+                            // Clicking the already-selected note un-selects it and closes the panel.
+                            if (viewModel.selectedNoteId == note.id) {
+                                viewModel.selectedNoteId = null
+                                viewModel.notesPanelExpanded = false
+                            } else {
+                                viewModel.focusNote(note)
+                            }
                         } else {
                             viewModel.seek(timeAt(offset.x))
                         }

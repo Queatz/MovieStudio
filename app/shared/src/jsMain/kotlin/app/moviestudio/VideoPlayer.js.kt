@@ -37,6 +37,11 @@ actual fun VideoPlayer(
                     video.style.objectFit = 'cover';
                     video.style.objectPosition = 'center';
                     video.controls = false;
+                    // Purely a decorative overlay (all interaction happens via the Compose transport
+                    // controls) — let pointer events pass through so clicking the stage doesn't steal
+                    // native DOM focus away from the Compose canvas (which would break the space-bar
+                    // play/pause shortcut and other keyboard input app-wide).
+                    video.style.pointerEvents = 'none';
                     video.setAttribute('playsinline', 'true');
                     document.body.appendChild(video);
                 }

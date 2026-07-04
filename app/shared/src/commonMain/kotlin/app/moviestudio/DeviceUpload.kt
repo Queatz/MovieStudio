@@ -25,8 +25,14 @@ data class UploadedDeviceFile(
  *
  * Returns null when the user cancels the picker or when the current platform does not support
  * picking/uploading files from the device.
+ *
+ * [onProgress] is invoked with the upload completion fraction (0f..1f) as bytes are sent, so the
+ * UI can show a live progress bar. Platforms that cannot measure progress simply never call it.
  */
-expect suspend fun pickAndUploadDeviceFile(type: AssetType): UploadedDeviceFile?
+expect suspend fun pickAndUploadDeviceFile(
+    type: AssetType,
+    onProgress: (Float) -> Unit = {}
+): UploadedDeviceFile?
 
 /**
  * Starts recording audio from the device microphone (asking for permission if needed).
@@ -39,8 +45,12 @@ expect suspend fun startMicRecording(): Boolean
  * Stops the in-progress microphone recording, uploads it to object storage (via a pre-signed
  * URL obtained from the server) and returns the uploaded file. Returns null when nothing was
  * being recorded or the upload failed.
+ *
+ * [onProgress] is invoked with the upload completion fraction (0f..1f) as bytes are sent.
  */
-expect suspend fun stopMicRecordingAndUpload(): UploadedDeviceFile?
+expect suspend fun stopMicRecordingAndUpload(
+    onProgress: (Float) -> Unit = {}
+): UploadedDeviceFile?
 
 /** Cancels the in-progress microphone recording, discarding any captured audio. */
 expect fun cancelMicRecording()

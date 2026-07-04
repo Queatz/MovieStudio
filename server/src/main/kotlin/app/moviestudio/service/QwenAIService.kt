@@ -506,7 +506,7 @@ object QwenAIService : AIGenerationService {
             logger.warn("Qwen transcription failed for asset ${asset.id}, falling back to prompt text: ${e.message}")
             val fallback = asset.transcript?.takeIf { it.isNotBlank() }
                 ?: asset.aiPrompt?.takeIf { it.isNotBlank() }
-                ?: "Auto-generated voiceover transcript."
+                ?: ""
             fallback to TranscriptUtil.buildWordTimings(fallback, asset.durationSeconds)
         }
         val updated = asset.copy(transcript = text, wordTimings = timings)

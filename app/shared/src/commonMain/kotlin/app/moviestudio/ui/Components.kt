@@ -1,5 +1,6 @@
 package app.moviestudio.ui
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -22,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -50,8 +52,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import app.moviestudio.UploadState
 import app.moviestudio.startRealtimeSpeechInput
 import app.moviestudio.stopRealtimeSpeechInput
+import kotlin.math.roundToInt
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -523,5 +527,47 @@ fun RemovableChip(
             color = MaterialTheme.colorScheme.onSecondaryContainer
         )
         RoundIconButton("✕", size = 22.dp, tint = MaterialTheme.colorScheme.onSecondaryContainer) { onRemove() }
+    }
+}
+
+/**
+ * Live upload progress bar shown while a device upload is in flight (file pick, reference image,
+ * voice sample or mic recording). Renders the [state]'s label plus a determinate progress bar
+ * driven by its completion fraction, animated so it advances smoothly between progress ticks.
+ */
+@Composable
+fun UploadProgressBar(state: UploadState, modifier: Modifier = Modifier) {
+    val animated by animateFloatAsState(
+        targetValue = state.fraction.coerceIn(0f, 1f),
+        label = "uploadProgress"
+    )
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "📤 ${state.label}",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                "${(animated * 100).roundToInt()}%",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        LinearProgressIndicator(
+            progress = { animated },
+            modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
+        )
     }
 }

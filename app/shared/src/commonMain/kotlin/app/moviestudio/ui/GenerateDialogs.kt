@@ -60,7 +60,6 @@ import app.moviestudio.isPitchInScale
 import app.moviestudio.playSequencerTone
 import app.moviestudio.sequencerRowFrequency
 import app.moviestudio.startMicRecording
-import app.moviestudio.stopMicRecordingAndUpload
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -307,6 +306,12 @@ fun GenerateMediaDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            }
+
+            // Live progress while a custom reference image uploads from the device.
+            viewModel.uploadState?.let { upload ->
+                Spacer(Modifier.height(6.dp))
+                UploadProgressBar(upload)
             }
 
             Spacer(Modifier.height(6.dp))
@@ -1074,8 +1079,7 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
                 ) {
                     recording = false
                     working = true
-                    scope.launch {
-                        val uploaded = stopMicRecordingAndUpload()
+                    viewModel.stopRecordingAndUpload { uploaded ->
                         working = false
                         if (uploaded == null) {
                             viewModel.errorMessage = "Recording failed — nothing was captured"
@@ -1096,6 +1100,11 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
                     fontWeight = FontWeight.SemiBold
                 )
             }
+        }
+        // Live progress while a recording or a picked audio sample uploads to storage.
+        viewModel.uploadState?.let { upload ->
+            Spacer(Modifier.height(8.dp))
+            UploadProgressBar(upload)
         }
         recordedSample?.let { sample ->
             Spacer(Modifier.height(8.dp))
@@ -1242,8 +1251,7 @@ fun RecordVoiceDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
                 ) {
                     recording = false
                     saving = true
-                    scope.launch {
-                        val uploaded = stopMicRecordingAndUpload()
+                    viewModel.stopRecordingAndUpload { uploaded ->
                         if (uploaded == null) {
                             saving = false
                             viewModel.errorMessage = "Recording failed — nothing was captured"
@@ -1266,6 +1274,11 @@ fun RecordVoiceDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
                     fontWeight = FontWeight.SemiBold
                 )
             }
+        }
+        // Live progress while the finished recording uploads to storage.
+        viewModel.uploadState?.let { upload ->
+            Spacer(Modifier.height(10.dp))
+            UploadProgressBar(upload)
         }
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
