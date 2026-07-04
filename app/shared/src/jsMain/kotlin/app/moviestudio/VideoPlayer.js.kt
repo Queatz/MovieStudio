@@ -8,6 +8,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 
 @Composable
 actual fun VideoPlayer(
@@ -79,6 +80,10 @@ actual fun VideoPlayer(
         }
     }
 
+    // Compose Web lays out in physical pixels (CSS px × devicePixelRatio), but the <video> overlay
+    // is positioned/sized in CSS pixels. Divide by the density so the element lines up with the
+    // aspect-constrained stage instead of overflowing it on high-DPI (retina) displays.
+    val density = LocalDensity.current.density
     Box(
         modifier = modifier
             .background(Color.Black)
@@ -98,7 +103,12 @@ actual fun VideoPlayer(
                         }
                     }
                 """)
-                updateBounds(windowOffset.x.toDouble(), windowOffset.y.toDouble(), width.toDouble(), height.toDouble())
+                updateBounds(
+                    (windowOffset.x / density).toDouble(),
+                    (windowOffset.y / density).toDouble(),
+                    (width / density).toDouble(),
+                    (height / density).toDouble()
+                )
             }
     )
 }

@@ -150,6 +150,14 @@ val mediaTime = asset.sourceOffsetSeconds + clip.trimIn + (playhead - clip.timel
 Crop offset for video is applied to the `<video>` element's CSS `object-position` through
 `setPreviewObjectPosition(offsetX, offsetY)` (the `object-fit: cover` element already center-crops).
 
+**DPI-correct positioning.** The overlay is placed over the Compose stage from
+`onGloballyPositioned` (offset + size). Compose Web lays out in *physical* pixels
+(CSS px × `devicePixelRatio`), but CSS `left/top/width/height` are *logical* pixels, so
+`VideoPlayer` divides the reported bounds by `LocalDensity.current.density` before writing them.
+Without this the `<video>` is drawn at `devicePixelRatio`× the position and size on high-DPI (retina)
+screens — overflowing the stage with the wrong scale/offset. (Still images don't need this: an
+`AsyncImage` is a native Compose node laid out in the same coordinate space as the stage.)
+
 **Single-video constraint.** The web preview shares **one** `<video id="compose-video-preview">`
 element, so only one video clip can play at a time. If several video clips overlap, the panel plays
 the **top-most** (`activeVideo = visualClips.lastOrNull { it is a video }`) and skips the rest.
