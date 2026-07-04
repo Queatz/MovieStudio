@@ -1,13 +1,17 @@
 package app.moviestudio.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -28,7 +32,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -38,9 +45,12 @@ import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.AudioPlayItem
 import app.moviestudio.WordTiming
+import app.moviestudio.loadAudioWaveform
 import app.moviestudio.updateAudioPlayback
 import kotlinx.coroutines.delay
+import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /**
  * Full asset details: description editing, one-click generate/regenerate from the description,
@@ -122,6 +132,12 @@ fun AssetDetailsDialog(
             GhostPillButton("➕ Add to timeline", compact = true) {
                 viewModel.addAssetToTimeline(asset)
                 onDismiss()
+            }
+            if (asset.type == AssetType.IMAGE && !asset.isDescriptionOnly) {
+                GhostPillButton("🖼 Set as cover", compact = true) {
+                    viewModel.setMovieCover(asset.ossUrl)
+                    onDismiss()
+                }
             }
             if (asset.type == AssetType.VIDEO && !asset.isDescriptionOnly) {
                 GhostPillButton("🎧 Extract audio", compact = true) {
@@ -368,9 +384,15 @@ fun ClipAudioDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () -> Unit
     }
 }
 
+/** How many amplitude buckets we decode the audio into for the waveform display. */
+private const val WAVEFORM_BUCKETS = 400
+
 /**
- * Visual word-timing editor: the words are laid out on a strip proportional to the media
- * duration; select a word and drag its start/end sliders to fine-tune the alignment.
+ * Visual word-timing editor built for precise caption alignment. A waveform of the audio (decoded
+ * on web targets, a synthetic placeholder elsewhere) is drawn on the same time scale as the word
+ * blocks, so each word lines up visually with the sound it belongs to. Play the clip, scrub the
+ * waveform to hear any moment, then pick a word and drag its start/end to line the captions up
+ * perfectly. Neighboring words never overlap.
  */
 @Composable
 fun WordTimingEditorDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () -> Unit) {
@@ -378,35 +400,186 @@ fun WordTimingEditorDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () 
     var selectedIndex by remember { mutableStateOf(0) }
     val duration = asset.durationSeconds.toFloat().coerceAtLeast(0.5f)
 
-    StudioDialog(title = "Word timings", onDismiss = onDismiss, width = 620.dp) {
+    val canPlay = !asset.isDescriptionOnly && asset.ossUrl.isNotBlank()
+    var playing by remember(asset.id) { mutableStateOf(false) }
+    var position by remember(asset.id) { mutableStateOf(0f) }
+
+    // Decoded waveform peaks (null → a synthetic placeholder is drawn instead).
+    var waveform by remember(asset.id) { mutableStateOf<FloatArray?>(null) }
+    LaunchedEffect(asset.id, asset.ossUrl, canPlay) {
+        waveform = if (canPlay) loadAudioWaveform(asset.ossUrl, WAVEFORM_BUCKETS) else null
+    }
+
+    // The scrubber position is the master clock while playing; the audio pool chases it.
+    LaunchedEffect(playing) {
+        while (playing) {
+            delay(50)
+            val next = position + 0.05f
+            if (next >= duration) {
+                position = duration
+                playing = false
+            } else {
+                position = next
+            }
+        }
+    }
+    LaunchedEffect(playing, position) {
+        if (canPlay) {
+            updateAudioPlayback(
+                listOf(
+                    AudioPlayItem(
+                        key = "wordtiming-${asset.id}",
+                        url = asset.ossUrl,
+                        positionSeconds = asset.sourceOffsetSeconds + position.toDouble(),
+                        volume = 1.0
+                    )
+                ),
+                playing
+            )
+        }
+    }
+    // Closing the dialog stops the preview sound.
+    DisposableEffect(asset.id) {
+        onDispose { updateAudioPlayback(emptyList(), false) }
+    }
+
+    fun wordIndexAt(t: Float): Int =
+        timings.indexOfFirst { t >= it.start.toFloat() && t <= it.end.toFloat() }
+
+    StudioDialog(title = "Word timings", onDismiss = onDismiss, width = 640.dp) {
         Text(
-            "Select a word, then drag its start/end. Neighboring words never overlap.",
+            "Play or scrub the waveform to find a moment, then pick a word and drag its start/end " +
+                "so the captions line up. Neighboring words never overlap.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(10.dp))
 
-        // Visual strip: each word block positioned/sized by its timing.
+        // Waveform aligned with the word boundaries; tap/drag anywhere to scrub (and tapping a
+        // word's span selects it).
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(64.dp)
+                .height(96.dp)
+                .clip(RoundedCornerShape(10.dp)) // clip BEFORE pointerInput: rounded hover/press
+                .background(Color(0xFF17151C))
+                .pointerInput(duration, timings) {
+                    detectTapGestures { offset ->
+                        val t = (offset.x / size.width * duration).coerceIn(0f, duration)
+                        position = t
+                        val hit = wordIndexAt(t)
+                        if (hit >= 0) selectedIndex = hit
+                    }
+                }
+                .pointerInput(duration) {
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            position = (offset.x / size.width * duration).coerceIn(0f, duration)
+                        },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            position = (change.position.x / size.width * duration).coerceIn(0f, duration)
+                        }
+                    )
+                }
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                val mid = h / 2f
+                val maxBar = h * 0.42f
+
+                // Highlight the selected word's span behind the bars.
+                val sel = timings.getOrNull(selectedIndex)
+                if (sel != null) {
+                    val x0 = (sel.start.toFloat() / duration * w).coerceIn(0f, w)
+                    val x1 = (sel.end.toFloat() / duration * w).coerceIn(0f, w)
+                    drawRect(
+                        Color(0xFF8F7BFF).copy(alpha = 0.18f),
+                        topLeft = Offset(x0, 0f),
+                        size = Size((x1 - x0).coerceAtLeast(1.5f), h)
+                    )
+                }
+
+                // Waveform bars: brighter within the selected word, filled up to the playhead.
+                val barStride = 3f
+                val barWidth = 2f
+                val count = (w / barStride).toInt().coerceAtLeast(1)
+                for (i in 0 until count) {
+                    val x = i * barStride
+                    val t = i.toFloat() / count * duration
+                    val bh = (waveformBarHeight(waveform, i, count) * maxBar).coerceAtLeast(1f)
+                    val inSelected = sel != null && t >= sel.start.toFloat() && t <= sel.end.toFloat()
+                    val color = when {
+                        inSelected -> Color(0xFFC9BCFF)
+                        t <= position -> Color(0xFF8F7BFF)
+                        else -> Color(0xFF4A4560)
+                    }
+                    drawRect(color, topLeft = Offset(x, mid - bh), size = Size(barWidth, bh * 2f))
+                }
+
+                // Thin divider lines at every word start/end.
+                timings.forEach { word ->
+                    val xs = word.start.toFloat() / duration * w
+                    val xe = word.end.toFloat() / duration * w
+                    drawLine(Color(0xFF2C2838), Offset(xs, 0f), Offset(xs, h), strokeWidth = 1f)
+                    drawLine(Color(0xFF2C2838), Offset(xe, 0f), Offset(xe, h), strokeWidth = 1f)
+                }
+
+                // Playhead.
+                val px = (position / duration * w).coerceIn(0f, w)
+                drawLine(Color(0xFFFF5A6E), Offset(px, 0f), Offset(px, h), strokeWidth = 2f)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // Transport: play/pause + timecode readout.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RoundIconButton(
+                if (playing) "⏸" else "▶",
+                contentDescription = "Play / pause",
+                size = 34.dp,
+                enabled = canPlay,
+                background = MaterialTheme.colorScheme.primary,
+                tint = MaterialTheme.colorScheme.onPrimary
+            ) {
+                if (!playing && position >= duration - 0.05f) position = 0f
+                playing = !playing
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "${formatDuration(position.toDouble())} / ${formatDuration(duration.toDouble())}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+
+        // Word blocks with labels, laid out on the same time scale as the waveform above.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(40.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF17151C))
         ) {
             Row(Modifier.fillMaxWidth().padding(4.dp)) {
+                var prevEnd = 0f
                 timings.forEachIndexed { index, word ->
-                    val widthWeight = ((word.end - word.start).toFloat() / duration).coerceAtLeast(0.015f)
-                    val gapBefore = if (index == 0) (word.start.toFloat() / duration) else 0f
+                    val gapBefore = ((word.start.toFloat() - prevEnd) / duration).coerceAtLeast(0f)
                     if (gapBefore > 0.001f) Spacer(Modifier.weight(gapBefore))
+                    val widthWeight = ((word.end - word.start).toFloat() / duration).coerceAtLeast(0.015f)
                     Box(
                         modifier = Modifier
                             .weight(widthWeight)
-                            .height(56.dp)
+                            .height(32.dp)
                             .padding(horizontal = 1.dp)
                             .clip(RoundedCornerShape(6.dp)) // clip BEFORE clickable
                             .background(if (index == selectedIndex) Color(0xFF8F7BFF) else Color(0xFF37324A))
-                            .clickable { selectedIndex = index },
+                            .clickable {
+                                selectedIndex = index
+                                position = word.start.toFloat()
+                            },
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -417,9 +590,10 @@ fun WordTimingEditorDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () 
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                    prevEnd = word.end.toFloat()
                 }
-                val tail = 1f - (timings.lastOrNull()?.end?.toFloat() ?: 0f) / duration
-                if (tail > 0.001f) Spacer(Modifier.weight(tail.coerceAtLeast(0.001f)))
+                val tail = (1f - prevEnd / duration).coerceAtLeast(0.001f)
+                if (tail > 0.001f) Spacer(Modifier.weight(tail))
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -474,4 +648,20 @@ fun WordTimingEditorDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () 
             }
         }
     }
+}
+
+/**
+ * A waveform bar's height fraction (0f..1f): a real decoded peak when [peaks] is available,
+ * otherwise a smooth synthetic placeholder so the strip still reads as a waveform on platforms
+ * without audio decoding.
+ */
+private fun waveformBarHeight(peaks: FloatArray?, index: Int, count: Int): Float {
+    if (peaks != null && peaks.isNotEmpty()) {
+        val idx = (index.toLong() * peaks.size / count).toInt().coerceIn(0, peaks.size - 1)
+        return peaks[idx].coerceIn(0f, 1f)
+    }
+    val t = index.toFloat() / count
+    val envelope = 0.35f + 0.4f * abs(sin(t * 6.3f + 0.6f))
+    val detail = abs(sin(t * 41f))
+    return (0.12f + envelope * detail).coerceIn(0.04f, 1f)
 }

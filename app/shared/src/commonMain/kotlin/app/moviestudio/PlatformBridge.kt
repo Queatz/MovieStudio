@@ -46,6 +46,13 @@ expect suspend fun captureVideoFrameAndUpload(uploadUrl: String): Boolean
 expect fun triggerDownload(url: String, fileName: String)
 
 /**
+ * Requests native fullscreen playback for the movie preview's video element (the same shared
+ * `<video>` the [app.moviestudio.VideoPlayer] drives). Used to watch a finished render
+ * distraction-free. No-op on platforms without a fullscreen-capable video element.
+ */
+expect fun requestVideoFullscreen()
+
+/**
  * Positions the media inside the movie preview's center-crop window (CSS `object-position`).
  * [xPercent]/[yPercent] are 0-100 where 50/50 is centered — mirroring the clip's
  * [app.moviestudio.EffectsConfig.offsetX]/[app.moviestudio.EffectsConfig.offsetY].
@@ -80,3 +87,11 @@ expect fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean
 
 /** Stops the in-progress realtime speech dictation session (no-op when none is active). */
 expect fun stopRealtimeSpeechInput()
+
+/**
+ * Decodes the audio file at [url] and reduces it to [buckets] normalized peak amplitudes
+ * (each in 0f..1f), suitable for drawing a compact waveform. On web targets this fetches the
+ * file and uses the Web Audio API to decode it; platforms without an audio engine return null
+ * so callers can fall back to a synthetic placeholder waveform.
+ */
+expect suspend fun loadAudioWaveform(url: String, buckets: Int): FloatArray?

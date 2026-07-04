@@ -390,14 +390,16 @@ private fun TransportControls(viewModel: AppViewModel) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {
-        RoundIconButton("⏮", contentDescription = "Back to start", size = 34.dp) { viewModel.seek(0f) }
-        Spacer(Modifier.width(6.dp))
         RoundIconButton(
             if (viewModel.isPlaying) "⏸" else "▶",
             contentDescription = "Play / pause (Space)",
             size = 42.dp,
             background = MaterialTheme.colorScheme.primary,
-            tint = MaterialTheme.colorScheme.onPrimary
+            tint = MaterialTheme.colorScheme.onPrimary,
+            onLongClick = {
+                viewModel.seek(0f)
+                viewModel.togglePlayback()
+            }
         ) { viewModel.togglePlayback() }
         Spacer(Modifier.width(12.dp))
         Text(

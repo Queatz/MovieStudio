@@ -84,7 +84,7 @@ private const val NOTE_PILL_MAX_WIDTH = 170f
 private val noteTextStyle = TextStyle(color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
 
 /** The single-line label shown inside a note's blue marker pill. */
-private fun noteLabel(note: TimelineNote): String = note.text.replace('\n', ' ').take(24)
+private fun noteLabel(note: TimelineNote): String = note.text.substringBefore('\n').take(24)
 
 /** Width of a note's marker pill: its measured label plus padding, capped. */
 private fun notePillWidth(textMeasurer: androidx.compose.ui.text.TextMeasurer, label: String): Float {
@@ -480,7 +480,7 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
                                 viewModel.focusNote(note)
                             }
                         } else {
-                            viewModel.seek(timeAt(offset.x))
+                            viewModel.seek(timeAt(offset.x), allowPastEnd = true)
                         }
                     } else {
                         val hit = clipHit(offset)
@@ -494,7 +494,7 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
                 detectDragGestures(
                     onDragStart = { offset ->
                         dragSession = if (offset.y <= RULER_HEIGHT) {
-                            viewModel.seek(timeAt(offset.x))
+                            viewModel.seek(timeAt(offset.x), allowPastEnd = true)
                             DragSession.Seek
                         } else {
                             val hit = clipHit(offset)
@@ -528,7 +528,7 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
                         change.consume()
                         val dt = dragAmount.x / zoomState
                         when (val session = dragSession) {
-                            is DragSession.Seek -> viewModel.seek(timeAt(change.position.x))
+                            is DragSession.Seek -> viewModel.seek(timeAt(change.position.x), allowPastEnd = true)
                             is DragSession.MoveClip -> {
                                 session.newStart = max(0f, session.newStart + dt)
                                 // Holding Ctrl snaps the clip's start to the nearest whole second.

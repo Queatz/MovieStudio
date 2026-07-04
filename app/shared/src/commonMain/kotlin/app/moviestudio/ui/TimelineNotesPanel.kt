@@ -227,7 +227,6 @@ private fun NoteRow(
             note.text,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 3,
             overflow = TextOverflow.Ellipsis
         )
     }
@@ -258,12 +257,19 @@ private fun NoteEditorDialog(
             modifier = Modifier.fillMaxWidth(),
             label = "Note",
             placeholder = "What happens at this moment of the movie...",
-            minLines = 3
+            minLines = 3,
+            autoFocus = true,
+            onSubmit = {
+                onSave(text.trim())
+            }
         )
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
-            PillButton(confirmLabel, enabled = text.isNotBlank()) { onSave(text.trim()) }
+            PillButton(confirmLabel, enabled = text.isNotBlank()) {
+                onSave(text.trim())
+            }
         }
     }
 }
+

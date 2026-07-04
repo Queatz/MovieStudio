@@ -90,6 +90,23 @@ class SharedCommonTest {
     }
 
     @Test
+    fun testAssetTypeForDroppedFile() {
+        // Media extensions map to their asset type (case-insensitively).
+        assertEquals(AssetType.IMAGE, assetTypeForFile("poster.png"))
+        assertEquals(AssetType.IMAGE, assetTypeForFile("Shot.JPEG"))
+        assertEquals(AssetType.VIDEO, assetTypeForFile("clip.mp4"))
+        assertEquals(AssetType.VIDEO, assetTypeForFile("trailer.MOV"))
+        assertEquals(AssetType.AUDIO, assetTypeForFile("song.mp3"))
+        assertEquals(AssetType.AUDIO, assetTypeForFile("take.wav"))
+        // Text drops become a TEXT asset (turned into a placeholder voice by the caller).
+        assertEquals(AssetType.TEXT, assetTypeForFile("narration.txt"))
+        assertEquals(AssetType.TEXT, assetTypeForFile("script.md"))
+        // Unknown / extension-less files are unsupported.
+        assertEquals(null, assetTypeForFile("archive.zip"))
+        assertEquals(null, assetTypeForFile("README"))
+    }
+
+    @Test
     fun testMusicSequenceMeasures() {
         // Measures are derived from the step count (16 steps per measure, minimum one measure).
         assertEquals(1, MusicSequence(steps = 16).measures)

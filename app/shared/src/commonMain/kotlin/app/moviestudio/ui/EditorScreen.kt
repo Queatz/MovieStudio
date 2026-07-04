@@ -49,6 +49,7 @@ import app.moviestudio.RenderRecord
 import app.moviestudio.SUPPORTED_ASPECT_RATIOS
 import app.moviestudio.VideoPlayer
 import app.moviestudio.displayName
+import app.moviestudio.requestVideoFullscreen
 import app.moviestudio.triggerDownload
 
 /**
@@ -177,7 +178,12 @@ private fun EditorTopBar(
                 value = titleDraft,
                 onValueChange = { titleDraft = it },
                 modifier = Modifier.width(280.dp),
-                singleLine = true
+                singleLine = true,
+                onDismiss = { editingTitle = false },
+                onSubmit = {
+                    viewModel.updateMovie(movie.copy(title = titleDraft.trim()))
+                    editingTitle = false
+                }
             )
             Spacer(Modifier.width(6.dp))
             PillButton("Save", compact = true, enabled = titleDraft.isNotBlank()) {
@@ -330,7 +336,10 @@ private fun RenderProgressDialog(viewModel: AppViewModel) {
     }
 }
 
-/** Small self-contained player used to replay a finished render inside a dialog. */
+/**
+ * Small self-contained player used to replay a finished render inside a dialog: play/pause plus
+ * fullscreen and download shortcuts for the single rendered movie.
+ */
 @Composable
 private fun RenderReplayPlayer(url: String) {
     var playing by remember(url) { mutableStateOf(true) }
@@ -345,10 +354,31 @@ private fun RenderReplayPlayer(url: String) {
         )
         RoundIconButton(
             if (playing) "⏸" else "▶",
+            contentDescription = "Play / pause",
             size = 38.dp,
             background = Color.Black.copy(alpha = 0.55f),
             tint = Color.White
         ) { playing = !playing }
+        // Fullscreen playback and download the movie, top-right over the video.
+        Row(
+            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            RoundIconButton(
+                "⛶",
+                contentDescription = "Fullscreen",
+                size = 34.dp,
+                background = Color.Black.copy(alpha = 0.55f),
+                tint = Color.White
+            ) { requestVideoFullscreen() }
+            RoundIconButton(
+                "⬇",
+                contentDescription = "Download movie",
+                size = 34.dp,
+                background = Color.Black.copy(alpha = 0.55f),
+                tint = Color.White
+            ) { triggerDownload(url, "movie-render.mp4") }
+        }
     }
 }
 

@@ -36,7 +36,10 @@ data class Film(
     val createdAt: Long,
     // Aspect ratio of the movie (e.g. "16:9"). The player respects this and all media is center-crop fit.
     // Can be changed by the user at any time.
-    val aspectRatio: String = DEFAULT_ASPECT_RATIO
+    val aspectRatio: String = DEFAULT_ASPECT_RATIO,
+    // Optional cover photo (an image asset's URL) shown on the movie card. Set from the image
+    // asset dialog; null means the default placeholder poster is shown.
+    val coverImageUrl: String? = null
 ) {
     companion object {
         const val DEFAULT_ASPECT_RATIO: String = "16:9"
@@ -436,7 +439,7 @@ data class CaptionConfig(
 
 /** Font families offered by the caption font chooser ("My fonts" are the app-bundled ones). */
 val CAPTION_FONT_FAMILIES: List<String> = listOf(
-    "Default", "Serif", "Sans serif", "Monospace", "Cursive", "Asap (my font)", "Yuyu (my font)"
+    "Default", "Asap", "Yuyu"
 )
 
 /**

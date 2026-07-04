@@ -1,8 +1,10 @@
 package app.moviestudio.ui
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -33,6 +35,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,8 +44,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
@@ -99,16 +110,29 @@ fun StudioTextField(
     minLines: Int = 1,
     maxLines: Int = if (singleLine) 1 else Int.MAX_VALUE,
     enabled: Boolean = true,
+    autoFocus: Boolean = true,
     textStyle: TextStyle = LocalTextStyle.current,
     leadingIcon: @Composable (() -> Unit)? = null,
-    trailingIcon: @Composable (() -> Unit)? = null
+    trailingIcon: @Composable (() -> Unit)? = null,
+    onDismiss: () -> Unit = {},
+    onSubmit: () -> Unit = {},
 ) {
+    val focus = remember { FocusRequester() }
+
+    // Autofocus the title input so the user can start typing right away.
+    LaunchedEffect(autoFocus) {
+        if (autoFocus) {
+            runCatching { focus.requestFocus() }
+        }
+    }
     var wasFocused by remember { mutableStateOf(false) }
     var dictating by remember { mutableStateOf(false) }
     // The dictation callback fires from outside the composition, so it must always see the
     // freshest value/callback of this field.
     val latestValue by rememberUpdatedState(value)
     val latestOnValueChange by rememberUpdatedState(onValueChange)
+    val latestOnSubmit by rememberUpdatedState(onSubmit)
+    val latestOnDismiss by rememberUpdatedState(onDismiss)
     // A dictation session left running (e.g. the field leaves the composition mid-press) must
     // not keep the microphone open.
     DisposableEffect(Unit) {
@@ -119,9 +143,27 @@ fun StudioTextField(
         value = value,
         onValueChange = onValueChange,
         modifier = modifier
+            .focusRequester(focus)
             .onFocusChanged { state ->
                 TextInputFocusTracker.onFocusChanged(wasFocused, state.isFocused)
                 wasFocused = state.isFocused
+            }
+            // Ctrl+Enter submits the field (e.g. sends a chat message) without inserting a
+            // newline via the normal Enter key.
+            .onPreviewKeyEvent { keyEvent ->
+                when (keyEvent.type) {
+                    KeyEventType.KeyDown if keyEvent.isCtrlPressed && keyEvent.key == Key.Enter -> {
+                        latestOnSubmit()
+                        true
+                    }
+                    KeyEventType.KeyDown if keyEvent.key == Key.Escape -> {
+                        latestOnDismiss()
+                        true
+                    }
+                    else -> {
+                        false
+                    }
+                }
             }
             // Hold-to-dictate. Observed on the Initial pass without consuming anything, so the
             // normal text-editing gestures keep working exactly as before.
@@ -241,6 +283,7 @@ fun StudioDialog(
 }
 
 /** Small circular icon button drawn with an emoji/text glyph (clipped before clickable). */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RoundIconButton(
     glyph: String,
@@ -249,6 +292,7 @@ fun RoundIconButton(
     background: Color = Color.Transparent,
     tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     size: Dp = 32.dp,
+    onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
     Box(
@@ -256,7 +300,7 @@ fun RoundIconButton(
             .size(size)
             .clip(CircleShape) // clip BEFORE clickable so the hover highlight is round
             .background(background)
-            .clickable(enabled = enabled) { onClick() },
+            .combinedClickable(enabled = enabled, onLongClick = onLongClick) { onClick() },
         contentAlignment = Alignment.Center
     ) {
         Text(glyph, color = if (enabled) tint else tint.copy(alpha = 0.4f), fontSize = (size.value * 0.45).sp)

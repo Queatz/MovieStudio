@@ -33,9 +33,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.compose.AsyncImage
 import app.moviestudio.AppViewModel
 import app.moviestudio.Film
 import app.moviestudio.FilmStatus
@@ -140,7 +142,7 @@ private fun MovieCard(movie: Film, onOpen: () -> Unit, onDelete: () -> Unit) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        // Poster strip: always-dark preview look.
+        // Poster strip: the cover photo when set, otherwise the always-dark placeholder look.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -148,7 +150,17 @@ private fun MovieCard(movie: Film, onOpen: () -> Unit, onDelete: () -> Unit) {
                 .background(Color(0xFF17151D)),
             contentAlignment = Alignment.Center
         ) {
-            Text("🎞️", fontSize = 40.sp)
+            val cover = movie.coverImageUrl
+            if (cover != null) {
+                AsyncImage(
+                    model = cover,
+                    contentDescription = "${movie.title} cover",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Text("🎞️", fontSize = 40.sp)
+            }
             StatusBadge(
                 movie.status,
                 modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
@@ -210,21 +222,16 @@ fun StatusBadge(status: FilmStatus, modifier: Modifier = Modifier) {
 private fun CreateMovieDialog(onDismiss: () -> Unit, onCreate: (String, String) -> Unit) {
     var title by remember { mutableStateOf("") }
     var aspect by remember { mutableStateOf(SUPPORTED_ASPECT_RATIOS.first()) }
-    val titleFocus = remember { FocusRequester() }
-
-    // Autofocus the title input so the user can start typing right away.
-    LaunchedEffect(Unit) {
-        runCatching { titleFocus.requestFocus() }
-    }
 
     StudioDialog(title = "New Movie", onDismiss = onDismiss, width = 440.dp) {
         StudioTextField(
             value = title,
             onValueChange = { title = it },
-            modifier = Modifier.fillMaxWidth().focusRequester(titleFocus),
+            modifier = Modifier.fillMaxWidth(),
             label = "Title",
             placeholder = "My next masterpiece",
-            singleLine = true
+            singleLine = true,
+            autoFocus = true
         )
         Spacer(Modifier.height(12.dp))
         DropdownSelector(

@@ -1295,7 +1295,7 @@ fun DescribeAssetDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
     StudioDialog(title = "Describe media", onDismiss = onDismiss, width = 500.dp) {
         Text(
             "Creates a placeholder that lives on the timeline as text until you generate its " +
-                "media with one click.",
+                "media.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

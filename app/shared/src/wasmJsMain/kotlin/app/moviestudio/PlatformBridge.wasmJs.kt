@@ -145,6 +145,37 @@ actual fun triggerDownload(url: String, fileName: String) {
     jsTriggerDownload(url, fileName)
 }
 
+// ------------------------------------------------------------------------------------ fullscreen
+
+@JsFun("""
+() => {
+    const video = document.getElementById('compose-video-preview');
+    if (!video) return;
+    // Native controls make sense in fullscreen (Compose transport is hidden there); pointer
+    // events must be enabled so the user can actually use them.
+    video.controls = true;
+    video.style.pointerEvents = 'auto';
+    const req = video.requestFullscreen || video.webkitRequestFullscreen || video.webkitEnterFullscreen;
+    if (req) { try { req.call(video); } catch (e) {} }
+    // Restore the decorative-overlay behavior once fullscreen is dismissed.
+    const onChange = () => {
+        if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+            video.controls = false;
+            video.style.pointerEvents = 'none';
+            document.removeEventListener('fullscreenchange', onChange);
+            document.removeEventListener('webkitfullscreenchange', onChange);
+        }
+    };
+    document.addEventListener('fullscreenchange', onChange);
+    document.addEventListener('webkitfullscreenchange', onChange);
+}
+""")
+private external fun jsRequestVideoFullscreen()
+
+actual fun requestVideoFullscreen() {
+    jsRequestVideoFullscreen()
+}
+
 // ------------------------------------------------------------------ preview object-position
 
 @JsFun("""
@@ -364,4 +395,61 @@ actual fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean {
 actual fun stopRealtimeSpeechInput() {
     jsStopSpeechRecognition()
     jsStopServerDictation()
+}
+
+// ---------------------------------------------------------------------- waveform decoding
+
+// Fetches the audio file, decodes it with WebAudio and reduces channel 0 to [buckets] peak
+// amplitudes, returned as a comma-separated string. Decoded peaks are cached per url+buckets so
+// reopening the editor is instant. Resolves to an empty string on any failure.
+@JsFun("""
+(url, buckets) => new Promise((resolve) => {
+    try {
+        if (!window.__msWaveCache) { window.__msWaveCache = {}; }
+        const cacheKey = buckets + '@' + url;
+        if (window.__msWaveCache[cacheKey]) { resolve(window.__msWaveCache[cacheKey]); return; }
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) { resolve(''); return; }
+        if (!window.__msWaveCtx) { window.__msWaveCtx = new Ctx(); }
+        const ctx = window.__msWaveCtx;
+        fetch(url)
+            .then((r) => r.arrayBuffer())
+            .then((data) => ctx.decodeAudioData(data))
+            .then((buffer) => {
+                const channel = buffer.getChannelData(0);
+                const n = channel.length;
+                const per = Math.max(1, Math.floor(n / buckets));
+                const peaks = new Array(buckets);
+                let globalPeak = 0.00001;
+                for (let b = 0; b < buckets; b++) {
+                    const start = b * per;
+                    const end = Math.min(n, start + per);
+                    let peak = 0;
+                    for (let i = start; i < end; i++) {
+                        let v = channel[i]; if (v < 0) v = -v;
+                        if (v > peak) peak = v;
+                    }
+                    peaks[b] = peak;
+                    if (peak > globalPeak) globalPeak = peak;
+                }
+                for (let j = 0; j < buckets; j++) { peaks[j] = peaks[j] / globalPeak; }
+                const csv = peaks.join(',');
+                window.__msWaveCache[cacheKey] = csv;
+                resolve(csv);
+            })
+            .catch((e) => resolve(''));
+    } catch (e) { resolve(''); }
+})
+""")
+private external fun jsLoadWaveform(url: String, buckets: Int): Promise<JsString>
+
+actual suspend fun loadAudioWaveform(url: String, buckets: Int): FloatArray? {
+    return try {
+        val csv = jsLoadWaveform(url, buckets).await<JsString>().toString()
+        if (csv.isBlank()) return null
+        val peaks = csv.split(',').mapNotNull { it.toFloatOrNull() }.toFloatArray()
+        peaks.takeIf { it.isNotEmpty() }
+    } catch (e: Throwable) {
+        null
+    }
 }

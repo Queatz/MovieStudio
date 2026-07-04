@@ -233,6 +233,12 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /** Sets [url] (an image asset's URL) as the current movie's cover photo and persists it. */
+    fun setMovieCover(url: String) {
+        val movie = currentMovie ?: return
+        updateMovie(movie.copy(coverImageUrl = url))
+    }
+
     fun refreshTimeline() {
         val movieId = currentMovie?.id ?: return
         viewModelScope.launch {
@@ -274,9 +280,19 @@ class AppViewModel : ViewModel() {
         playbackTicker = null
     }
 
-    fun seek(seconds: Float) {
+    /**
+     * Moves the playhead to [seconds]. By default the playhead is clamped to the timeline's
+     * calculated end, but callers that let the user scrub freely (clicking or dragging on the
+     * ruler) pass [allowPastEnd] = true so the playhead can be parked past the last item.
+     */
+    fun seek(seconds: Float, allowPastEnd: Boolean = false) {
         val duration = (timeline?.calculatedDuration() ?: 0.0).toFloat()
-        playhead = seconds.coerceIn(0f, if (duration > 0f) duration else seconds.coerceAtLeast(0f))
+        val upperBound = when {
+            allowPastEnd -> seconds.coerceAtLeast(0f)
+            duration > 0f -> duration
+            else -> seconds.coerceAtLeast(0f)
+        }
+        playhead = seconds.coerceIn(0f, upperBound)
     }
 
     /** Moves the playhead by [deltaSeconds] (arrow-key stepping and wheel scrubbing). */
@@ -667,6 +683,71 @@ class AppViewModel : ViewModel() {
             } catch (e: Exception) {
                 errorMessage = "Failed to add asset: ${e.message}"
             }
+        }
+    }
+
+    /**
+     * Uploads files the user dropped onto the library (from the OS file manager, the browser...),
+     * creating a library asset for each one. The asset type is inferred from the file extension via
+     * [assetTypeForFile]: images/videos/audio are uploaded to storage, while text files become a
+     * placeholder voice asset carrying their text. Unsupported files are skipped. Runs the drops
+     * sequentially so the shared [uploadState] progress bar reflects one upload at a time.
+     */
+    fun uploadDroppedFiles(files: List<DroppedFile>) {
+        if (files.isEmpty()) return
+        viewModelScope.launch {
+            var created = false
+            for (file in files) {
+                try {
+                    when (val type = assetTypeForFile(file.name)) {
+                        // Text drops become a placeholder voice asset carrying the file's text.
+                        AssetType.TEXT -> {
+                            val text = readDroppedFileText(file)?.trim()
+                            if (!text.isNullOrBlank()) {
+                                NetworkService.createAsset(
+                                    Asset(
+                                        id = generateId(),
+                                        type = AssetType.VOICE,
+                                        ossUrl = "",
+                                        durationSeconds = 5.0,
+                                        movieId = null,
+                                        tags = listOf("description-only"),
+                                        aiPrompt = text,
+                                        description = text
+                                    )
+                                )
+                                created = true
+                            }
+                        }
+                        // Media drops upload their bytes and create an asset of the inferred type.
+                        null -> Unit // Unsupported file type: skip.
+                        else -> {
+                            val uploaded = withUploadProgress("Uploading ${file.name}") { onProgress ->
+                                uploadDroppedFile(file, onProgress)
+                            } ?: continue
+                            val asset = Asset(
+                                id = generateId(),
+                                type = type,
+                                ossUrl = uploaded.ossUrl,
+                                durationSeconds = uploaded.durationSeconds,
+                                movieId = null,
+                                tags = listOf("uploaded"),
+                                aiPrompt = null,
+                                description = uploaded.fileName
+                            )
+                            var saved = NetworkService.createAsset(asset)
+                            // Voice media auto-generates a transcript with word timings.
+                            if (type == AssetType.VOICE) {
+                                saved = NetworkService.generateTranscript(saved.id)
+                            }
+                            created = true
+                        }
+                    }
+                } catch (e: Exception) {
+                    errorMessage = "Upload failed: ${e.message}"
+                }
+            }
+            if (created) refreshLibrary()
         }
     }
 

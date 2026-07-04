@@ -277,6 +277,7 @@ fun CaptionEditorDialog(
     onSave: (CaptionConfig) -> Unit
 ) {
     var config by remember { mutableStateOf(initial.copy(enabled = true)) }
+    var showCustomColorPicker by remember { mutableStateOf(false) }
 
     StudioDialog(title = "Caption editor", onDismiss = onDismiss, width = 480.dp) {
         // Live preview strip (always dark, like the movie stage).
@@ -319,13 +320,14 @@ fun CaptionEditorDialog(
             label = "Size",
             value = config.fontSizeSp.toFloat(),
             valueRange = 14f..64f,
-            valueText = "${config.fontSizeSp}sp",
+            valueText = "${config.fontSizeSp}",
             onValueChange = { config = config.copy(fontSizeSp = it.roundToInt()) }
         )
 
         SectionLabel("Color")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("#FFFFFF", "#FFE45E", "#7FE0A7", "#7FC6FF", "#FF9EC1", "#FF6B5E").forEach { hex ->
+            val presetColors = listOf("#FFFFFF", "#FFE45E", "#7FE0A7", "#7FC6FF", "#FF9EC1", "#FF6B5E")
+            presetColors.forEach { hex ->
                 val selected = config.color.equals(hex, ignoreCase = true)
                 Box(
                     modifier = Modifier
@@ -336,6 +338,23 @@ fun CaptionEditorDialog(
                     contentAlignment = Alignment.Center
                 ) {
                     if (selected) Text("✓", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            }
+            // Custom color: last swatch in the row, opens a small hex-entry popup. Once a
+            // non-preset color is active, this swatch shows that color instead of the "+" glyph.
+            val isCustomColorActive = presetColors.none { it.equals(config.color, ignoreCase = true) }
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape) // clip BEFORE clickable: round hover
+                    .background(if (isCustomColorActive) parseHexColor(config.color) else MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { showCustomColorPicker = true },
+                contentAlignment = Alignment.Center
+            ) {
+                if (isCustomColorActive) {
+                    Text("✓", color = Color.Black, fontWeight = FontWeight.Bold)
+                } else {
+                    Text("+", color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -356,6 +375,69 @@ fun CaptionEditorDialog(
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
             PillButton("Save captions") { onSave(config) }
+        }
+    }
+
+    if (showCustomColorPicker) {
+        CustomColorPickerDialog(
+            initialHex = config.color,
+            onDismiss = { showCustomColorPicker = false },
+            onPick = { hex ->
+                config = config.copy(color = hex)
+                showCustomColorPicker = false
+            }
+        )
+    }
+}
+
+/** A valid `#RRGGBB` or `#AARRGGBB` hex color string. */
+private fun isValidHexColor(hex: String): Boolean =
+    Regex("^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$").matches(hex)
+
+/** Small popup letting the user type an arbitrary hex color for the "custom color" swatch. */
+@Composable
+private fun CustomColorPickerDialog(
+    initialHex: String,
+    onDismiss: () -> Unit,
+    onPick: (String) -> Unit
+) {
+    var hex by remember { mutableStateOf(initialHex) }
+    val valid = isValidHexColor(hex)
+
+    StudioDialog(title = "Custom color", onDismiss = onDismiss, width = 320.dp) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(if (valid) parseHexColor(hex) else Color.Transparent)
+            )
+            Spacer(Modifier.width(12.dp))
+            StudioTextField(
+                value = hex,
+                onValueChange = { hex = it },
+                modifier = Modifier.width(160.dp),
+                label = "Hex",
+                placeholder = "#RRGGBB",
+                singleLine = true,
+                autoFocus = true,
+                onSubmit = { if (valid) onPick(hex) },
+                onDismiss = onDismiss
+            )
+        }
+        if (!valid) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Enter a color as #RRGGBB or #AARRGGBB.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+
+        DialogActions {
+            GhostPillButton("Cancel") { onDismiss() }
+            ActionSpacer()
+            PillButton("Use color", enabled = valid) { onPick(hex) }
         }
     }
 }

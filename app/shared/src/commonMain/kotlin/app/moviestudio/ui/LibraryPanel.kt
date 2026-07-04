@@ -30,7 +30,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -43,6 +48,7 @@ import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.Character
 import app.moviestudio.Scene
+import app.moviestudio.rememberFileDropTarget
 
 /** Library tabs: the global asset library by type, plus saved characters and scenes. */
 private sealed interface LibTab {
@@ -89,12 +95,24 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     var sceneEditor by remember { mutableStateOf<Scene?>(null) }
     var showNewScene by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(10.dp)
-    ) {
+    // Dropping files from the OS (file manager, browser...) onto the panel uploads them straight
+    // into the global library; the type of each asset is inferred from the file's extension.
+    var dragOver by remember { mutableStateOf(false) }
+    val dropTarget = rememberFileDropTarget(
+        enabled = true,
+        onDragOver = { dragOver = it },
+        onDropped = { files -> viewModel.uploadDroppedFiles(files) }
+    )
+    val dropAccent = MaterialTheme.colorScheme.primary
+
+    Box(modifier = modifier.then(dropTarget)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(10.dp)
+        ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "Library",
@@ -183,7 +201,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 } else if (assets.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
-                            "Nothing here yet.\nUse ＋ Add to create or upload media.",
+                            "Nothing here yet.\nUse ＋ Add or drop files here to create or upload media.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -202,6 +220,39 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                         }
                     }
                 }
+            }
+        }
+        }
+
+        // Dotted outline revealed while files hover over the library, inviting the drop.
+        if (dragOver) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(dropAccent.copy(alpha = 0.08f))
+                    .drawBehind {
+                        val strokeWidth = 2.dp.toPx()
+                        drawRoundRect(
+                            color = dropAccent,
+                            topLeft = Offset(strokeWidth / 2f, strokeWidth / 2f),
+                            size = Size(size.width - strokeWidth, size.height - strokeWidth),
+                            cornerRadius = CornerRadius(12.dp.toPx()),
+                            style = Stroke(
+                                width = strokeWidth,
+                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 10f))
+                            )
+                        )
+                    }
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "Drop files to upload",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = dropAccent
+                )
             }
         }
     }

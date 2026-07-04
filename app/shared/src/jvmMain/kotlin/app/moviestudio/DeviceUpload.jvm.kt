@@ -42,7 +42,7 @@ private suspend fun pickFile(): File? = withContext(Dispatchers.IO) {
     File(dir, name)
 }
 
-private suspend fun putFile(
+internal suspend fun putFile(
     uploadUrl: String,
     file: File,
     contentType: String,

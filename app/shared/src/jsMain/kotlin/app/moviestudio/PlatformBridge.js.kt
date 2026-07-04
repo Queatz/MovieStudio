@@ -141,6 +141,36 @@ actual fun triggerDownload(url: String, fileName: String) {
     jsTriggerDownload(url, fileName)
 }
 
+// ------------------------------------------------------------------------------------ fullscreen
+
+private fun jsRequestVideoFullscreen(): Unit = js("""
+    (function() {
+        var video = document.getElementById('compose-video-preview');
+        if (!video) return;
+        // Native controls make sense in fullscreen (Compose transport is hidden there); pointer
+        // events must be enabled so the user can actually use them.
+        video.controls = true;
+        video.style.pointerEvents = 'auto';
+        var req = video.requestFullscreen || video.webkitRequestFullscreen || video.webkitEnterFullscreen;
+        if (req) { try { req.call(video); } catch (e) {} }
+        // Restore the decorative-overlay behavior once fullscreen is dismissed.
+        var onChange = function() {
+            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+                video.controls = false;
+                video.style.pointerEvents = 'none';
+                document.removeEventListener('fullscreenchange', onChange);
+                document.removeEventListener('webkitfullscreenchange', onChange);
+            }
+        };
+        document.addEventListener('fullscreenchange', onChange);
+        document.addEventListener('webkitfullscreenchange', onChange);
+    })()
+""")
+
+actual fun requestVideoFullscreen() {
+    jsRequestVideoFullscreen()
+}
+
 // ------------------------------------------------------------------ preview object-position
 
 private fun jsSetPreviewObjectPosition(x: Double, y: Double): Unit = js("""
@@ -359,4 +389,60 @@ actual fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean {
 actual fun stopRealtimeSpeechInput() {
     jsStopSpeechRecognition()
     jsStopServerDictation()
+}
+
+// ---------------------------------------------------------------------- waveform decoding
+
+// Fetches the audio file, decodes it with WebAudio and reduces channel 0 to [buckets] peak
+// amplitudes, returned as a comma-separated string. Decoded peaks are cached per url+buckets so
+// reopening the editor is instant. Resolves to an empty string on any failure.
+private fun jsLoadWaveform(url: String, buckets: Int): Promise<String> = js("""
+    new Promise(function(resolve) {
+        try {
+            if (!window.__msWaveCache) { window.__msWaveCache = {}; }
+            var cacheKey = buckets + '@' + url;
+            if (window.__msWaveCache[cacheKey]) { resolve(window.__msWaveCache[cacheKey]); return; }
+            var Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) { resolve(''); return; }
+            if (!window.__msWaveCtx) { window.__msWaveCtx = new Ctx(); }
+            var ctx = window.__msWaveCtx;
+            fetch(url)
+                .then(function(r) { return r.arrayBuffer(); })
+                .then(function(data) { return ctx.decodeAudioData(data); })
+                .then(function(buffer) {
+                    var channel = buffer.getChannelData(0);
+                    var n = channel.length;
+                    var per = Math.max(1, Math.floor(n / buckets));
+                    var peaks = new Array(buckets);
+                    var globalPeak = 0.00001;
+                    for (var b = 0; b < buckets; b++) {
+                        var start = b * per;
+                        var end = Math.min(n, start + per);
+                        var peak = 0;
+                        for (var i = start; i < end; i++) {
+                            var v = channel[i]; if (v < 0) v = -v;
+                            if (v > peak) peak = v;
+                        }
+                        peaks[b] = peak;
+                        if (peak > globalPeak) globalPeak = peak;
+                    }
+                    for (var j = 0; j < buckets; j++) { peaks[j] = peaks[j] / globalPeak; }
+                    var csv = peaks.join(',');
+                    window.__msWaveCache[cacheKey] = csv;
+                    resolve(csv);
+                })
+                .catch(function(e) { resolve(''); });
+        } catch (e) { resolve(''); }
+    })
+""")
+
+actual suspend fun loadAudioWaveform(url: String, buckets: Int): FloatArray? {
+    return try {
+        val csv = jsLoadWaveform(url, buckets).await()
+        if (csv.isBlank()) return null
+        val peaks = csv.split(',').mapNotNull { it.toFloatOrNull() }.toFloatArray()
+        peaks.takeIf { it.isNotEmpty() }
+    } catch (e: Throwable) {
+        null
+    }
 }

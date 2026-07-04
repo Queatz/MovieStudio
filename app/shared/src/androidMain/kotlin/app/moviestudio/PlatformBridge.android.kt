@@ -15,6 +15,10 @@ actual fun triggerDownload(url: String, fileName: String) {
     // No-op on Android.
 }
 
+actual fun requestVideoFullscreen() {
+    // No-op on Android: the preview video element is a browser feature.
+}
+
 actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double) {
     // No-op on Android: the preview video element is a browser feature.
 }
@@ -35,3 +39,6 @@ actual fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean = false
 actual fun stopRealtimeSpeechInput() {
     // No-op on Android.
 }
+
+// Waveform decoding is a browser (WebAudio) feature; Android callers use a synthetic fallback.
+actual suspend fun loadAudioWaveform(url: String, buckets: Int): FloatArray? = null
