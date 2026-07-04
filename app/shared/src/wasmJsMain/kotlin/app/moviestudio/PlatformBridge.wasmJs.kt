@@ -221,3 +221,54 @@ actual fun playSequencerTone(
 ) {
     jsPlaySequencerTone(waveform, frequencyHz, durationSeconds, volume, sampleUrl)
 }
+
+// ---------------------------------------------------------------------- realtime dictation
+
+// Web Speech API dictation: a single recognition session accumulates final + interim results and
+// reports the combined text after every event. Resolves 1 only when recognition actually started.
+@JsFun("""
+(onResult) => {
+    try {
+        const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!Recognition) { return 0; }
+        if (window.__msSpeechRec) { try { window.__msSpeechRec.stop(); } catch (e) {} }
+        const rec = new Recognition();
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.onresult = (event) => {
+            let text = '';
+            for (let i = 0; i < event.results.length; i++) {
+                text += event.results[i][0].transcript;
+            }
+            try { onResult(text); } catch (e) {}
+        };
+        rec.onend = () => { if (window.__msSpeechRec === rec) { window.__msSpeechRec = null; } };
+        window.__msSpeechRec = rec;
+        rec.start();
+        return 1;
+    } catch (e) {
+        return 0;
+    }
+}
+""")
+private external fun jsStartSpeechRecognition(onResult: (String) -> Unit): Int
+
+@JsFun("""
+() => {
+    try {
+        const rec = window.__msSpeechRec;
+        if (!rec) return;
+        window.__msSpeechRec = null;
+        rec.onresult = () => {};
+        rec.stop();
+    } catch (e) {}
+}
+""")
+private external fun jsStopSpeechRecognition()
+
+actual fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean =
+    jsStartSpeechRecognition(onResult) == 1
+
+actual fun stopRealtimeSpeechInput() {
+    jsStopSpeechRecognition()
+}

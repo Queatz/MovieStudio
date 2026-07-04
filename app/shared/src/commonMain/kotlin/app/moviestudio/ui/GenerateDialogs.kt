@@ -1,7 +1,8 @@
 package app.moviestudio.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,7 +31,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,12 +43,19 @@ import app.moviestudio.AssetType
 import app.moviestudio.GenerationSetup
 import app.moviestudio.MusicSequence
 import app.moviestudio.NetworkService
-import app.moviestudio.SEQUENCER_SCALE_SEMITONES
+import app.moviestudio.SEQUENCER_MAX_PITCH
+import app.moviestudio.SEQUENCER_MAX_TEMPO_BPM
+import app.moviestudio.SEQUENCER_MIN_TEMPO_BPM
+import app.moviestudio.SEQUENCER_STEPS_PER_MEASURE
+import app.moviestudio.SEQUENCER_VISIBLE_OCTAVES
 import app.moviestudio.SUPPORTED_IMAGE_SIZES
 import app.moviestudio.SUPPORTED_VIDEO_SIZES
 import app.moviestudio.SequencerNote
+import app.moviestudio.UploadedDeviceFile
 import app.moviestudio.VoiceClone
 import app.moviestudio.cancelMicRecording
+import app.moviestudio.closestSizeForAspect
+import app.moviestudio.isPitchInScale
 import app.moviestudio.playSequencerTone
 import app.moviestudio.sequencerRowFrequency
 import app.moviestudio.startMicRecording
@@ -83,7 +93,19 @@ fun GenerateMediaDialog(
     var sceneIds by remember { mutableStateOf(initialSetup.sceneIds) }
     var referenceImages by remember { mutableStateOf(initialSetup.referenceImages) }
     var duration by remember { mutableStateOf(initialSetup.durationSeconds.coerceIn(2.0, 15.0)) }
-    var resolution by remember { mutableStateOf(initialSetup.resolution.ifBlank { "1280*720" }) }
+    // New generations default to the size whose aspect is closest to the movie's aspect ratio;
+    // regenerations keep the size they were originally made with.
+    val movieAspect = viewModel.currentMovie?.aspectRatio ?: "16:9"
+    var resolution by remember {
+        mutableStateOf(
+            if (initialAsset != null && initialSetup.resolution.isNotBlank()) {
+                initialSetup.resolution
+            } else {
+                val sizes = if (initialSetup.kind == "image") SUPPORTED_IMAGE_SIZES else SUPPORTED_VIDEO_SIZES
+                closestSizeForAspect(sizes, movieAspect)
+            }
+        )
+    }
 
     val setup = GenerationSetup(
         kind = kind,
@@ -105,10 +127,11 @@ fun GenerateMediaDialog(
         else -> "WAN 2.7 T2V (text-to-video)"
     }
 
-    // Keep the selected size valid when switching between video and image generation.
+    // Keep the selected size valid when switching between video and image generation, again
+    // preferring the size closest to the movie's aspect ratio.
     LaunchedEffect(kind) {
         val sizes = if (kind == "image") SUPPORTED_IMAGE_SIZES else SUPPORTED_VIDEO_SIZES
-        if (resolution !in sizes) resolution = sizes.first()
+        if (resolution !in sizes) resolution = closestSizeForAspect(sizes, movieAspect)
     }
 
     val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
@@ -241,14 +264,39 @@ fun GenerateMediaDialog(
             }
 
             SectionLabel("Extra reference images (R2V)")
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                imageAssets.take(12).forEach { image ->
+            var uploadingReference by remember { mutableStateOf(false) }
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Custom reference images: upload any picture straight from the device.
+                GhostPillButton(
+                    if (uploadingReference) "Uploading..." else "📤 Upload custom",
+                    compact = true,
+                    enabled = !uploadingReference
+                ) {
+                    uploadingReference = true
+                    viewModel.uploadReferenceImage { url ->
+                        uploadingReference = false
+                        if (url != null) referenceImages = referenceImages + url
+                    }
+                }
+                val visibleImages = imageAssets.take(12)
+                visibleImages.forEach { image ->
                     val selected = image.ossUrl in referenceImages
                     val label = "📎 " + (image.description ?: "image").take(16)
                     if (selected) {
                         PillButton(label, compact = true) { referenceImages = referenceImages - image.ossUrl }
                     } else {
                         GhostPillButton(label, compact = true) { referenceImages = referenceImages + image.ossUrl }
+                    }
+                }
+                // Selected references that are not among the shown library images (e.g. fresh
+                // custom uploads) stay visible and removable.
+                referenceImages.filter { url -> visibleImages.none { it.ossUrl == url } }.forEach { url ->
+                    RemovableChip("📎 " + url.substringAfterLast('/').take(16)) {
+                        referenceImages = referenceImages - url
                     }
                 }
                 if (imageAssets.isEmpty()) {
@@ -385,8 +433,39 @@ fun GenerateMusicDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
 }
 
 /**
- * The mini music sequencer: an always-consonant pentatonic grid, synthesized server-side into a
- * WAV music asset. The pattern is stored on the asset so it can be reopened and edited later.
+ * The (column, bottom-up row) grid cell under a pointer [offset]. Column 0 is the leftmost step of
+ * the visible measure; row 0 is the lowest visible pitch.
+ */
+private fun sequencerGridCell(
+    offset: Offset,
+    widthPx: Int,
+    heightPx: Int,
+    cols: Int,
+    rows: Int
+): Pair<Int, Int> {
+    val col = (offset.x / (widthPx / cols.toFloat())).toInt().coerceIn(0, cols - 1)
+    val visualRow = (offset.y / (heightPx / rows.toFloat())).toInt().coerceIn(0, rows - 1)
+    return col to (rows - 1 - visualRow)
+}
+
+/** A compact glyph identifying a note's instrument, drawn on the note's start cell. */
+private fun instrumentGlyph(waveform: String): String = when (waveform) {
+    "square" -> "\u25FC"   // ◼
+    "saw" -> "\u25E4"      // ◤
+    "triangle" -> "\u25B3" // △
+    "sample" -> "\uD83D\uDD0A" // 🔊
+    else -> "\u223F"       // ∿ sine
+}
+
+/**
+ * The mini music sequencer: a piano-roll grid synthesized server-side into a WAV music asset.
+ * The pattern is stored on the asset so it can be reopened and edited later.
+ *
+ * Interactions: click a cell to place/remove a note, drag horizontally to create a longer note or
+ * to extend/contract an existing one. Every note carries its own instrument (shown by a glyph);
+ * the instrument picker below sets the instrument used for newly placed notes. The grid shows one
+ * measure and a two-octave window at a time — arrows move between measures and octaves, ± add or
+ * remove measures, the key menu picks major/minor and "Show all pitches" reveals off-key rows.
  */
 @Composable
 fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: () -> Unit) {
@@ -395,19 +474,82 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
             runCatching { setupJson.decodeFromString(MusicSequence.serializer(), it) }.getOrNull()
         } ?: MusicSequence()
     }
-    val rows = SEQUENCER_SCALE_SEMITONES.size // pentatonic rows, shared with the synthesizer
-    val steps = 16
+    val stepsPerMeasure = SEQUENCER_STEPS_PER_MEASURE
 
     var name by remember { mutableStateOf(initial.name) }
-    var tempo by remember { mutableStateOf(initial.tempoBpm) }
+    var tempo by remember {
+        mutableStateOf(initial.tempoBpm.coerceIn(SEQUENCER_MIN_TEMPO_BPM, SEQUENCER_MAX_TEMPO_BPM))
+    }
     var loops by remember { mutableStateOf(initial.loops) }
+    // The "current instrument": stamped onto newly placed notes (each note keeps its own) and
+    // kept as the sequence-level fallback for patterns saved before per-note instruments.
     var waveform by remember { mutableStateOf(initial.waveform) }
     var sampleUrl by remember { mutableStateOf(initial.sampleUrl) }
     var sampleName by remember { mutableStateOf(initial.sampleName) }
-    var notes by remember { mutableStateOf(initial.notes.toSet()) }
+    var notes by remember {
+        mutableStateOf(initial.notes.map { it.copy(lengthSteps = it.lengthSteps.coerceAtLeast(1)) })
+    }
+    // Musical key the grid highlights, and how many 16-step measures the pattern spans.
+    var scale by remember { mutableStateOf(initial.scale) }
+    var measures by remember { mutableStateOf(initial.measures.coerceIn(1, 32)) }
+    // Which measure is on screen, and the lowest visible octave (octave arrows shift it).
+    var currentMeasure by remember { mutableStateOf(0) }
+    var octaveBase by remember { mutableStateOf(24) } // start around C4
+    // Reveal every chromatic pitch (off-key rows drawn dimmer), not just the in-key rows.
+    var showAll by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
+    // Generate a brand-new sound effect without leaving the sequencer; once its job finishes it
+    // shows up among the sample instruments below (like every library sound effect).
+    var showSfxDialog by remember { mutableStateOf(false) }
     var playing by remember { mutableStateOf(false) }
     var currentStep by remember { mutableStateOf(-1) }
+    // The note currently being created/resized by a horizontal drag on the grid.
+    var resizingNote by remember { mutableStateOf<SequencerNote?>(null) }
+
+    // Total step count across all measures, plus the pitches shown in the current octave window
+    // (bottom-to-top, low-to-high). "Show all" lists every semitone; otherwise only in-key rows.
+    val totalSteps = measures * stepsPerMeasure
+    val visiblePitches = (octaveBase until octaveBase + SEQUENCER_VISIBLE_OCTAVES * 12)
+        .filter { showAll || isPitchInScale(it, scale) }
+    val rows = visiblePitches.size
+    val maxOctaveBase = (SEQUENCER_MAX_PITCH - SEQUENCER_VISIBLE_OCTAVES * 12).coerceAtLeast(0)
+
+    // Sounds one note through the platform audio engine, honoring its own instrument (falling
+    // back to the current instrument for notes saved before per-note instruments).
+    fun playNote(note: SequencerNote, durationSeconds: Double) {
+        playSequencerTone(
+            waveform = note.waveform ?: waveform,
+            frequencyHz = sequencerRowFrequency(note.pitch),
+            durationSeconds = durationSeconds,
+            volume = 0.35,
+            sampleUrl = note.sampleUrl ?: sampleUrl
+        )
+    }
+
+    /** The note whose span covers the given cell, if any. */
+    fun noteCovering(step: Int, pitch: Int): SequencerNote? =
+        notes.lastOrNull { it.pitch == pitch && it.covers(step) }
+
+    /** Plays every note sounding at [step] together (chord preview). */
+    fun playColumn(step: Int) {
+        notes.filter { it.covers(step) }.forEach { playNote(it, 0.3) }
+    }
+
+    /** Places a new note at the cell with the current instrument and previews the whole column. */
+    fun placeNote(step: Int, pitch: Int): SequencerNote {
+        val note = SequencerNote(
+            step = step,
+            pitch = pitch,
+            lengthSteps = 1,
+            waveform = waveform,
+            sampleUrl = if (waveform == "sample") sampleUrl else null,
+            sampleName = if (waveform == "sample") sampleName else null
+        )
+        notes = notes + note
+        // Audible feedback: the new note plays along all other notes at this position.
+        playColumn(step)
+        return note
+    }
 
     // Looping playback: the pattern repeats until stopped, sounding each step's notes through
     // the platform audio engine while the playing column is highlighted in pink.
@@ -419,18 +561,14 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
         var step = 0
         while (playing) {
             currentStep = step
-            val stepSeconds = 60.0 / tempo.coerceIn(40, 240) / 4.0
+            currentMeasure = step / stepsPerMeasure // follow playback across measures
+            val stepSeconds = 60.0 / tempo.coerceIn(SEQUENCER_MIN_TEMPO_BPM, SEQUENCER_MAX_TEMPO_BPM) / 4.0
             notes.filter { it.step == step }.forEach { note ->
-                playSequencerTone(
-                    waveform = waveform,
-                    frequencyHz = sequencerRowFrequency(note.pitch),
-                    durationSeconds = stepSeconds * 1.9,
-                    volume = 0.35,
-                    sampleUrl = sampleUrl
-                )
+                // Held notes ring for their full dragged length.
+                playNote(note, stepSeconds * (note.lengthSteps.coerceAtLeast(1) + 0.9))
             }
             delay((stepSeconds * 1000).toLong())
-            step = (step + 1) % steps
+            step = (step + 1) % totalSteps
         }
     }
 
@@ -444,7 +582,9 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
         )
         Spacer(Modifier.height(10.dp))
 
-        // The grid: bottom row = lowest note. Rendered top-down.
+        // The grid: bottom row = lowest note. Rendered top-down. A single pointer surface
+        // handles both taps (toggle a note) and horizontal drags (create long notes or
+        // extend/contract existing ones).
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -452,53 +592,196 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
                 .background(Color(0xFF17151C))
                 .padding(8.dp)
         ) {
-            for (row in (rows - 1) downTo 0) {
-                Row {
-                    for (step in 0 until steps) {
-                        val note = SequencerNote(step, row)
-                        val active = note in notes
-                        val isCurrent = playing && step == currentStep
-                        val beatShade = if ((step / 4) % 2 == 0) Color(0xFF232030) else Color(0xFF1D1A27)
-                        // The playing column lights up pink while the loop passes over it.
-                        val cellColor = when {
-                            active && isCurrent -> Color(0xFFFF5A9E)
-                            active -> Color(0xFF8F7BFF)
-                            isCurrent -> Color(0xFF3A2136)
-                            else -> beatShade
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Tap: toggle the note under the pointer. The gesture blocks restart whenever
+                    // the visible pitch window / measure changes so they never read a stale window.
+                    .pointerInput(scale, showAll, octaveBase, currentMeasure) {
+                        detectTapGestures { offset ->
+                            val (col, rowIndex) = sequencerGridCell(offset, size.width, size.height, stepsPerMeasure, rows)
+                            val pitch = visiblePitches.getOrNull(rowIndex) ?: return@detectTapGestures
+                            val step = currentMeasure * stepsPerMeasure + col
+                            val existing = noteCovering(step, pitch)
+                            if (existing != null) {
+                                notes = notes - existing
+                            } else {
+                                placeNote(step, pitch)
+                            }
                         }
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(20.dp)
-                                .padding(1.dp)
-                                .clip(RoundedCornerShape(4.dp)) // clip BEFORE clickable
-                                .background(cellColor)
-                                .clickable {
-                                    notes = if (active) notes - note else notes + note
-                                    if (!active) {
-                                        // Audible feedback for the note just placed.
-                                        playSequencerTone(
-                                            waveform = waveform,
-                                            frequencyHz = sequencerRowFrequency(row),
-                                            durationSeconds = 0.3,
-                                            volume = 0.35,
-                                            sampleUrl = sampleUrl
+                    }
+                    // Horizontal drag: place a note and stretch it, or resize an existing note.
+                    .pointerInput(scale, showAll, octaveBase, currentMeasure) {
+                        detectDragGestures(
+                            onDragStart = { offset ->
+                                val (col, rowIndex) = sequencerGridCell(offset, size.width, size.height, stepsPerMeasure, rows)
+                                val pitch = visiblePitches.getOrNull(rowIndex)
+                                if (pitch != null) {
+                                    val step = currentMeasure * stepsPerMeasure + col
+                                    resizingNote = noteCovering(step, pitch) ?: placeNote(step, pitch)
+                                }
+                            },
+                            onDrag = { change, _ ->
+                                change.consume()
+                                val anchor = resizingNote ?: return@detectDragGestures
+                                val (col, _) = sequencerGridCell(change.position, size.width, size.height, stepsPerMeasure, rows)
+                                val step = currentMeasure * stepsPerMeasure + col
+                                val length = (step - anchor.step + 1).coerceIn(1, totalSteps - anchor.step)
+                                if (length != anchor.lengthSteps) {
+                                    val updated = anchor.copy(lengthSteps = length)
+                                    notes = notes.map {
+                                        if (it.step == anchor.step && it.pitch == anchor.pitch) updated else it
+                                    }
+                                    resizingNote = updated
+                                }
+                            },
+                            onDragEnd = { resizingNote = null },
+                            onDragCancel = { resizingNote = null }
+                        )
+                    }
+            ) {
+                Column {
+                    for (rowIndex in (rows - 1) downTo 0) {
+                        val pitch = visiblePitches[rowIndex]
+                        val inScale = isPitchInScale(pitch, scale)
+                        Row {
+                            for (col in 0 until stepsPerMeasure) {
+                                val step = currentMeasure * stepsPerMeasure + col
+                                val covering = noteCovering(step, pitch)
+                                val active = covering != null
+                                val isStart = covering?.step == step
+                                val isEnd = covering != null && !covering.covers(step + 1)
+                                val isCurrent = playing && step == currentStep
+                                // In-key rows use the normal beat shading; off-key rows (only shown
+                                // via "Show all pitches") are tinted so the scale still stands out.
+                                val beatShade = when {
+                                    !inScale && (col / 4) % 2 == 0 -> Color(0xFF2A2130)
+                                    !inScale -> Color(0xFF241B29)
+                                    (col / 4) % 2 == 0 -> Color(0xFF232030)
+                                    else -> Color(0xFF1D1A27)
+                                }
+                                // The playing column lights up pink while the loop passes over it.
+                                val cellColor = when {
+                                    active && isCurrent -> Color(0xFFFF5A9E)
+                                    active && inScale -> Color(0xFF8F7BFF)
+                                    active -> Color(0xFFC08BFF) // off-key note
+                                    isCurrent -> Color(0xFF3A2136)
+                                    else -> beatShade
+                                }
+                                // Held notes render as one continuous bar across their steps.
+                                val shape = when {
+                                    !active || (isStart && isEnd) -> RoundedCornerShape(4.dp)
+                                    isStart -> RoundedCornerShape(topStart = 4.dp, bottomStart = 4.dp)
+                                    isEnd -> RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp)
+                                    else -> RoundedCornerShape(0.dp)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(16.dp)
+                                        .padding(
+                                            start = if (active && !isStart) 0.dp else 1.dp,
+                                            end = if (active && !isEnd) 0.dp else 1.dp,
+                                            top = 1.dp,
+                                            bottom = 1.dp
+                                        )
+                                        .clip(shape)
+                                        .background(cellColor),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    // A small glyph marks the note's instrument at its start cell.
+                                    if (active && isStart) {
+                                        Text(
+                                            instrumentGlyph(covering.waveform ?: waveform),
+                                            fontSize = 9.sp,
+                                            color = Color(0xFF1B1620)
                                         )
                                     }
                                 }
-                        )
+                            }
+                        }
                     }
                 }
             }
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Click to place a note, drag sideways to hold it. Use ± to add or remove measures; " +
+                "arrows move between measures and octaves.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(6.dp))
+
+        // Measure navigation / add-remove, and octave-window shifting.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RoundIconButton("\u25C0", contentDescription = "Previous measure", enabled = currentMeasure > 0) {
+                if (currentMeasure > 0) currentMeasure--
+            }
+            Text(
+                "Measure ${currentMeasure + 1}/$measures",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+            RoundIconButton("\u25B6", contentDescription = "Next measure", enabled = currentMeasure < measures - 1) {
+                if (currentMeasure < measures - 1) currentMeasure++
+            }
+            Spacer(Modifier.width(10.dp))
+            RoundIconButton("\u2796", contentDescription = "Remove measure", enabled = measures > 1) {
+                if (measures > 1) {
+                    measures--
+                    if (currentMeasure > measures - 1) currentMeasure = measures - 1
+                    notes = notes.filter { it.step < measures * stepsPerMeasure }
+                }
+            }
+            RoundIconButton("\u2795", contentDescription = "Add measure", enabled = measures < 32) {
+                if (measures < 32) {
+                    measures++
+                    currentMeasure = measures - 1
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                "Octave",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(end = 2.dp)
+            )
+            RoundIconButton("\u25BC", contentDescription = "Lower octave", enabled = octaveBase > 0) {
+                octaveBase = (octaveBase - 12).coerceIn(0, maxOctaveBase)
+            }
+            RoundIconButton("\u25B2", contentDescription = "Higher octave", enabled = octaveBase < maxOctaveBase) {
+                octaveBase = (octaveBase + 12).coerceIn(0, maxOctaveBase)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        // Key selector and reveal-all-pitches toggle.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            DropdownSelector(
+                label = null,
+                options = listOf("major", "minor"),
+                selected = scale,
+                display = { it.replaceFirstChar { c -> c.uppercase() } },
+                modifier = Modifier.width(150.dp)
+            ) { scale = it }
+            Spacer(Modifier.weight(1f))
+            Text(
+                "Show all pitches",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(end = 8.dp)
+            )
+            Switch(checked = showAll, onCheckedChange = { showAll = it })
+        }
+        Spacer(Modifier.height(8.dp))
 
         Row {
             Column(Modifier.weight(1f)) {
                 LabeledSlider(
                     label = "Tempo",
                     value = tempo.toFloat(),
-                    valueRange = 60f..200f,
+                    valueRange = SEQUENCER_MIN_TEMPO_BPM.toFloat()..SEQUENCER_MAX_TEMPO_BPM.toFloat(),
                     valueText = "$tempo BPM",
                     onValueChange = { tempo = it.roundToInt() }
                 )
@@ -514,32 +797,38 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
                 )
             }
         }
-        // Instrument: the four classic waveforms plus every sound effect in the library, played
-        // as a pitch-shifted sample.
+        // Instrument for newly placed notes: the four classic waveforms plus every sound effect
+        // in the library, played as a pitch-shifted sample. Each note remembers the instrument
+        // it was placed with, so a single pattern can mix instruments freely.
         val sfxAssets = viewModel.libraryAssets.filter { it.type == AssetType.AUDIO && it.ossUrl.isNotBlank() }
         val instrumentOptions: List<Pair<String, Asset?>> =
             listOf("sine", "square", "saw", "triangle").map { it to null } + sfxAssets.map { "sample" to it }
         val selectedInstrument = instrumentOptions.firstOrNull { (wf, asset) ->
             if (waveform == "sample") asset?.ossUrl == sampleUrl else wf == waveform && asset == null
         } ?: instrumentOptions.first()
-        DropdownSelector(
-            label = "Instrument",
-            options = instrumentOptions,
-            selected = selectedInstrument,
-            display = { (wf, asset) ->
-                if (asset != null) "💥 " + (asset.description ?: asset.aiPrompt ?: "Sound effect").take(28)
-                else wf.replaceFirstChar { c -> c.uppercase() }
+        Row(verticalAlignment = Alignment.Bottom) {
+            DropdownSelector(
+                label = "Instrument (for new notes)",
+                options = instrumentOptions,
+                selected = selectedInstrument,
+                display = { (wf, asset) ->
+                    if (asset != null) "💥 " + (asset.description ?: asset.aiPrompt ?: "Sound effect").take(28)
+                    else wf.replaceFirstChar { c -> c.uppercase() }
+                },
+                modifier = Modifier.weight(1f)
+            ) { (wf, asset) ->
+                if (asset != null) {
+                    waveform = "sample"
+                    sampleUrl = asset.ossUrl
+                    sampleName = (asset.description ?: asset.aiPrompt ?: "Sound effect").take(40)
+                } else {
+                    waveform = wf
+                    sampleUrl = null
+                    sampleName = null
+                }
             }
-        ) { (wf, asset) ->
-            if (asset != null) {
-                waveform = "sample"
-                sampleUrl = asset.ossUrl
-                sampleName = (asset.description ?: asset.aiPrompt ?: "Sound effect").take(40)
-            } else {
-                waveform = wf
-                sampleUrl = null
-                sampleName = null
-            }
+            Spacer(Modifier.width(8.dp))
+            GhostPillButton("💥 Generate sound effect", compact = true) { showSfxDialog = true }
         }
 
         DialogActions {
@@ -549,7 +838,7 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
                 enabled = notes.isNotEmpty() || playing
             ) { playing = !playing }
             ActionSpacer()
-            GhostPillButton("Clear", compact = true) { notes = emptySet() }
+            GhostPillButton("Clear", compact = true) { notes = emptyList() }
             Spacer(Modifier.weight(1f))
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
@@ -559,16 +848,21 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
                 val sequence = MusicSequence(
                     name = name.ifBlank { "Sequence" },
                     tempoBpm = tempo,
-                    steps = steps,
+                    steps = totalSteps,
                     loops = loops,
                     waveform = waveform,
                     sampleUrl = sampleUrl,
                     sampleName = sampleName,
-                    notes = notes.toList().sortedWith(compareBy({ it.step }, { it.pitch }))
+                    scale = scale,
+                    notes = notes.sortedWith(compareBy({ it.step }, { it.pitch }))
                 )
                 viewModel.createSequenceAsset(sequence) { onDismiss() }
             }
         }
+    }
+
+    if (showSfxDialog) {
+        SoundEffectDialog(viewModel) { showSfxDialog = false }
     }
 }
 
@@ -682,6 +976,8 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
     var working by remember { mutableStateOf(false) }
     var recording by remember { mutableStateOf(false) }
     var recordSeconds by remember { mutableStateOf(0) }
+    // The finished microphone capture, kept until the user names the voice and clones it.
+    var recordedSample by remember { mutableStateOf<UploadedDeviceFile?>(null) }
     var deleteTarget by remember { mutableStateOf<VoiceClone?>(null) }
     val scope = rememberCoroutineScope()
 
@@ -730,6 +1026,7 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
             if (!recording) {
                 PillButton("🔴 Record", compact = true, enabled = !working) {
                     scope.launch {
+                        recordedSample = null
                         recording = startMicRecording()
                         if (!recording) {
                             viewModel.errorMessage = "Microphone unavailable or permission denied"
@@ -737,10 +1034,12 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
                     }
                 }
             } else {
+                // Stopping must always be possible — the sample is kept and cloning happens
+                // below once the voice has a name.
                 PillButton(
-                    "⏹ Stop & clone",
+                    "⏹ Stop recording",
                     compact = true,
-                    enabled = name.isNotBlank() && recordSeconds >= 5 && !working,
+                    enabled = !working,
                     container = MaterialTheme.colorScheme.error,
                     contentColor = MaterialTheme.colorScheme.onError
                 ) {
@@ -748,14 +1047,11 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
                     working = true
                     scope.launch {
                         val uploaded = stopMicRecordingAndUpload()
+                        working = false
                         if (uploaded == null) {
-                            working = false
                             viewModel.errorMessage = "Recording failed — nothing was captured"
                         } else {
-                            viewModel.createVoiceCloneFromAudioUrl(name.trim(), uploaded.ossUrl) { clone ->
-                                working = false
-                                if (clone != null) onClose(clone)
-                            }
+                            recordedSample = uploaded
                         }
                     }
                 }
@@ -769,6 +1065,35 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.error,
                     fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+        recordedSample?.let { sample ->
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "✅ Sample ready (${formatDuration(sample.durationSeconds)})",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold
+                )
+                PillButton(
+                    if (working) "Cloning..." else "🧬 Clone from recording",
+                    compact = true,
+                    enabled = name.isNotBlank() && !working
+                ) {
+                    working = true
+                    viewModel.createVoiceCloneFromAudioUrl(name.trim(), sample.ossUrl) { clone ->
+                        working = false
+                        if (clone != null) onClose(clone)
+                    }
+                }
+            }
+            if (name.isBlank()) {
+                Text(
+                    "Give the voice a name above to enable cloning.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -822,6 +1147,100 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
             onConfirm = { viewModel.deleteVoiceClone(clone.id) },
             onDismiss = { deleteTarget = null }
         )
+    }
+}
+
+/**
+ * Records a voice clip with the device microphone and uploads it into the library as voice
+ * media (with an auto-generated transcript), ready to drop on the timeline like any other sound.
+ */
+@Composable
+fun RecordVoiceDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var recording by remember { mutableStateOf(false) }
+    var recordSeconds by remember { mutableStateOf(0) }
+    var saving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    // Elapsed-time ticker while recording.
+    LaunchedEffect(recording) {
+        recordSeconds = 0
+        while (recording) {
+            delay(1000)
+            recordSeconds++
+        }
+    }
+    // Abandoning the dialog mid-recording discards the capture.
+    DisposableEffect(Unit) {
+        onDispose { cancelMicRecording() }
+    }
+
+    StudioDialog(title = "Record voice", onDismiss = onDismiss, width = 460.dp) {
+        Text(
+            "Record narration or any voice line with your microphone. The recording lands in " +
+                "the voice library (with an auto-generated transcript) and can be placed on the " +
+                "timeline like any other sound.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        StudioTextField(
+            value = name,
+            onValueChange = { name = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Name (optional)",
+            placeholder = "Narration take 1",
+            singleLine = true
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!recording) {
+                PillButton(if (saving) "Uploading..." else "🔴 Record", compact = true, enabled = !saving) {
+                    scope.launch {
+                        recording = startMicRecording()
+                        if (!recording) {
+                            viewModel.errorMessage = "Microphone unavailable or permission denied"
+                        }
+                    }
+                }
+            } else {
+                PillButton(
+                    "⏹ Stop & save",
+                    compact = true,
+                    enabled = !saving,
+                    container = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                ) {
+                    recording = false
+                    saving = true
+                    scope.launch {
+                        val uploaded = stopMicRecordingAndUpload()
+                        if (uploaded == null) {
+                            saving = false
+                            viewModel.errorMessage = "Recording failed — nothing was captured"
+                        } else {
+                            viewModel.createVoiceRecordingAsset(name.trim(), uploaded) {
+                                saving = false
+                                onDismiss()
+                            }
+                        }
+                    }
+                }
+                GhostPillButton("Discard", compact = true) {
+                    recording = false
+                    cancelMicRecording()
+                }
+                Text(
+                    "● ${formatDuration(recordSeconds.toDouble())}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+        DialogActions {
+            GhostPillButton("Cancel") { onDismiss() }
+        }
     }
 }
 

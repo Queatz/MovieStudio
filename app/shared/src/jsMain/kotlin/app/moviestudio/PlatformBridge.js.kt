@@ -215,3 +215,55 @@ actual fun playSequencerTone(
 ) {
     jsPlaySequencerTone(waveform, frequencyHz, durationSeconds, volume, sampleUrl)
 }
+
+// ---------------------------------------------------------------------- realtime dictation
+
+// Web Speech API dictation: a single recognition session accumulates final + interim results and
+// reports the combined text after every event. Returns false when the API is unavailable.
+// NOTE: the IIFE must NOT redeclare a parameter named like the Kotlin parameter — shadowing makes
+// the compiler rename the Kotlin parameter (onResult -> onResult_0) without rewriting the js()
+// code, which produced a ReferenceError at runtime and silently broke dictation.
+private fun jsStartSpeechRecognition(onResult: (String) -> Unit): Boolean = js("""
+    (function() {
+        try {
+            var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!Recognition) { return false; }
+            if (window.__msSpeechRec) { try { window.__msSpeechRec.stop(); } catch (e) {} }
+            var rec = new Recognition();
+            rec.continuous = true;
+            rec.interimResults = true;
+            rec.onresult = function(event) {
+                var text = '';
+                for (var i = 0; i < event.results.length; i++) {
+                    text += event.results[i][0].transcript;
+                }
+                try { onResult(text); } catch (e) {}
+            };
+            rec.onend = function() { if (window.__msSpeechRec === rec) { window.__msSpeechRec = null; } };
+            window.__msSpeechRec = rec;
+            rec.start();
+            return true;
+        } catch (e) {
+            return false;
+        }
+    })()
+""")
+
+private fun jsStopSpeechRecognition(): Unit = js("""
+    (function() {
+        try {
+            var rec = window.__msSpeechRec;
+            if (!rec) return;
+            window.__msSpeechRec = null;
+            rec.onresult = function() {};
+            rec.stop();
+        } catch (e) {}
+    })()
+""")
+
+actual fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean =
+    jsStartSpeechRecognition(onResult)
+
+actual fun stopRealtimeSpeechInput() {
+    jsStopSpeechRecognition()
+}

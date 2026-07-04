@@ -103,6 +103,20 @@ fun Route.movieRoutes() {
             }
         }
 
+        // Updates a track (rename, reorder via zIndex).
+        put("/{movieId}/tracks/{trackId}") {
+            try {
+                val movieId = call.parameters["movieId"] ?: return@put call.respond(HttpStatusCode.BadRequest, "Missing movieId")
+                val trackId = call.parameters["trackId"] ?: return@put call.respond(HttpStatusCode.BadRequest, "Missing trackId")
+                val track = call.receive<Track>()
+                val trackWithIds = track.copy(id = trackId, movieId = movieId)
+                val updated = TrackRepository.update(trackWithIds)
+                call.respond(HttpStatusCode.OK, updated)
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+
         delete("/{movieId}/tracks/{trackId}") {
             try {
                 val movieId = call.parameters["movieId"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing movieId")

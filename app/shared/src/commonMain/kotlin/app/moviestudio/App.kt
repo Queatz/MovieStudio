@@ -18,6 +18,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -25,13 +26,17 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.moviestudio.ui.DashboardScreen
 import app.moviestudio.ui.EditorScreen
+import app.moviestudio.ui.KeyModifierState
 import app.moviestudio.ui.TextInputFocusTracker
 import kotlinx.coroutines.delay
 
 /**
  * Movie Studio root. Hosts the dashboard (movie list) and the editor, applies the studio theme
- * (auto light/dark) and owns two global behaviors:
- * - the space-bar play/pause shortcut (active only while no text input is focused), and
+ * (auto light/dark) and owns the global behaviors:
+ * - the space-bar play/pause shortcut (active only while no text input is focused),
+ * - arrow-key playhead stepping (1s, or 1min with Ctrl) and ESC leaving fullscreen playback,
+ * - Delete/Backspace removing the selected timeline clip,
+ * - Ctrl-state tracking for snap-dragging, and
  * - the transient error toast.
  */
 @Composable
@@ -54,16 +59,38 @@ fun App() {
                 .focusRequester(rootFocus)
                 .focusable()
                 .onPreviewKeyEvent { event ->
-                    // Space toggles playback (including restart at the end) while not typing.
-                    if (event.key == Key.Spacebar &&
-                        event.type == KeyEventType.KeyDown &&
-                        !TextInputFocusTracker.anyFocused &&
-                        viewModel.currentScreen == Screen.EDITOR
-                    ) {
-                        viewModel.togglePlayback()
-                        true
-                    } else {
-                        false
+                    // Pointer gestures (e.g. Ctrl-snap drags) read the live Ctrl state from here.
+                    KeyModifierState.ctrlDown = event.isCtrlPressed
+                    val editingText = TextInputFocusTracker.anyFocused
+                    val inEditor = viewModel.currentScreen == Screen.EDITOR
+                    when {
+                        // Space toggles playback (including restart at the end) while not typing.
+                        event.key == Key.Spacebar && event.type == KeyEventType.KeyDown &&
+                            !editingText && inEditor -> {
+                            viewModel.togglePlayback()
+                            true
+                        }
+                        // Arrow keys step the playhead by a second — or a minute with Ctrl held.
+                        (event.key == Key.DirectionLeft || event.key == Key.DirectionRight) &&
+                            event.type == KeyEventType.KeyDown && !editingText && inEditor -> {
+                            val step = if (event.isCtrlPressed) 60f else 1f
+                            viewModel.seekBy(if (event.key == Key.DirectionLeft) -step else step)
+                            true
+                        }
+                        // Delete/Backspace removes the selected timeline clip while not typing.
+                        (event.key == Key.Delete || event.key == Key.Backspace) &&
+                            event.type == KeyEventType.KeyDown && !editingText && inEditor &&
+                            viewModel.selectedClipId != null -> {
+                            viewModel.selectedClipId?.let { viewModel.deleteClip(it) }
+                            true
+                        }
+                        // ESC leaves fullscreen playback.
+                        event.key == Key.Escape && event.type == KeyEventType.KeyDown &&
+                            viewModel.isFullscreenPlayback -> {
+                            viewModel.exitFullscreenPlayback()
+                            true
+                        }
+                        else -> false
                     }
                 }
                 .background(MaterialTheme.colorScheme.background)

@@ -50,6 +50,18 @@ class Phase2IntegrationTest {
         assertNotNull(url)
         assertTrue(url.contains(objectKey), "URL should contain the object key: $url")
         assertTrue(url.startsWith("http://") || url.startsWith("https://"), "URL should be http/https: $url")
+
+        // The read URL for the object (plain public URL on the unconfigured dev/CI path).
+        val downloadUrl = OssService.downloadUrl(objectKey)
+        assertTrue(downloadUrl.contains(objectKey), "Download URL should contain the object key: $downloadUrl")
+        assertTrue(downloadUrl.startsWith("https://"), "Download URL should be https: $downloadUrl")
+
+        // The Content-Type the PUT must send is derived from the object key's extension and is
+        // part of the upload URL's signature.
+        assertEquals("video/mp4", OssService.uploadContentType(objectKey))
+        assertEquals("image/png", OssService.uploadContentType("uploads/123-picture.png"))
+        assertEquals("audio/wav", OssService.uploadContentType("music-sequences/seq.wav"))
+        assertEquals("application/octet-stream", OssService.uploadContentType("uploads/unknown.bin"))
     }
 
     @Test
@@ -192,6 +204,11 @@ class Phase2IntegrationTest {
         val uploadUrlBody = json.decodeFromString(UploadUrlResponse.serializer(), uploadUrlResponse.bodyAsText())
         assertNotNull(uploadUrlBody.uploadUrl)
         assertEquals("uploads/assets/test.mp4", uploadUrlBody.objectKey)
+        assertTrue(
+            uploadUrlBody.downloadUrl.contains("uploads/assets/test.mp4"),
+            "Download URL should point at the object: ${uploadUrlBody.downloadUrl}"
+        )
+        assertEquals("video/mp4", uploadUrlBody.contentType)
 
         // 5. Save Asset
         val assetId = UUID.randomUUID().toString()

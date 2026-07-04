@@ -8,7 +8,14 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /** Response returned by the server when requesting a pre-signed upload URL for an object key. */
-data class UploadUrlResponse(val uploadUrl: String, val objectKey: String)
+data class UploadUrlResponse(
+    val uploadUrl: String,
+    val objectKey: String,
+    /** Long-lived signed GET URL to persist as the asset's read URL (objects are private on OSS). */
+    val downloadUrl: String,
+    /** The exact Content-Type the PUT must send; it is part of the upload URL's signature. */
+    val contentType: String
+)
 
 object NetworkService {
     private val client = getHttpFetchClient()
@@ -63,6 +70,12 @@ object NetworkService {
     suspend fun createTrack(movieId: String, track: Track): Track {
         val body = json.encodeToString(Track.serializer(), track)
         val responseText = client.post(url("/api/movies/$movieId/tracks"), body)
+        return json.decodeFromString(Track.serializer(), responseText)
+    }
+
+    suspend fun updateTrack(movieId: String, track: Track): Track {
+        val body = json.encodeToString(Track.serializer(), track)
+        val responseText = client.put(url("/api/movies/$movieId/tracks/${track.id}"), body)
         return json.decodeFromString(Track.serializer(), responseText)
     }
 
@@ -145,9 +158,14 @@ object NetworkService {
         val body = buildJsonObject { put("objectKey", objectKey) }.toString()
         val responseText = client.post(url("/api/assets/upload-url"), body)
         val obj = json.parseToJsonElement(responseText).jsonObject
+        val uploadUrl = obj["uploadUrl"]?.jsonPrimitive?.content.orEmpty()
         return UploadUrlResponse(
-            uploadUrl = obj["uploadUrl"]?.jsonPrimitive?.content.orEmpty(),
-            objectKey = obj["objectKey"]?.jsonPrimitive?.content.orEmpty()
+            uploadUrl = uploadUrl,
+            objectKey = obj["objectKey"]?.jsonPrimitive?.content.orEmpty(),
+            downloadUrl = obj["downloadUrl"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+                ?: uploadUrl.substringBefore('?'),
+            contentType = obj["contentType"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+                ?: "application/octet-stream"
         )
     }
 

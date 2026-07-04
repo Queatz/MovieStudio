@@ -2,12 +2,15 @@ package app.moviestudio.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,15 +30,19 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -43,6 +50,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import app.moviestudio.startRealtimeSpeechInput
+import app.moviestudio.stopRealtimeSpeechInput
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Tracks whether any studio text input currently has keyboard focus. The editor uses this so the
@@ -66,6 +76,12 @@ val StudioFieldShape = RoundedCornerShape(18.dp)
 /**
  * The app-wide text input: large rounded corners and a 50% white-alpha background (global theme
  * rules), plus focus bookkeeping for the space-bar playback shortcut.
+ *
+ * Every instance also supports hold-to-dictate: long-press the field (pointer or touch) to start
+ * realtime speech-to-text — recognized words stream into the field while the press is held, and
+ * dictation stops the moment the press is released. While dictation is live the border glows in
+ * the error color and the placeholder switches to "Start speaking...". On platforms without
+ * speech recognition the long-press does nothing.
  */
 @Composable
 fun StudioTextField(
@@ -83,16 +99,70 @@ fun StudioTextField(
     trailingIcon: @Composable (() -> Unit)? = null
 ) {
     var wasFocused by remember { mutableStateOf(false) }
+    var dictating by remember { mutableStateOf(false) }
+    // The dictation callback fires from outside the composition, so it must always see the
+    // freshest value/callback of this field.
+    val latestValue by rememberUpdatedState(value)
+    val latestOnValueChange by rememberUpdatedState(onValueChange)
+    // A dictation session left running (e.g. the field leaves the composition mid-press) must
+    // not keep the microphone open.
+    DisposableEffect(Unit) {
+        onDispose { if (dictating) stopRealtimeSpeechInput() }
+    }
     val fieldBackground = MaterialTheme.colorScheme.background.copy(alpha = 0.5f)
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        modifier = modifier.onFocusChanged { state ->
-            TextInputFocusTracker.onFocusChanged(wasFocused, state.isFocused)
-            wasFocused = state.isFocused
-        },
+        modifier = modifier
+            .onFocusChanged { state ->
+                TextInputFocusTracker.onFocusChanged(wasFocused, state.isFocused)
+                wasFocused = state.isFocused
+            }
+            // Hold-to-dictate. Observed on the Initial pass without consuming anything, so the
+            // normal text-editing gestures keep working exactly as before.
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    // A long press is a press still held after the platform long-press timeout.
+                    val releasedEarly = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.changes.none { it.pressed }) break
+                        }
+                    }
+                    if (releasedEarly == null) {
+                        // Dictate for as long as the press is held. A failing platform bridge
+                        // must never kill this pointer handler (that would disable dictation
+                        // for the rest of the field's lifetime).
+                        val base = latestValue
+                        val started = runCatching {
+                            startRealtimeSpeechInput { spoken ->
+                                val prefix = if (base.isBlank()) "" else base.trimEnd() + " "
+                                latestOnValueChange(prefix + spoken)
+                            }
+                        }.getOrDefault(false)
+                        dictating = started
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.changes.none { it.pressed }) break
+                        }
+                        if (started) stopRealtimeSpeechInput()
+                        dictating = false
+                    }
+                }
+            },
         label = label?.let { { Text(it) } },
-        placeholder = placeholder?.let { { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)) } },
+        placeholder = when {
+            // Live dictation: invite the user to talk (visible while the field is still empty).
+            dictating -> {
+                { Text("Start speaking...", color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)) }
+            }
+            placeholder != null -> {
+                { Text(placeholder, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)) }
+            }
+            else -> null
+        },
         singleLine = singleLine,
         minLines = minLines,
         maxLines = maxLines,
@@ -105,8 +175,12 @@ fun StudioTextField(
             focusedContainerColor = fieldBackground,
             unfocusedContainerColor = fieldBackground,
             disabledContainerColor = Color.White.copy(alpha = 0.25f),
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+            focusedBorderColor = if (dictating) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = if (dictating) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+            }
         )
     )
 }
@@ -390,6 +464,40 @@ fun ConfirmDialog(
                 onDismiss()
                 onConfirm()
             }
+        }
+    }
+}
+
+/**
+ * Inline "error + retry" state shown by major components (movie list, library, timeline...)
+ * when their data failed to load.
+ */
+@Composable
+fun ErrorRetryBox(
+    message: String,
+    modifier: Modifier = Modifier,
+    onRetry: () -> Unit
+) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("⚠️", fontSize = 30.sp)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Something went wrong",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.widthIn(max = 340.dp).padding(horizontal = 12.dp)
+            )
+            Spacer(Modifier.height(12.dp))
+            PillButton("🔁 Retry", compact = true) { onRetry() }
         }
     }
 }

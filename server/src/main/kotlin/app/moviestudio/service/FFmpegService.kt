@@ -286,7 +286,11 @@ object FFmpegService {
                 val audioFilters = mutableListOf<String>()
                 audioFilters.add("atrim=start=$srcStart:end=$srcEnd")
                 audioFilters.add("asetpts=PTS-STARTPTS")
-                if (volume != 1.0) {
+                if (effects.volumeKeyframes.isNotEmpty()) {
+                    // Volume-over-time envelope: evaluated per frame; 't' is clip-relative
+                    // because the chain runs after asetpts=PTS-STARTPTS.
+                    audioFilters.add("volume=volume='${volumeEnvelopeExpression(effects.volumeKeyframes)}':eval=frame")
+                } else if (volume != 1.0) {
                     audioFilters.add("volume=$volume")
                 }
 
@@ -440,6 +444,24 @@ object FFmpegService {
         )
         val found = candidates.firstOrNull { File(it).exists() } ?: return ""
         return "fontfile=$found:"
+    }
+
+    /**
+     * FFmpeg per-frame volume expression for a keyframed envelope: piecewise-linear between the
+     * keyframes, holding the first/last keyframe's gain before/after the envelope — mirroring
+     * the client's [volumeAt]. 't' is clip-relative (the chain runs after asetpts=PTS-STARTPTS).
+     */
+    internal fun volumeEnvelopeExpression(keyframes: List<VolumePoint>): String {
+        val points = keyframes.sortedBy { it.time }
+        var expression = "${points.last().volume}"
+        for (i in points.size - 2 downTo 0) {
+            val a = points[i]
+            val b = points[i + 1]
+            val span = (b.time - a.time).takeIf { it > 0.0 } ?: 1.0
+            val segment = "${a.volume}+(${b.volume}-${a.volume})*(t-${a.time})/$span"
+            expression = "if(lt(t\\,${b.time})\\,$segment\\,$expression)"
+        }
+        return "if(lt(t\\,${points.first().time})\\,${points.first().volume}\\,$expression)"
     }
 
     /** Escapes text for use inside a drawtext `text='...'` argument. */

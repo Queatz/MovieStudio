@@ -5,7 +5,8 @@ import kotlin.js.Promise
 
 // Opens a hidden <input type=file>, uploads the selected file to OSS via a pre-signed URL and
 // resolves with a small JSON payload ({ fileName, ossUrl, durationSeconds }), or null if the user
-// cancels. The public URL is the pre-signed URL with its query string (the signature) stripped.
+// cancels. The PUT must send exactly the server-signed Content-Type (it is part of the upload
+// URL's signature) and the persisted read URL is the signed downloadUrl (objects are private).
 @Suppress("UNUSED_PARAMETER")
 private fun jsPickAndUpload(baseUrl: String, accept: String): Promise<String?> = js("""
     new Promise(function(resolve) {
@@ -45,7 +46,7 @@ private fun jsPickAndUpload(baseUrl: String, accept: String): Promise<String?> =
             var file = input.files && input.files[0];
             if (!file) { finish(null); return; }
             var objectKey = 'uploads/' + Date.now() + '-' + file.name;
-            var uploadUrl = null;
+            var downloadUrl = null;
             fetch(baseUrl + '/api/assets/upload-url', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -54,13 +55,18 @@ private fun jsPickAndUpload(baseUrl: String, accept: String): Promise<String?> =
                 if (!urlResp.ok) { throw new Error('upload-url request failed'); }
                 return urlResp.json();
             }).then(function(urlJson) {
-                uploadUrl = urlJson.uploadUrl;
-                return fetch(uploadUrl, { method: 'PUT', body: file });
-            }).then(function() {
+                downloadUrl = urlJson.downloadUrl || urlJson.uploadUrl.split('?')[0];
+                var contentType = urlJson.contentType || 'application/octet-stream';
+                return fetch(urlJson.uploadUrl, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': contentType },
+                    body: file
+                });
+            }).then(function(putResp) {
+                if (!putResp.ok) { throw new Error('upload PUT failed: ' + putResp.status); }
                 return readDuration(file);
             }).then(function(duration) {
-                var publicUrl = uploadUrl.split('?')[0];
-                finish(JSON.stringify({ fileName: file.name, ossUrl: publicUrl, durationSeconds: duration }));
+                finish(JSON.stringify({ fileName: file.name, ossUrl: downloadUrl, durationSeconds: duration }));
             }).catch(function(e) {
                 finish(null);
             });
@@ -121,7 +127,7 @@ private fun jsStopMicRecordingAndUpload(baseUrl: String): Promise<String?> = js(
                 var durationSeconds = Math.max(0.5, (Date.now() - state.startedAt) / 1000);
                 var fileName = 'voice-recording-' + Date.now() + '.' + ext;
                 var objectKey = 'uploads/' + Date.now() + '-' + fileName;
-                var uploadUrl = null;
+                var downloadUrl = null;
                 fetch(baseUrl + '/api/assets/upload-url', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -130,11 +136,16 @@ private fun jsStopMicRecordingAndUpload(baseUrl: String): Promise<String?> = js(
                     if (!urlResp.ok) { throw new Error('upload-url request failed'); }
                     return urlResp.json();
                 }).then(function(urlJson) {
-                    uploadUrl = urlJson.uploadUrl;
-                    return fetch(uploadUrl, { method: 'PUT', body: blob });
-                }).then(function() {
-                    var publicUrl = uploadUrl.split('?')[0];
-                    resolve(JSON.stringify({ fileName: fileName, ossUrl: publicUrl, durationSeconds: durationSeconds }));
+                    downloadUrl = urlJson.downloadUrl || urlJson.uploadUrl.split('?')[0];
+                    var contentType = urlJson.contentType || 'application/octet-stream';
+                    return fetch(urlJson.uploadUrl, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': contentType },
+                        body: blob
+                    });
+                }).then(function(putResp) {
+                    if (!putResp.ok) { throw new Error('upload PUT failed: ' + putResp.status); }
+                    resolve(JSON.stringify({ fileName: fileName, ossUrl: downloadUrl, durationSeconds: durationSeconds }));
                 }).catch(function(e) { resolve(null); });
             };
             recorder.stop();

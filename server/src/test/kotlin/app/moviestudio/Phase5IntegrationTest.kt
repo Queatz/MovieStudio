@@ -142,10 +142,113 @@ class Phase5IntegrationTest {
             assertTrue(file.length() > 44, "WAV must contain data beyond the header")
             val header = file.readBytes().take(4).toByteArray().decodeToString()
             assertEquals("RIFF", header)
+            assertTrue(wavPeakAmplitude(file) > 0.05, "Rendered sequence must be audibly non-silent")
         } finally {
             file.delete()
         }
     }
+
+    @Test
+    fun testMusicSynthesizerHonorsNoteLengthsPerNoteInstrumentsAndSlowTempo() {
+        // A held note (dragged across 4 steps) rings ~4x longer than a single-step note.
+        fun audibleSeconds(note: SequencerNote): Double {
+            val file = File.createTempFile("seq_len", ".wav")
+            try {
+                MusicSynthesizer.renderToWav(
+                    MusicSequence(tempoBpm = 120, steps = 16, loops = 1, waveform = "sine", notes = listOf(note)),
+                    file
+                )
+                val samples = wavSamples(file)
+                val lastAudible = samples.indexOfLast { kotlin.math.abs(it) > 0.01 }
+                return lastAudible / 44100.0
+            } finally {
+                file.delete()
+            }
+        }
+        val short = audibleSeconds(SequencerNote(0, 0))
+        val held = audibleSeconds(SequencerNote(0, 0, lengthSteps = 4))
+        assertTrue(held > short * 2, "A 4-step note should ring much longer ($held vs $short)")
+
+        // Per-note instruments: notes carrying their own waveform render without error and are
+        // audible even when they differ from the sequence-level instrument.
+        val mixed = MusicSequence(
+            tempoBpm = 120,
+            steps = 16,
+            loops = 1,
+            waveform = "sine",
+            notes = listOf(
+                SequencerNote(0, 0, waveform = "square"),
+                SequencerNote(4, 2, waveform = "saw", lengthSteps = 2),
+                SequencerNote(8, 4) // legacy note: falls back to the sequence waveform
+            )
+        )
+        val mixedFile = File.createTempFile("seq_mixed", ".wav")
+        try {
+            MusicSynthesizer.renderToWav(mixed, mixedFile)
+            assertTrue(wavPeakAmplitude(mixedFile) > 0.05)
+        } finally {
+            mixedFile.delete()
+        }
+
+        // The tempo floor is 20 BPM: 16 steps at 20bpm = 12s pattern + 0.5s tail.
+        val slow = MusicSequence(tempoBpm = 20, steps = 16, loops = 1, notes = listOf(SequencerNote(0, 0)))
+        val slowFile = File.createTempFile("seq_slow", ".wav")
+        try {
+            val slowDuration = MusicSynthesizer.renderToWav(slow, slowFile)
+            assertTrue(slowDuration in 12.4..12.6, "20 BPM must be honored, was $slowDuration")
+        } finally {
+            slowFile.delete()
+        }
+    }
+
+    @Test
+    fun testMusicSynthesizerRendersMultipleMeasuresAndOffKeyPitches() {
+        fun renderSeconds(seq: MusicSequence): Double {
+            val f = File.createTempFile("seq_meas", ".wav")
+            try {
+                return MusicSynthesizer.renderToWav(seq, f)
+            } finally {
+                f.delete()
+            }
+        }
+        // A 2-measure (32-step) pattern renders about twice as long as a 1-measure pattern:
+        // 16 steps at 120bpm = 2.0s + 0.5s tail; 32 steps = 4.0s + 0.5s tail.
+        val oneBar = MusicSequence(tempoBpm = 120, steps = 16, loops = 1, notes = listOf(SequencerNote(0, 0)))
+        val twoBar = MusicSequence(
+            tempoBpm = 120, steps = 32, loops = 1,
+            notes = listOf(SequencerNote(0, 0), SequencerNote(16, 4))
+        )
+        assertTrue(renderSeconds(oneBar) in 2.4..2.6)
+        assertTrue(renderSeconds(twoBar) in 4.4..4.6, "A 2-measure pattern should render ~4.5s")
+
+        // Off-key chromatic pitches still render audibly (the piano roll allows any semitone).
+        val offKey = MusicSequence(
+            tempoBpm = 120, steps = 16, loops = 1, scale = "major",
+            notes = listOf(SequencerNote(0, 25)) // a black key relative to C major
+        )
+        val f = File.createTempFile("seq_off", ".wav")
+        try {
+            MusicSynthesizer.renderToWav(offKey, f)
+            assertTrue(wavPeakAmplitude(f) > 0.05, "Off-key notes must still be audible")
+        } finally {
+            f.delete()
+        }
+    }
+
+    /** Decodes the 16-bit mono PCM samples of a WAV [file] into -1..1 doubles. */
+    private fun wavSamples(file: File): DoubleArray {
+        val bytes = file.readBytes()
+        val data = bytes.drop(44)
+        return DoubleArray(data.size / 2) { i ->
+            val lo = data[i * 2].toInt() and 0xFF
+            val hi = data[i * 2 + 1].toInt()
+            ((hi shl 8) or lo) / Short.MAX_VALUE.toDouble()
+        }
+    }
+
+    /** The peak absolute amplitude (0..1) of a rendered WAV [file]. */
+    private fun wavPeakAmplitude(file: File): Double =
+        wavSamples(file).maxOfOrNull { kotlin.math.abs(it) } ?: 0.0
 
     @Test
     fun testMusicSequenceEndpointCreatesAsset() = testApplication {

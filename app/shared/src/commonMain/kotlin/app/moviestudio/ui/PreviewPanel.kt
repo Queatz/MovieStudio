@@ -45,6 +45,7 @@ import app.moviestudio.shared.resources.Res
 import app.moviestudio.shared.resources.asap
 import app.moviestudio.shared.resources.yuyu
 import app.moviestudio.updateAudioPlayback
+import app.moviestudio.volumeAt
 import org.jetbrains.compose.resources.Font
 
 /** A clip together with its resolved asset and track type, active under the playhead. */
@@ -54,9 +55,12 @@ private data class ActiveClip(val clip: Clip, val asset: Asset, val trackType: T
  * The movie preview area (always dark, regardless of theme): plays the active video clip,
  * renders description-only items as large centered white text, overlays captions for voice clips
  * and keeps the browser audio pool in sync with everything audible under the playhead.
+ *
+ * With [fullscreen] set, all chrome (rounded corners, padding, transport controls) is hidden —
+ * only the stage remains, for the distraction-free fullscreen playback mode (ESC exits).
  */
 @Composable
-fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
+fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscreen: Boolean = false) {
     val timeline = viewModel.timeline
     val movie = viewModel.currentMovie
     val playhead = viewModel.playhead
@@ -96,7 +100,8 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 url = active.asset.ossUrl,
                 positionSeconds = active.asset.sourceOffsetSeconds + active.clip.trimIn +
                     (playhead - active.clip.timelineStart).toDouble(),
-                volume = effects.volume
+                // The volume-over-time envelope (when present) is evaluated at the playhead.
+                volume = effects.volumeAt((playhead - active.clip.timelineStart).toDouble())
             )
         }
     LaunchedEffect(audioItems, viewModel.isPlaying) {
@@ -110,20 +115,24 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     }
 
     Column(modifier = modifier) {
-        // Stage: aspect-constrained, always dark.
+        // Stage: aspect-constrained, always dark. Fullscreen drops the rounded chrome entirely.
         Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF121016)),
+            modifier = if (fullscreen) {
+                Modifier.weight(1f).fillMaxWidth().background(Color.Black)
+            } else {
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF121016))
+            },
             contentAlignment = Alignment.Center
         ) {
             val ratio = aspectRatioToFloat(movie?.aspectRatio ?: "16:9")
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(10.dp),
+                    .padding(if (fullscreen) 0.dp else 10.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Box(
@@ -176,8 +185,10 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
             }
         }
 
-        Spacer(Modifier.height(10.dp))
-        TransportControls(viewModel)
+        if (!fullscreen) {
+            Spacer(Modifier.height(10.dp))
+            TransportControls(viewModel)
+        }
     }
 }
 
@@ -310,6 +321,9 @@ private fun TransportControls(viewModel: AppViewModel) {
         )
         Spacer(Modifier.width(16.dp))
         GhostPillButton("📸 Save frame", compact = true) { showSaveFrame = true }
+        Spacer(Modifier.width(8.dp))
+        // One-click fullscreen playback: all editor UI hides, ESC exits.
+        GhostPillButton("⛶ Fullscreen", compact = true) { viewModel.enterFullscreenPlayback() }
     }
 
     if (showSaveFrame) {

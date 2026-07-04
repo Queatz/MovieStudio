@@ -22,6 +22,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,6 +30,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -69,6 +72,13 @@ fun DashboardScreen(viewModel: AppViewModel) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
+        } else if (viewModel.movies.isEmpty() && viewModel.moviesError != null) {
+            // The movie list failed to load: error + retry instead of the empty state.
+            ErrorRetryBox(
+                message = viewModel.moviesError ?: "Failed to load movies",
+                modifier = Modifier.fillMaxSize(),
+                onRetry = { viewModel.loadMovies() }
+            )
         } else if (viewModel.movies.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -200,12 +210,18 @@ fun StatusBadge(status: FilmStatus, modifier: Modifier = Modifier) {
 private fun CreateMovieDialog(onDismiss: () -> Unit, onCreate: (String, String) -> Unit) {
     var title by remember { mutableStateOf("") }
     var aspect by remember { mutableStateOf(SUPPORTED_ASPECT_RATIOS.first()) }
+    val titleFocus = remember { FocusRequester() }
+
+    // Autofocus the title input so the user can start typing right away.
+    LaunchedEffect(Unit) {
+        runCatching { titleFocus.requestFocus() }
+    }
 
     StudioDialog(title = "New Movie", onDismiss = onDismiss, width = 440.dp) {
         StudioTextField(
             value = title,
             onValueChange = { title = it },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().focusRequester(titleFocus),
             label = "Title",
             placeholder = "My next masterpiece",
             singleLine = true

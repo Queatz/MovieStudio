@@ -1,12 +1,16 @@
 package app.moviestudio.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -27,7 +31,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -36,12 +42,16 @@ import app.moviestudio.AppViewModel
 import app.moviestudio.CAPTION_FONT_FAMILIES
 import app.moviestudio.CaptionConfig
 import app.moviestudio.Clip
+import app.moviestudio.EffectsConfig
+import app.moviestudio.MAX_CLIP_VOLUME
 import app.moviestudio.Track
 import app.moviestudio.TrackType
 import app.moviestudio.TransitionSpec
 import app.moviestudio.TransitionType
+import app.moviestudio.VolumePoint
 import app.moviestudio.displayName
 import app.moviestudio.parseEffectsConfig
+import app.moviestudio.volumeAt
 import kotlin.math.roundToInt
 
 /**
@@ -54,6 +64,7 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
     val effects = parseEffectsConfig(clip.effectsConfig)
     val clipLength = (clip.trimOut - clip.trimIn).coerceAtLeast(0.25f)
     var showCaptionEditor by remember { mutableStateOf(false) }
+    var showVolumeEditor by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -157,16 +168,33 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
             Spacer(Modifier.width(16.dp))
         }
 
-        // Volume (audio-carrying tracks).
-        if (track.type == TrackType.MUSIC || track.type == TrackType.VOICE) {
-            Column(Modifier.width(170.dp)) {
-                LabeledSlider(
-                    label = "Volume",
-                    value = effects.volume.toFloat(),
-                    valueRange = 0f..2f,
-                    valueText = "${(effects.volume * 100).roundToInt()}%",
-                    onValueChange = { viewModel.updateClipEffects(clip, effects.copy(volume = it.toDouble())) }
-                )
+        // Volume (audio-carrying tracks): flat slider, or the volume-over-time envelope once
+        // keyframes exist — with the advanced editor a click away in both cases.
+        if (track.type == TrackType.MUSIC || track.type == TrackType.VOICE || track.type == TrackType.EFFECTS) {
+            Column(Modifier.width(190.dp)) {
+                if (effects.volumeKeyframes.isEmpty()) {
+                    LabeledSlider(
+                        label = "Volume",
+                        value = effects.volume.toFloat(),
+                        valueRange = 0f..MAX_CLIP_VOLUME.toFloat(),
+                        valueText = "${(effects.volume * 100).roundToInt()}%",
+                        onValueChange = { viewModel.updateClipEffects(clip, effects.copy(volume = it.toDouble())) }
+                    )
+                } else {
+                    Text(
+                        "Volume",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "Envelope • ${effects.volumeKeyframes.size} keyframe(s)",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(6.dp))
+                }
+                GhostPillButton("🎚 Volume editor", compact = true) { showVolumeEditor = true }
             }
             Spacer(Modifier.width(16.dp))
         }
@@ -201,6 +229,18 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
             onSave = { config ->
                 viewModel.updateClipEffects(clip, effects.copy(captions = config))
                 showCaptionEditor = false
+            }
+        )
+    }
+
+    if (showVolumeEditor) {
+        VolumeEnvelopeDialog(
+            clipLengthSeconds = clipLength,
+            initial = effects,
+            onDismiss = { showVolumeEditor = false },
+            onSave = { keyframes ->
+                viewModel.updateClipEffects(clip, effects.copy(volumeKeyframes = keyframes))
+                showVolumeEditor = false
             }
         )
     }
@@ -298,6 +338,200 @@ fun CaptionEditorDialog(
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
             PillButton("Save captions") { onSave(config) }
+        }
+    }
+}
+
+/** Maps a canvas position to a volume keyframe (time across the width, gain down the height). */
+private fun offsetToVolumePoint(
+    offset: Offset,
+    widthPx: Int,
+    heightPx: Int,
+    clipLength: Double
+): VolumePoint {
+    val time = (offset.x / widthPx * clipLength).coerceIn(0.0, clipLength)
+    val volume = ((1f - offset.y / heightPx) * MAX_CLIP_VOLUME).coerceIn(0.0, MAX_CLIP_VOLUME)
+    return VolumePoint(time = time, volume = volume)
+}
+
+/** The canvas position of a volume keyframe (inverse of [offsetToVolumePoint]). */
+private fun volumePointOffset(
+    point: VolumePoint,
+    widthPx: Int,
+    heightPx: Int,
+    clipLength: Double
+): Offset = Offset(
+    (point.time / clipLength * widthPx).toFloat(),
+    ((1.0 - point.volume / MAX_CLIP_VOLUME) * heightPx).toFloat()
+)
+
+/** The keyframe within [thresholdPx] of the pointer, if any (nearest wins). */
+private fun volumePointNear(
+    points: List<VolumePoint>,
+    offset: Offset,
+    widthPx: Int,
+    heightPx: Int,
+    clipLength: Double,
+    thresholdPx: Float
+): VolumePoint? = points
+    .minByOrNull { (volumePointOffset(it, widthPx, heightPx, clipLength) - offset).getDistance() }
+    ?.takeIf { (volumePointOffset(it, widthPx, heightPx, clipLength) - offset).getDistance() <= thresholdPx }
+
+/**
+ * Advanced volume editor: the clip's loudness over time as a keyframed envelope drawn across the
+ * clip's length. Tap adds a keyframe, dragging moves one (or creates one and drags it),
+ * double-tap removes one and "Reset to flat" returns the clip to its single flat volume.
+ * The envelope is applied in the preview and in the final render.
+ */
+@Composable
+fun VolumeEnvelopeDialog(
+    clipLengthSeconds: Float,
+    initial: EffectsConfig,
+    onDismiss: () -> Unit,
+    onSave: (List<VolumePoint>) -> Unit
+) {
+    val clipLength = clipLengthSeconds.toDouble().coerceAtLeast(0.1)
+    var points by remember { mutableStateOf(initial.volumeKeyframes.sortedBy { it.time }) }
+    // The keyframe currently being moved by a drag on the canvas.
+    var dragging by remember { mutableStateOf<VolumePoint?>(null) }
+    // The envelope previewed on the canvas: the edited keyframes over the clip's flat volume.
+    val preview = initial.copy(volumeKeyframes = points)
+
+    StudioDialog(title = "Volume editor", onDismiss = onDismiss, width = 620.dp) {
+        Text(
+            "Shape the clip's loudness over time. Tap the curve area to add a keyframe, drag a " +
+                "keyframe to move it and double-tap one to remove it. 100% plays the sound at " +
+                "its natural loudness.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(200.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFF17151C))
+                // Tap: add a keyframe (double-tap an existing one to remove it).
+                .pointerInput(clipLength) {
+                    detectTapGestures(
+                        onTap = { offset ->
+                            val existing = volumePointNear(points, offset, size.width, size.height, clipLength, 22.dp.toPx())
+                            if (existing == null) {
+                                points = (points + offsetToVolumePoint(offset, size.width, size.height, clipLength))
+                                    .sortedBy { it.time }
+                            }
+                        },
+                        onDoubleTap = { offset ->
+                            volumePointNear(points, offset, size.width, size.height, clipLength, 22.dp.toPx())?.let {
+                                points = points - it
+                            }
+                        }
+                    )
+                }
+                // Drag: move the nearest keyframe, or place a new one and drag it into shape.
+                .pointerInput(clipLength) {
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            val anchor = volumePointNear(points, offset, size.width, size.height, clipLength, 26.dp.toPx())
+                                ?: offsetToVolumePoint(offset, size.width, size.height, clipLength).also {
+                                    points = (points + it).sortedBy { point -> point.time }
+                                }
+                            dragging = anchor
+                        },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            val anchor = dragging ?: return@detectDragGestures
+                            val moved = offsetToVolumePoint(change.position, size.width, size.height, clipLength)
+                            points = points.map { if (it == anchor) moved else it }.sortedBy { it.time }
+                            dragging = moved
+                        },
+                        onDragEnd = { dragging = null },
+                        onDragCancel = { dragging = null }
+                    )
+                }
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                // Gain grid: lines at 0/50/100/150/200%, the 100% line drawn brighter.
+                for (i in 0..4) {
+                    val y = size.height * i / 4f
+                    drawLine(
+                        color = if (i == 2) Color(0xFF3D3850) else Color(0xFF272232),
+                        start = Offset(0f, y),
+                        end = Offset(size.width, y)
+                    )
+                }
+                // The envelope, sampled across the clip (flat volume when no keyframes exist).
+                val steps = 120
+                var previous = Offset(
+                    0f,
+                    ((1.0 - preview.volumeAt(0.0).coerceIn(0.0, MAX_CLIP_VOLUME) / MAX_CLIP_VOLUME) * size.height).toFloat()
+                )
+                for (i in 1..steps) {
+                    val time = clipLength * i / steps
+                    val gain = preview.volumeAt(time).coerceIn(0.0, MAX_CLIP_VOLUME)
+                    val next = Offset(
+                        size.width * i / steps,
+                        ((1.0 - gain / MAX_CLIP_VOLUME) * size.height).toFloat()
+                    )
+                    drawLine(Color(0xFF8F7BFF), previous, next, strokeWidth = 3f)
+                    previous = next
+                }
+                // Keyframe handles.
+                points.forEach { point ->
+                    val center = Offset(
+                        (point.time / clipLength * size.width).toFloat(),
+                        ((1.0 - point.volume.coerceIn(0.0, MAX_CLIP_VOLUME) / MAX_CLIP_VOLUME) * size.height).toFloat()
+                    )
+                    drawCircle(Color(0xFFFF5A9E), radius = 7f, center = center)
+                    drawCircle(Color(0xFF17151C), radius = 3f, center = center)
+                }
+            }
+            // Gain scale labels.
+            listOf(
+                "200%" to Alignment.TopStart,
+                "100%" to Alignment.CenterStart,
+                "0%" to Alignment.BottomStart
+            ).forEach { (label, alignment) ->
+                Text(
+                    label,
+                    modifier = Modifier.align(alignment).padding(horizontal = 6.dp, vertical = 2.dp),
+                    fontSize = 10.sp,
+                    color = Color(0xFF6F6884)
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Row {
+            Text(
+                "0:00",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                formatDuration(clipLength),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (points.isEmpty()) {
+                "No keyframes — the clip plays at its flat ${(initial.volume * 100).roundToInt()}% volume."
+            } else {
+                "${points.size} keyframe(s). The volume between keyframes fades smoothly."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        DialogActions {
+            GhostPillButton("Reset to flat", compact = true, enabled = points.isNotEmpty()) { points = emptyList() }
+            Spacer(Modifier.weight(1f))
+            GhostPillButton("Cancel") { onDismiss() }
+            ActionSpacer()
+            PillButton("Save volume") { onSave(points) }
         }
     }
 }

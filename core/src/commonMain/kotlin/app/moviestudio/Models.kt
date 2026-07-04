@@ -119,7 +119,9 @@ data class Track(
     val id: String,
     val movieId: String,
     val type: TrackType,
-    val zIndex: Int
+    val zIndex: Int,
+    // User-editable track name; when null/blank the UI falls back to the type's default label.
+    val name: String? = null
 )
 
 @Serializable
@@ -318,6 +320,20 @@ val CAPTION_FONT_FAMILIES: List<String> = listOf(
     "Default", "Serif", "Sans serif", "Monospace", "Cursive", "Asap (my font)", "Yuyu (my font)"
 )
 
+/**
+ * One keyframe of a clip's volume-over-time envelope (the advanced volume editor).
+ * [time] is in seconds from the start of the clip (0 = clip start); [volume] is the gain at that
+ * moment (0.0 = silent, 1.0 = 100%, up to [MAX_CLIP_VOLUME]).
+ */
+@Serializable
+data class VolumePoint(
+    val time: Double,
+    val volume: Double
+)
+
+/** The maximum gain a clip's volume (flat or keyframed) can be raised to (200%). */
+const val MAX_CLIP_VOLUME: Double = 2.0
+
 private val effectsJson = Json { ignoreUnknownKeys = true }
 
 /**
@@ -326,15 +342,41 @@ private val effectsJson = Json { ignoreUnknownKeys = true }
  *
  * [offsetX]/[offsetY] position the media inside the center-crop window (0-100, 50 = centered):
  * 0 shows the left/top edge of the media, 100 the right/bottom edge.
+ *
+ * [volumeKeyframes] is the optional volume-over-time envelope: when present it overrides the
+ * flat [volume], interpolating linearly between keyframes (see [volumeAt]).
  */
 @Serializable
 data class EffectsConfig(
     val transition: TransitionSpec? = null,
     val captions: CaptionConfig? = null,
     val volume: Double = 1.0,
+    val volumeKeyframes: List<VolumePoint> = emptyList(),
     val offsetX: Double = 50.0,
     val offsetY: Double = 50.0
 )
+
+/**
+ * The clip's gain at [clipSeconds] (seconds from the clip's start). With no keyframes this is the
+ * flat [EffectsConfig.volume]; with keyframes the envelope interpolates linearly between them and
+ * holds the first/last keyframe's value before/after the envelope.
+ */
+fun EffectsConfig.volumeAt(clipSeconds: Double): Double {
+    if (volumeKeyframes.isEmpty()) return volume
+    val points = volumeKeyframes.sortedBy { it.time }
+    if (clipSeconds <= points.first().time) return points.first().volume
+    if (clipSeconds >= points.last().time) return points.last().volume
+    for (i in 0 until points.size - 1) {
+        val a = points[i]
+        val b = points[i + 1]
+        if (clipSeconds >= a.time && clipSeconds <= b.time) {
+            if (b.time <= a.time) return b.volume
+            val fraction = (clipSeconds - a.time) / (b.time - a.time)
+            return a.volume + (b.volume - a.volume) * fraction
+        }
+    }
+    return points.last().volume
+}
 
 /** Parses a clip's [Clip.effectsConfig] JSON. Malformed/empty input yields default settings. */
 fun parseEffectsConfig(raw: String?): EffectsConfig {
@@ -360,8 +402,24 @@ data class SequencerNote(
     // Step index on the grid (16 steps per pattern by default).
     val step: Int,
     // Semitone offset within the pattern's scale (row index, bottom = 0).
-    val pitch: Int
-)
+    val pitch: Int,
+    // How many grid steps this note is held for (>= 1). Extended by horizontal dragging.
+    val lengthSteps: Int = 1,
+    // Per-note instrument: "sine" | "square" | "saw" | "triangle" | "sample", or null to use
+    // the sequence-level waveform (kept for patterns saved before per-note instruments).
+    val waveform: String? = null,
+    // When the note's instrument is a library sound: its media URL (pitch-shifted per row).
+    val sampleUrl: String? = null,
+    // Human-readable name of the note's sample instrument.
+    val sampleName: String? = null
+) {
+    /** True when this note covers grid [step] (its start plus its held length). */
+    fun covers(atStep: Int): Boolean = atStep >= step && atStep < step + lengthSteps.coerceAtLeast(1)
+}
+
+/** Tempo bounds accepted by the mini sequencer (UI slider and server synthesizer). */
+const val SEQUENCER_MIN_TEMPO_BPM: Int = 20
+const val SEQUENCER_MAX_TEMPO_BPM: Int = 240
 
 /**
  * A pattern created in the mini music sequencer. Synthesized server-side to a WAV and stored as
@@ -381,22 +439,51 @@ data class MusicSequence(
     val sampleUrl: String? = null,
     // Human-readable name of the sample instrument (shown in the instrument picker).
     val sampleName: String? = null,
+    // The key the grid highlights: "major" | "minor". Off-scale rows can still hold notes when
+    // the user reveals all pitches, but are drawn in an alternate colour.
+    val scale: String = "major",
     val notes: List<SequencerNote> = emptyList()
-)
+) {
+    /** Number of whole measures in the pattern (16 steps each). */
+    val measures: Int get() = (steps / SEQUENCER_STEPS_PER_MEASURE).coerceAtLeast(1)
+}
+
+/** Grid layout constants shared by the client dialog and the server synthesizer. */
+const val SEQUENCER_STEPS_PER_MEASURE: Int = 16
+
+/** How many octaves the sequencer grid shows at once (octave arrows shift the window). */
+const val SEQUENCER_VISIBLE_OCTAVES: Int = 2
+
+/** The lowest sounding pitch (semitone 0): C2. Every pitch is a semitone offset above it. */
+const val SEQUENCER_BASE_FREQUENCY: Double = 65.40639132514966
+
+/** Highest pitch (semitone offset) the grid allows: C7, five octaves above the C2 root. */
+const val SEQUENCER_MAX_PITCH: Int = 60
+
+/** Semitone intervals (within an octave) that belong to a major key. */
+val SEQUENCER_MAJOR_INTERVALS: List<Int> = listOf(0, 2, 4, 5, 7, 9, 11)
+
+/** Semitone intervals (within an octave) that belong to a natural-minor key. */
+val SEQUENCER_MINOR_INTERVALS: List<Int> = listOf(0, 2, 3, 5, 7, 8, 10)
+
+/** The in-key semitone intervals for the named [scale] ("minor" -> natural minor, else major). */
+fun sequencerScaleIntervals(scale: String): List<Int> =
+    if (scale.equals("minor", ignoreCase = true)) SEQUENCER_MINOR_INTERVALS else SEQUENCER_MAJOR_INTERVALS
+
+/** True when the given absolute [pitch] (semitones above the root) is part of [scale]. */
+fun isPitchInScale(pitch: Int, scale: String): Boolean =
+    (((pitch % 12) + 12) % 12) in sequencerScaleIntervals(scale)
 
 /**
- * The pitch rows offered by the mini sequencer: C major pentatonic across two octaves plus the
- * root on top (always-consonant rows). Shared by the server synthesizer and the in-dialog
- * playback so both play the exact same notes.
+ * Frequency (Hz) for a sequencer note. [pitch] is an absolute chromatic semitone offset above the
+ * C2 root, so a difference of 12 is exactly one octave. Shared by the server synthesizer and the
+ * in-dialog playback so both play the exact same notes.
  */
-val SEQUENCER_SCALE_SEMITONES: List<Int> = listOf(0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24)
-
-/** Frequency (Hz) for a sequencer row: C4 root walking up the pentatonic scale. */
-fun sequencerRowFrequency(row: Int): Double {
-    val semitone = SEQUENCER_SCALE_SEMITONES[row.coerceIn(0, SEQUENCER_SCALE_SEMITONES.size - 1)]
+fun sequencerRowFrequency(pitch: Int): Double {
+    val semitone = pitch.coerceIn(0, SEQUENCER_MAX_PITCH)
     var factor = 1.0
     repeat(semitone) { factor *= 1.0594630943592953 } // 2^(1/12) without needing math libs
-    return 261.6256 * factor
+    return SEQUENCER_BASE_FREQUENCY * factor
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -464,6 +551,25 @@ val SUPPORTED_VIDEO_SIZES: List<String> = listOf(
 val SUPPORTED_IMAGE_SIZES: List<String> = listOf(
     "1024*1024", "1280*720", "720*1280", "768*1024", "1024*768"
 )
+
+/**
+ * Picks the generation size (e.g. "1280*720") from [sizes] whose aspect is closest to the
+ * movie's [aspectRatio] (e.g. "16:9"), so generated media crops as little as possible.
+ */
+fun closestSizeForAspect(sizes: List<String>, aspectRatio: String): String {
+    val target = aspectRatioToFloat(aspectRatio)
+    return sizes.minByOrNull { size ->
+        val parts = size.split('*', 'x')
+        val w = parts.getOrNull(0)?.trim()?.toFloatOrNull()
+        val h = parts.getOrNull(1)?.trim()?.toFloatOrNull()
+        if (w != null && h != null && w > 0f && h > 0f) {
+            val ratio = w / h
+            if (ratio > target) ratio / target else target / ratio
+        } else {
+            Float.MAX_VALUE
+        }
+    } ?: sizes.firstOrNull() ?: "1280*720"
+}
 
 /**
  * Parses an aspect ratio string like "16:9" into its numeric width/height factor.

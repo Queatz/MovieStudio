@@ -8,15 +8,15 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 // Desktop implementation: pick a file with the AWT file dialog, request a pre-signed URL from the
-// server, PUT the file's bytes to it and derive the public URL by stripping the signature query.
+// server and PUT the file's bytes to it with the server-signed Content-Type (it is part of the
+// upload URL's signature). The persisted read URL is the signed downloadUrl (objects are private).
 actual suspend fun pickAndUploadDeviceFile(type: AssetType): UploadedDeviceFile? {
     val file = pickFile() ?: return null
     return try {
         val objectKey = "uploads/${generateId()}-${file.name}"
         val upload = NetworkService.requestUploadUrl(objectKey)
-        putFile(upload.uploadUrl, file)
-        val publicUrl = upload.uploadUrl.substringBefore("?")
-        UploadedDeviceFile(fileName = file.name, ossUrl = publicUrl, durationSeconds = 5.0)
+        putFile(upload.uploadUrl, file, upload.contentType)
+        UploadedDeviceFile(fileName = file.name, ossUrl = upload.downloadUrl, durationSeconds = 5.0)
     } catch (e: Exception) {
         null
     }
@@ -39,14 +39,18 @@ private suspend fun pickFile(): File? = withContext(Dispatchers.IO) {
     File(dir, name)
 }
 
-private suspend fun putFile(uploadUrl: String, file: File) = withContext(Dispatchers.IO) {
+private suspend fun putFile(uploadUrl: String, file: File, contentType: String) = withContext(Dispatchers.IO) {
     val conn = (URL(uploadUrl).openConnection() as HttpURLConnection).apply {
         requestMethod = "PUT"
         doOutput = true
-        setRequestProperty("Content-Type", "application/octet-stream")
+        // Must match the Content-Type the pre-signed URL was signed with, or OSS rejects the
+        // request with SignatureDoesNotMatch.
+        setRequestProperty("Content-Type", contentType)
     }
     conn.outputStream.use { os -> file.inputStream().use { it.copyTo(os) } }
-    // Reading the response code forces the request to be sent.
-    conn.responseCode
+    val status = conn.responseCode
     conn.disconnect()
+    if (status !in 200..299) {
+        throw IllegalStateException("Upload PUT failed with HTTP $status")
+    }
 }

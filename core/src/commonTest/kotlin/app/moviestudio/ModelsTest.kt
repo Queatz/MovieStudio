@@ -32,6 +32,52 @@ class ModelsTest {
     }
 
     @Test
+    fun volumeEnvelopeInterpolatesLinearlyBetweenKeyframes() {
+        val config = EffectsConfig(
+            volume = 0.8,
+            volumeKeyframes = listOf(
+                VolumePoint(time = 2.0, volume = 1.0),
+                VolumePoint(time = 6.0, volume = 0.0)
+            )
+        )
+        // Before the first keyframe and after the last one the envelope holds its edge values.
+        assertEquals(1.0, config.volumeAt(0.0), 0.0001)
+        assertEquals(0.0, config.volumeAt(9.0), 0.0001)
+        // Between keyframes the gain fades linearly.
+        assertEquals(1.0, config.volumeAt(2.0), 0.0001)
+        assertEquals(0.5, config.volumeAt(4.0), 0.0001)
+        assertEquals(0.25, config.volumeAt(5.0), 0.0001)
+        assertEquals(0.0, config.volumeAt(6.0), 0.0001)
+    }
+
+    @Test
+    fun volumeEnvelopeFallsBackToFlatVolumeAndSortsKeyframes() {
+        // No keyframes: the flat volume applies everywhere.
+        assertEquals(0.75, EffectsConfig(volume = 0.75).volumeAt(3.0), 0.0001)
+        // Unsorted keyframes are handled (the editor may hand them over in any order).
+        val unsorted = EffectsConfig(
+            volumeKeyframes = listOf(
+                VolumePoint(time = 4.0, volume = 2.0),
+                VolumePoint(time = 0.0, volume = 0.0)
+            )
+        )
+        assertEquals(1.0, unsorted.volumeAt(2.0), 0.0001)
+    }
+
+    @Test
+    fun effectsConfigRoundTripsVolumeKeyframesAndStaysBackwardCompatible() {
+        val config = EffectsConfig(
+            volume = 1.0,
+            volumeKeyframes = listOf(VolumePoint(0.0, 0.0), VolumePoint(1.5, 1.2))
+        )
+        assertEquals(config, parseEffectsConfig(encodeEffectsConfig(config)))
+        // Clips saved before the envelope existed parse with no keyframes (flat volume).
+        val legacy = parseEffectsConfig("""{"volume":0.6}""")
+        assertTrue(legacy.volumeKeyframes.isEmpty())
+        assertEquals(0.6, legacy.volumeAt(10.0), 0.0001)
+    }
+
+    @Test
     fun buildWordTimingsDistributesWordsEvenly() {
         val timings = buildWordTimings("one two three four", 8.0)
         assertEquals(4, timings.size)

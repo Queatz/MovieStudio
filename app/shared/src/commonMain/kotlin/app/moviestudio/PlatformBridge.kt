@@ -65,3 +65,15 @@ expect fun playSequencerTone(
     volume: Double = 0.5,
     sampleUrl: String? = null
 )
+
+/**
+ * Starts realtime speech-to-text dictation (the browser Web Speech API on web targets).
+ * [onResult] is called with the full text recognized so far in this dictation session — interim
+ * results included, so callers can live-update a text field while the user speaks.
+ * Returns false when the platform has no speech recognition support or the microphone is
+ * unavailable (callers then simply don't enter dictation mode).
+ */
+expect fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean
+
+/** Stops the in-progress realtime speech dictation session (no-op when none is active). */
+expect fun stopRealtimeSpeechInput()

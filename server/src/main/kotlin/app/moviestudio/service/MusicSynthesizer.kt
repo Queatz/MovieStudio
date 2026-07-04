@@ -1,7 +1,8 @@
 package app.moviestudio.service
 
 import app.moviestudio.MusicSequence
-import app.moviestudio.SEQUENCER_SCALE_SEMITONES
+import app.moviestudio.SEQUENCER_MAX_TEMPO_BPM
+import app.moviestudio.SEQUENCER_MIN_TEMPO_BPM
 import app.moviestudio.sequencerRowFrequency
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,7 +20,8 @@ import kotlin.math.sin
  * WAV files. Notes are laid on a pentatonic scale (which always sounds musical), given a soft
  * attack/release envelope and mixed additively. Besides the four classic waveforms, a library
  * sound effect can be used as the instrument ("sample"): the sample is pitch-shifted per row by
- * resampling it at the note's playback rate.
+ * resampling it at the note's playback rate. Every note carries its own length (in grid steps)
+ * and, optionally, its own instrument — falling back to the sequence-level instrument.
  */
 object MusicSynthesizer {
     private val logger = LoggerFactory.getLogger(MusicSynthesizer::class.java)
@@ -28,12 +30,9 @@ object MusicSynthesizer {
     // Sample instruments are capped to keep notes percussive and the mix predictable.
     private const val MAX_SAMPLE_SECONDS = 2.0
 
-    /** Number of pitch rows the sequencer grid offers (shared with the client dialog). */
-    val PITCH_ROWS: Int get() = SEQUENCER_SCALE_SEMITONES.size
-
     /** The duration in seconds of one rendered pattern pass. */
     fun patternSeconds(sequence: MusicSequence): Double {
-        val stepSeconds = 60.0 / sequence.tempoBpm / 4.0 // 16th notes
+        val stepSeconds = 60.0 / sequence.tempoBpm.coerceIn(SEQUENCER_MIN_TEMPO_BPM, SEQUENCER_MAX_TEMPO_BPM) / 4.0 // 16th notes
         return stepSeconds * sequence.steps
     }
 
@@ -53,26 +52,36 @@ object MusicSynthesizer {
 
     /**
      * Renders [sequence] into a 16-bit mono PCM WAV and writes it to [outputFile].
-     * When the sequence uses a "sample" instrument, pass the decoded mono PCM as [samplePcm]
-     * (see [loadSamplePcm]); a null/empty sample falls back to the sine waveform.
-     * Returns the total duration in seconds.
+     * When any note (or the sequence itself) uses a "sample" instrument, pass the decoded mono
+     * PCM buffers keyed by sample URL in [samplePcmByUrl] (see [loadSamplePcm]); a missing/empty
+     * sample falls back to the sine waveform. Returns the total duration in seconds.
      */
-    fun renderToWav(sequence: MusicSequence, outputFile: File, samplePcm: DoubleArray? = null): Double {
-        val steps = sequence.steps.coerceIn(4, 64)
+    fun renderToWav(
+        sequence: MusicSequence,
+        outputFile: File,
+        samplePcmByUrl: Map<String, DoubleArray> = emptyMap()
+    ): Double {
+        // Up to 32 measures (16 steps each) so multi-measure patterns render in full.
+        val steps = sequence.steps.coerceIn(4, 512)
         val loops = sequence.loops.coerceIn(1, 32)
-        val stepSeconds = 60.0 / sequence.tempoBpm.coerceIn(40, 240) / 4.0
-        val noteSeconds = stepSeconds * 1.9 // let notes ring past their step for smoothness
+        val stepSeconds = 60.0 / sequence.tempoBpm.coerceIn(SEQUENCER_MIN_TEMPO_BPM, SEQUENCER_MAX_TEMPO_BPM) / 4.0
         val patternSamples = (stepSeconds * steps * SAMPLE_RATE).toInt()
         val totalSamples = patternSamples * loops + (SAMPLE_RATE / 2) // half-second tail
         val mix = DoubleArray(totalSamples)
-        val useSample = sequence.waveform == "sample" && samplePcm != null && samplePcm.isNotEmpty()
 
         for (loop in 0 until loops) {
             val loopOffset = loop * patternSamples
             for (note in sequence.notes) {
                 if (note.step !in 0 until steps) continue
+                // Per-note instrument, falling back to the sequence-level one (older patterns).
+                val waveform = note.waveform ?: sequence.waveform
+                val sampleUrl = note.sampleUrl ?: sequence.sampleUrl
+                val samplePcm = if (waveform == "sample" && sampleUrl != null) samplePcmByUrl[sampleUrl] else null
+                val useSample = samplePcm != null && samplePcm.isNotEmpty()
                 val freq = sequencerRowFrequency(note.pitch)
                 val startSample = loopOffset + (note.step * stepSeconds * SAMPLE_RATE).toInt()
+                // Held notes ring slightly past their last step for smoothness.
+                val noteSeconds = stepSeconds * (note.lengthSteps.coerceAtLeast(1) + 0.9)
                 val noteSamples = (noteSeconds * SAMPLE_RATE).toInt()
                 val attack = (0.012 * SAMPLE_RATE).toInt().coerceAtLeast(1)
                 // Sample instrument: resample at the note's rate so higher rows play faster/higher.
@@ -85,10 +94,10 @@ object MusicSynthesizer {
                     val env = min(i.toDouble() / attack, 1.0) * (1.0 - i.toDouble() / noteSamples).coerceIn(0.0, 1.0)
                     val value = if (useSample) {
                         val sampleIdx = (i * playbackRate).toInt()
-                        if (sampleIdx >= samplePcm.size) break
+                        if (sampleIdx >= samplePcm!!.size) break
                         samplePcm[sampleIdx]
                     } else {
-                        oscillator(sequence.waveform, 2 * PI * freq * t)
+                        oscillator(waveform, 2 * PI * freq * t)
                     }
                     mix[idx] += value * env * 0.35
                 }

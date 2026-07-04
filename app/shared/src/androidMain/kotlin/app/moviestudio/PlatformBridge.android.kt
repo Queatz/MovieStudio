@@ -28,3 +28,10 @@ actual fun playSequencerTone(
 ) {
     // No-op on Android: sequencer note playback is a browser (WebAudio) feature.
 }
+
+// Realtime speech dictation is a browser (Web Speech API) feature.
+actual fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean = false
+
+actual fun stopRealtimeSpeechInput() {
+    // No-op on Android.
+}

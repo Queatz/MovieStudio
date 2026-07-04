@@ -155,13 +155,21 @@ fun Route.generationRoutes() {
                 val tempDir = withContext(Dispatchers.IO) { Files.createTempDirectory("moviestudio_seq_").toFile() }
                 try {
                     val wavFile = File(tempDir, "sequence.wav")
-                    // Sample instrument: decode the chosen library sound into PCM first (falls
-                    // back to the sine waveform when the sample cannot be decoded).
-                    val samplePcm = request.sequence.sampleUrl
-                        ?.takeIf { request.sequence.waveform == "sample" && it.isNotBlank() }
-                        ?.let { MusicSynthesizer.loadSamplePcm(it) }
+                    // Sample instruments: decode every referenced library sound into PCM first
+                    // (per-note instruments plus the sequence-level fallback). Notes whose sample
+                    // cannot be decoded fall back to the sine waveform.
+                    val sampleUrls = buildSet {
+                        request.sequence.notes.forEach { note ->
+                            val waveform = note.waveform ?: request.sequence.waveform
+                            val url = note.sampleUrl ?: request.sequence.sampleUrl
+                            if (waveform == "sample" && !url.isNullOrBlank()) add(url)
+                        }
+                    }
+                    val samplePcmByUrl = sampleUrls.mapNotNull { url ->
+                        MusicSynthesizer.loadSamplePcm(url)?.let { url to it }
+                    }.toMap()
                     val duration = withContext(Dispatchers.IO) {
-                        MusicSynthesizer.renderToWav(request.sequence, wavFile, samplePcm)
+                        MusicSynthesizer.renderToWav(request.sequence, wavFile, samplePcmByUrl)
                     }
                     val objectKey = "music-sequences/${UUID.randomUUID()}.wav"
                     val ossUrl = OssService.uploadFile(objectKey, wavFile)

@@ -42,19 +42,24 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
 import app.moviestudio.Clip
 import app.moviestudio.FilmTimeline
+import app.moviestudio.Track
 import app.moviestudio.TrackType
 import app.moviestudio.TransitionType
 import app.moviestudio.calculatedDuration
@@ -70,10 +75,19 @@ private const val EDGE_GRAB = 10f
 /** What a drag that started on the timeline is currently doing. */
 private sealed interface DragSession {
     data object Seek : DragSession
-    data class MoveClip(val clip: Clip, var newStart: Float) : DragSession
+    data class MoveClip(
+        val clip: Clip,
+        val sourceTrackType: TrackType,
+        var newStart: Float,
+        var snappedStart: Float,
+        var newTrackId: String
+    ) : DragSession
     data class ResizeLeft(val clip: Clip, val maxTrim: Float, var newStart: Float, var newTrimIn: Float) : DragSession
     data class ResizeRight(val clip: Clip, val maxTrimOut: Float, var newTrimOut: Float) : DragSession
 }
+
+/** The track row index at the given canvas [y] position (may be out of the tracks' range). */
+private fun trackIndexAt(y: Float): Int = ((y - RULER_HEIGHT - TRACK_GAP) / (TRACK_HEIGHT + TRACK_GAP)).toInt()
 
 /**
  * The timeline editor (always dark, regardless of theme): AI generate bar, track headers,
@@ -96,10 +110,19 @@ fun TimelinePanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
         SkeletonGenerateBar(viewModel)
         Spacer(Modifier.height(8.dp))
 
-        Row(Modifier.weight(1f)) {
-            TrackHeaderColumn(viewModel)
-            Spacer(Modifier.width(6.dp))
-            TimelineCanvas(viewModel, Modifier.weight(1f).fillMaxHeight())
+        if (timeline == null && viewModel.timelineError != null) {
+            // The timeline failed to load: error + retry instead of an empty editor.
+            ErrorRetryBox(
+                message = viewModel.timelineError ?: "Failed to load the timeline",
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                onRetry = { viewModel.refreshTimeline() }
+            )
+        } else {
+            Row(Modifier.weight(1f)) {
+                TrackHeaderColumn(viewModel)
+                Spacer(Modifier.width(6.dp))
+                TimelineCanvas(viewModel, Modifier.weight(1f).fillMaxHeight())
+            }
         }
 
         Spacer(Modifier.height(6.dp))
@@ -135,7 +158,7 @@ private fun SkeletonGenerateBar(viewModel: AppViewModel) {
             onValueChange = { prompt = it },
             modifier = Modifier.weight(1f),
             placeholder = "" +
-                    "Describe a scene or a whole movie — AI plans it onto the timeline at ${formatDuration(viewModel.playhead.toDouble())}...",
+                    "Describe a scene or a whole movie starting at ${formatDuration(viewModel.playhead.toDouble())}...",
             singleLine = true
         )
         Spacer(Modifier.width(8.dp))
@@ -175,25 +198,75 @@ private fun AddTrackMenu(viewModel: AppViewModel) {
     }
 }
 
-/** Left gutter: one header per track with its type and a delete action. */
+/** The emoji + default label for a track type (used when the track has no custom name). */
+private fun trackGlyphAndLabel(type: TrackType): Pair<String, String> = when (type) {
+    TrackType.VIDEO -> "🎬" to "Video"
+    TrackType.MUSIC -> "🎵" to "Music"
+    TrackType.VOICE -> "🎙️" to "Voice"
+    TrackType.EFFECTS -> "✨" to "Effects"
+}
+
+/**
+ * Left gutter: one header per track. Headers line up exactly with the canvas rows (the canvas
+ * draws in raw pixels, so the px constants are converted through the density). Click a header
+ * to rename the track, drag it vertically to reorder tracks, and use 🗑 to delete (with a
+ * confirmation).
+ */
 @Composable
 private fun TrackHeaderColumn(viewModel: AppViewModel) {
     val tracks = viewModel.timeline?.tracks ?: emptyList()
+    // The canvas draws with pixel constants; convert them to dp so headers align pixel-perfectly.
+    val density = LocalDensity.current
+    val rulerGapDp = with(density) { (RULER_HEIGHT + TRACK_GAP).toDp() }
+    val trackHeightDp = with(density) { TRACK_HEIGHT.toDp() }
+    val trackGapDp = with(density) { TRACK_GAP.toDp() }
+
+    var renameTarget by remember { mutableStateOf<Track?>(null) }
+    var deleteTarget by remember { mutableStateOf<Track?>(null) }
+    var draggingTrackId by remember { mutableStateOf<String?>(null) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
+
     Column(Modifier.width(92.dp)) {
-        Spacer(Modifier.height((RULER_HEIGHT + TRACK_GAP).dp))
-        tracks.forEach { trackWithClips ->
-            val (glyph, label) = when (trackWithClips.track.type) {
-                TrackType.VIDEO -> "🎬" to "Video"
-                TrackType.MUSIC -> "🎵" to "Music"
-                TrackType.VOICE -> "🎙️" to "Voice"
-                TrackType.EFFECTS -> "✨" to "Effects"
-            }
+        Spacer(Modifier.height(rulerGapDp))
+        tracks.forEachIndexed { index, trackWithClips ->
+            val track = trackWithClips.track
+            val (glyph, defaultLabel) = trackGlyphAndLabel(track.type)
+            val label = track.name?.takeIf { it.isNotBlank() } ?: defaultLabel
+            val isDragging = draggingTrackId == track.id
             Row(
                 modifier = Modifier
-                    .height(TRACK_HEIGHT.dp)
+                    .height(trackHeightDp)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF221F2A))
+                    .offset { IntOffset(0, if (isDragging) dragOffsetY.roundToInt() else 0) }
+                    .zIndex(if (isDragging) 1f else 0f)
+                    .clip(RoundedCornerShape(8.dp)) // clip BEFORE clickable: rounded hover/press
+                    .background(if (isDragging) Color(0xFF322D40) else Color(0xFF221F2A))
+                    .clickable { renameTarget = track }
+                    // Drag the header vertically to reorder tracks.
+                    .pointerInput(track.id, index, tracks.size) {
+                        detectDragGestures(
+                            onDragStart = {
+                                draggingTrackId = track.id
+                                dragOffsetY = 0f
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                dragOffsetY += dragAmount.y
+                            },
+                            onDragEnd = {
+                                val rowStride = TRACK_HEIGHT + TRACK_GAP
+                                val moved = (dragOffsetY / rowStride).roundToInt()
+                                val target = (index + moved).coerceIn(0, tracks.lastIndex)
+                                draggingTrackId = null
+                                dragOffsetY = 0f
+                                if (target != index) viewModel.reorderTrack(index, target)
+                            },
+                            onDragCancel = {
+                                draggingTrackId = null
+                                dragOffsetY = 0f
+                            }
+                        )
+                    }
                     .padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -204,13 +277,60 @@ private fun TrackHeaderColumn(viewModel: AppViewModel) {
                     color = Color(0xFFB9B4C7),
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
                     modifier = Modifier.weight(1f)
                 )
                 RoundIconButton("🗑", size = 20.dp, tint = Color(0xFF6E687D)) {
-                    viewModel.deleteTrack(trackWithClips.track.id)
+                    deleteTarget = track
                 }
             }
-            Spacer(Modifier.height(TRACK_GAP.dp))
+            Spacer(Modifier.height(trackGapDp))
+        }
+    }
+
+    renameTarget?.let { track ->
+        RenameTrackDialog(
+            track = track,
+            onRename = { name ->
+                viewModel.renameTrack(track, name)
+                renameTarget = null
+            },
+            onDismiss = { renameTarget = null }
+        )
+    }
+
+    deleteTarget?.let { track ->
+        val (_, defaultLabel) = trackGlyphAndLabel(track.type)
+        val label = track.name?.takeIf { it.isNotBlank() } ?: defaultLabel
+        ConfirmDialog(
+            title = "Delete track?",
+            message = "\"$label\" and all clips on it will be removed from the timeline. " +
+                "Library media is kept.",
+            confirmLabel = "Delete track",
+            onConfirm = { viewModel.deleteTrack(track.id) },
+            onDismiss = { deleteTarget = null }
+        )
+    }
+}
+
+/** Simple rename dialog for a track (blank resets to the type's default label). */
+@Composable
+private fun RenameTrackDialog(track: Track, onRename: (String) -> Unit, onDismiss: () -> Unit) {
+    val (_, defaultLabel) = trackGlyphAndLabel(track.type)
+    var name by remember(track.id) { mutableStateOf(track.name ?: "") }
+    StudioDialog(title = "Rename track", onDismiss = onDismiss, width = 380.dp) {
+        StudioTextField(
+            value = name,
+            onValueChange = { name = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Track name",
+            placeholder = defaultLabel,
+            singleLine = true
+        )
+        DialogActions {
+            GhostPillButton("Cancel") { onDismiss() }
+            ActionSpacer()
+            PillButton("Save") { onRename(name) }
         }
     }
 }
@@ -242,11 +362,11 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
     fun timeAt(x: Float): Float = scrollState + x / zoomState
 
     // Register this canvas as the library drag-and-drop target: bounds for hit testing plus a
-    // root-position → timeline-seconds resolver used when a library card is dropped here.
+    // root-position → drop-target resolver used when a library card is dropped here.
     DisposableEffect(Unit) {
         onDispose {
             LibraryDragState.timelineBounds = null
-            LibraryDragState.resolveDropSeconds = null
+            LibraryDragState.resolveDropTarget = null
         }
     }
 
@@ -266,9 +386,14 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
             .onGloballyPositioned { coords ->
                 val bounds = coords.boundsInRoot()
                 LibraryDragState.timelineBounds = bounds
-                LibraryDragState.resolveDropSeconds = { position ->
+                LibraryDragState.resolveDropTarget = { position ->
                     if (bounds.contains(position)) {
-                        max(0f, scrollState + (position.x - bounds.left) / zoomState)
+                        var seconds = max(0f, scrollState + (position.x - bounds.left) / zoomState)
+                        // Holding Ctrl while dropping snaps to the nearest whole second.
+                        if (KeyModifierState.ctrlDown) seconds = seconds.roundToInt().toFloat()
+                        val trackIndex = trackIndexAt(position.y - bounds.top)
+                        val trackId = timelineState?.tracks?.getOrNull(trackIndex)?.track?.id
+                        TimelineDropTarget(seconds, trackId)
                     } else {
                         null
                     }
@@ -276,6 +401,22 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
             }
             .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF1D1A24))
+            // Mouse-wheel scrubbing: horizontal or vertical wheel input moves the playhead.
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.type == PointerEventType.Scroll) {
+                            val delta = event.changes.fold(Offset.Zero) { acc, change -> acc + change.scrollDelta }
+                            if (delta != Offset.Zero) {
+                                // One wheel notch = one second, both axes scrub.
+                                viewModel.seekBy(delta.x + delta.y)
+                                event.changes.forEach { it.consume() }
+                            }
+                        }
+                    }
+                }
+            }
             // Tap: seek from the ruler, select/deselect clips.
             .pointerInput(Unit) {
                 detectTapGestures { offset ->
@@ -300,18 +441,25 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
                             if (hit == null) {
                                 null
                             } else {
-                                val (clip, _) = hit
+                                val (clip, trackIndex) = hit
                                 viewModel.selectedClipId = clip.id
                                 val clipStartX = (clip.timelineStart - scrollState) * zoomState
                                 val clipEndX = (clip.timelineStart + (clip.trimOut - clip.trimIn) - scrollState) * zoomState
                                 val asset = assetsState.firstOrNull { it.id == clip.assetId }
                                 val mediaCap = mediaTrimCap(asset)
+                                val trackType = timelineState?.tracks?.getOrNull(trackIndex)?.track?.type
                                 when {
                                     offset.x - clipStartX <= EDGE_GRAB ->
                                         DragSession.ResizeLeft(clip, mediaCap, clip.timelineStart, clip.trimIn)
                                     clipEndX - offset.x <= EDGE_GRAB ->
                                         DragSession.ResizeRight(clip, mediaCap, clip.trimOut)
-                                    else -> DragSession.MoveClip(clip, clip.timelineStart)
+                                    else -> DragSession.MoveClip(
+                                        clip,
+                                        trackType ?: TrackType.VIDEO,
+                                        clip.timelineStart,
+                                        clip.timelineStart,
+                                        clip.trackId
+                                    )
                                 }
                             }
                         }
@@ -323,7 +471,23 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
                             is DragSession.Seek -> viewModel.seek(timeAt(change.position.x))
                             is DragSession.MoveClip -> {
                                 session.newStart = max(0f, session.newStart + dt)
-                                viewModel.updateClipLocal(session.clip.copy(timelineStart = session.newStart))
+                                // Holding Ctrl snaps the clip's start to the nearest whole second.
+                                session.snappedStart =
+                                    if (KeyModifierState.ctrlDown) max(0f, session.newStart.roundToInt().toFloat())
+                                    else session.newStart
+                                // Dragging vertically re-homes the clip onto another track of
+                                // the same type.
+                                val targetIndex = trackIndexAt(change.position.y)
+                                val targetTrack = timelineState?.tracks?.getOrNull(targetIndex)?.track
+                                if (targetTrack != null && targetTrack.type == session.sourceTrackType) {
+                                    session.newTrackId = targetTrack.id
+                                }
+                                viewModel.updateClipLocal(
+                                    session.clip.copy(
+                                        timelineStart = session.snappedStart,
+                                        trackId = session.newTrackId
+                                    )
+                                )
                             }
                             is DragSession.ResizeLeft -> {
                                 val minTrim = 0f
@@ -396,7 +560,9 @@ private fun mediaTrimCap(asset: Asset?): Float {
 private fun commitDrag(viewModel: AppViewModel, session: DragSession?) {
     when (session) {
         is DragSession.MoveClip ->
-            viewModel.updateClip(session.clip.copy(timelineStart = session.newStart))
+            viewModel.updateClip(
+                session.clip.copy(timelineStart = session.snappedStart, trackId = session.newTrackId)
+            )
         is DragSession.ResizeLeft ->
             viewModel.updateClip(session.clip.copy(timelineStart = session.newStart, trimIn = session.newTrimIn))
         is DragSession.ResizeRight ->

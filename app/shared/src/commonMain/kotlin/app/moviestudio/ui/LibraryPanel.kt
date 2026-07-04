@@ -82,6 +82,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     var showSequencer by remember { mutableStateOf(false) }
     var showSfx by remember { mutableStateOf(false) }
     var showTts by remember { mutableStateOf(false) }
+    var showRecordVoice by remember { mutableStateOf(false) }
     var showDescribe by remember { mutableStateOf(false) }
     var characterEditor by remember { mutableStateOf<Character?>(null) }
     var showNewCharacter by remember { mutableStateOf(false) }
@@ -108,6 +109,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 onSequencer = { sequencerAsset = null; showSequencer = true },
                 onSoundEffect = { showSfx = true },
                 onTts = { showTts = true },
+                onRecordVoice = { showRecordVoice = true },
                 onDescribe = { showDescribe = true },
                 onUpload = { type -> viewModel.uploadAsset(type) },
                 onNewCharacter = { showNewCharacter = true },
@@ -165,7 +167,14 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                     is LibTab.OfType -> viewModel.libraryAssets.filter { it.type == current.type }
                     else -> emptyList()
                 }
-                if (assets.isEmpty()) {
+                if (viewModel.libraryAssets.isEmpty() && viewModel.libraryError != null) {
+                    // The library failed to load: error + retry instead of an empty list.
+                    ErrorRetryBox(
+                        message = viewModel.libraryError ?: "Failed to load the library",
+                        modifier = Modifier.fillMaxSize(),
+                        onRetry = { viewModel.refreshLibrary() }
+                    )
+                } else if (assets.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             "Nothing here yet.\nUse ＋ Add to create or upload media.",
@@ -180,7 +189,9 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                                 asset = asset,
                                 onOpen = { detailAsset = asset },
                                 onAddToTimeline = { viewModel.addAssetToTimeline(asset) },
-                                onDropOnTimeline = { seconds -> viewModel.addAssetToTimeline(asset, seconds) }
+                                onDropOnTimeline = { target ->
+                                    viewModel.addAssetToTimeline(asset, target.seconds, target.trackId)
+                                }
                             )
                         }
                     }
@@ -219,6 +230,9 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     if (showTts) {
         TtsDialog(viewModel) { showTts = false }
     }
+    if (showRecordVoice) {
+        RecordVoiceDialog(viewModel) { showRecordVoice = false }
+    }
     if (showDescribe) {
         DescribeAssetDialog(viewModel) { showDescribe = false }
     }
@@ -244,6 +258,7 @@ private fun AddMenu(
     onSequencer: () -> Unit,
     onSoundEffect: () -> Unit,
     onTts: () -> Unit,
+    onRecordVoice: () -> Unit,
     onDescribe: () -> Unit,
     onUpload: (AssetType) -> Unit,
     onNewCharacter: () -> Unit,
@@ -257,12 +272,13 @@ private fun AddMenu(
             fun item(label: String, action: () -> Unit) {
                 DropdownMenuItem(text = { Text(label) }, onClick = { expanded = false; action() })
             }
-            item("✨ Generate video / image...") { onGenerateMedia() }
-            item("🎵 Generate music (AI)...") { onGenerateMusic() }
+            item("✨ Generate visual...") { onGenerateMedia() }
+            item("🎵 Generate music...") { onGenerateMusic() }
             item("🎹 Music sequencer...") { onSequencer() }
             item("💥 Generate sound effect...") { onSoundEffect() }
             item("🗣️ Text to speech...") { onTts() }
-            item("📝 Describe media (placeholder)...") { onDescribe() }
+            item("🎙️ Record voice...") { onRecordVoice() }
+            item("📝 Placeholder...") { onDescribe() }
             item("📤 Upload video") { onUpload(AssetType.VIDEO) }
             item("📤 Upload image") { onUpload(AssetType.IMAGE) }
             item("📤 Upload music") { onUpload(AssetType.MUSIC) }
@@ -289,7 +305,7 @@ private fun AssetCard(
     asset: Asset,
     onOpen: () -> Unit,
     onAddToTimeline: () -> Unit,
-    onDropOnTimeline: (Float) -> Unit
+    onDropOnTimeline: (TimelineDropTarget) -> Unit
 ) {
     // Root-space origin of the card, so drag positions can be mapped for the timeline drop.
     var origin by remember { mutableStateOf(Offset.Zero) }
@@ -312,9 +328,9 @@ private fun AssetCard(
                         LibraryDragState.pointerPosition = origin + change.position
                     },
                     onDragEnd = {
-                        val seconds = LibraryDragState.resolveDropSeconds?.invoke(LibraryDragState.pointerPosition)
+                        val target = LibraryDragState.resolveDropTarget?.invoke(LibraryDragState.pointerPosition)
                         LibraryDragState.clear()
-                        if (seconds != null) onDropOnTimeline(seconds)
+                        if (target != null) onDropOnTimeline(target)
                     },
                     onDragCancel = { LibraryDragState.clear() }
                 )
@@ -348,7 +364,7 @@ private fun AssetCard(
                             .padding(horizontal = 7.dp, vertical = 1.dp)
                     ) {
                         Text(
-                            "description only",
+                            "Placeholder",
                             fontSize = 10.sp,
                             color = MaterialTheme.colorScheme.onTertiaryContainer,
                             fontWeight = FontWeight.SemiBold

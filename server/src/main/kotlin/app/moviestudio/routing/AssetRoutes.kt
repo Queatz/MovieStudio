@@ -24,7 +24,14 @@ import java.util.UUID
 data class UploadUrlRequest(val objectKey: String)
 
 @Serializable
-data class UploadUrlResponse(val uploadUrl: String, val objectKey: String)
+data class UploadUrlResponse(
+    val uploadUrl: String,
+    val objectKey: String,
+    /** Long-lived signed GET URL clients should persist as the asset's read URL. */
+    val downloadUrl: String,
+    /** The exact Content-Type the PUT must send; it is part of the upload URL's signature. */
+    val contentType: String
+)
 
 @Serializable
 data class RestoreVersionRequest(val versionIndex: Int)
@@ -91,7 +98,14 @@ fun Route.assetRoutes() {
             try {
                 val request = call.receive<UploadUrlRequest>()
                 val uploadUrl = OssService.generatePreSignedUploadUrl(request.objectKey)
-                call.respond(UploadUrlResponse(uploadUrl, request.objectKey))
+                call.respond(
+                    UploadUrlResponse(
+                        uploadUrl = uploadUrl,
+                        objectKey = request.objectKey,
+                        downloadUrl = OssService.downloadUrl(request.objectKey),
+                        contentType = OssService.uploadContentType(request.objectKey)
+                    )
+                )
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
             }

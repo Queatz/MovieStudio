@@ -38,6 +38,15 @@ class AppViewModel : ViewModel() {
         private set
     var errorMessage by mutableStateOf<String?>(null)
 
+    // Per-component load failures, so major surfaces can show an inline "error + retry" state
+    // instead of only a transient toast.
+    var moviesError by mutableStateOf<String?>(null)
+        private set
+    var libraryError by mutableStateOf<String?>(null)
+        private set
+    var timelineError by mutableStateOf<String?>(null)
+        private set
+
     // --------------------------------------------------------------------------------- library
     var libraryAssets by mutableStateOf<List<Asset>>(emptyList())
         private set
@@ -59,6 +68,10 @@ class AppViewModel : ViewModel() {
     var zoomScale by mutableStateOf(20f) // pixels per second on the timeline
     var scrollOffset by mutableStateOf(0f) // timeline horizontal scroll, in seconds
     var selectedClipId by mutableStateOf<String?>(null)
+
+    /** True while the movie plays in the distraction-free fullscreen mode (ESC exits). */
+    var isFullscreenPlayback by mutableStateOf(false)
+        private set
 
     // ------------------------------------------------------------------------------------ jobs
     /** Active (PENDING/RUNNING) plus FAILED background jobs across the studio, newest first. */
@@ -97,10 +110,11 @@ class AppViewModel : ViewModel() {
     fun loadMovies() {
         viewModelScope.launch {
             isLoading = true
+            moviesError = null
             try {
                 movies = NetworkService.getMovies()
             } catch (e: Exception) {
-                errorMessage = "Failed to load movies: ${e.message}"
+                moviesError = "Failed to load movies: ${e.message}"
             } finally {
                 isLoading = false
             }
@@ -192,8 +206,9 @@ class AppViewModel : ViewModel() {
                 val loaded = NetworkService.getTimeline(movieId)
                 timeline = loaded
                 currentMovie = loaded.movie
+                timelineError = null
             } catch (e: Exception) {
-                errorMessage = "Failed to load timeline: ${e.message}"
+                timelineError = "Failed to load timeline: ${e.message}"
             }
         }
     }
@@ -228,6 +243,22 @@ class AppViewModel : ViewModel() {
     fun seek(seconds: Float) {
         val duration = (timeline?.calculatedDuration() ?: 0.0).toFloat()
         playhead = seconds.coerceIn(0f, if (duration > 0f) duration else seconds.coerceAtLeast(0f))
+    }
+
+    /** Moves the playhead by [deltaSeconds] (arrow-key stepping and wheel scrubbing). */
+    fun seekBy(deltaSeconds: Float) {
+        seek(playhead + deltaSeconds)
+    }
+
+    /** One-click fullscreen playback: hides all editor chrome and plays from the playhead. */
+    fun enterFullscreenPlayback() {
+        isFullscreenPlayback = true
+        if (!isPlaying) play()
+    }
+
+    /** Leaves fullscreen playback (ESC or the close affordance). */
+    fun exitFullscreenPlayback() {
+        isFullscreenPlayback = false
     }
 
     /**
@@ -272,6 +303,52 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /** Renames a track (blank name falls back to the type's default label in the UI). */
+    fun renameTrack(track: Track, name: String) {
+        val movieId = currentMovie?.id ?: return
+        val updated = track.copy(name = name.trim().ifBlank { null })
+        // Optimistic local update so the header renames instantly.
+        timeline = timeline?.copy(
+            tracks = timeline!!.tracks.map { t -> if (t.track.id == track.id) t.copy(track = updated) else t }
+        )
+        viewModelScope.launch {
+            try {
+                NetworkService.updateTrack(movieId, updated)
+            } catch (e: Exception) {
+                errorMessage = "Failed to rename track: ${e.message}"
+                refreshTimeline()
+            }
+        }
+    }
+
+    /**
+     * Moves the track at [fromIndex] to [toIndex] (header drag-and-drop) and persists the new
+     * zIndex order for every track.
+     */
+    fun reorderTrack(fromIndex: Int, toIndex: Int) {
+        val movieId = currentMovie?.id ?: return
+        val current = timeline?.tracks ?: return
+        if (fromIndex !in current.indices || toIndex !in current.indices || fromIndex == toIndex) return
+        val reordered = current.toMutableList().apply { add(toIndex, removeAt(fromIndex)) }
+        val renumbered = reordered.mapIndexed { index, t -> t.copy(track = t.track.copy(zIndex = index)) }
+        timeline = timeline?.copy(tracks = renumbered)
+        viewModelScope.launch {
+            try {
+                renumbered.forEachIndexed { index, t ->
+                    if (current.getOrNull(index)?.track?.id != t.track.id ||
+                        current.getOrNull(index)?.track?.zIndex != t.track.zIndex
+                    ) {
+                        NetworkService.updateTrack(movieId, t.track)
+                    }
+                }
+                refreshTimeline()
+            } catch (e: Exception) {
+                errorMessage = "Failed to reorder tracks: ${e.message}"
+                refreshTimeline()
+            }
+        }
+    }
+
     fun deleteTrack(trackId: String) {
         val movieId = currentMovie?.id ?: return
         viewModelScope.launch {
@@ -284,21 +361,29 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /** The track type an asset of [type] lands on when placed on the timeline. */
+    fun compatibleTrackType(type: AssetType): TrackType = when (type) {
+        AssetType.VIDEO, AssetType.IMAGE, AssetType.TEXT -> TrackType.VIDEO
+        AssetType.MUSIC, AssetType.AUDIO -> TrackType.MUSIC
+        AssetType.VOICE -> TrackType.VOICE
+    }
+
     /**
-     * Adds [asset] to the first compatible track, at [atSeconds] when given (e.g. a drag-and-drop
-     * position on the timeline) or at the current playhead position otherwise.
+     * Adds [asset] to a compatible track, at [atSeconds] when given (e.g. a drag-and-drop
+     * position on the timeline) or at the current playhead position otherwise. When
+     * [targetTrackId] names a compatible track (a drop aimed at a specific row), the clip lands
+     * on that exact track — so media can be dropped on any track of the matching type.
      */
-    fun addAssetToTimeline(asset: Asset, atSeconds: Float? = null) {
+    fun addAssetToTimeline(asset: Asset, atSeconds: Float? = null, targetTrackId: String? = null) {
         val movieId = currentMovie?.id ?: return
         val tracks = timeline?.tracks ?: return
-        val targetTrackType = when (asset.type) {
-            AssetType.VIDEO, AssetType.IMAGE, AssetType.TEXT -> TrackType.VIDEO
-            AssetType.MUSIC, AssetType.AUDIO -> TrackType.MUSIC
-            AssetType.VOICE -> TrackType.VOICE
-        }
+        val targetTrackType = compatibleTrackType(asset.type)
         viewModelScope.launch {
             try {
-                val track = tracks.firstOrNull { it.track.type == targetTrackType }?.track ?: run {
+                val targeted = targetTrackId
+                    ?.let { id -> tracks.firstOrNull { it.track.id == id && it.track.type == targetTrackType } }
+                    ?.track
+                val track = targeted ?: tracks.firstOrNull { it.track.type == targetTrackType }?.track ?: run {
                     val zIndex = (tracks.maxOfOrNull { it.track.zIndex } ?: -1) + 1
                     NetworkService.createTrack(movieId, Track(generateId(), movieId, targetTrackType, zIndex))
                 }
@@ -321,26 +406,35 @@ class AppViewModel : ViewModel() {
     }
 
     /**
+     * Applies [clip] to the local timeline state, re-homing it when its trackId changed (clips
+     * can be dragged vertically onto another track of the same type).
+     */
+    private fun applyClipLocally(clip: Clip) {
+        timeline = timeline?.copy(
+            tracks = timeline!!.tracks.map { trackWithClips ->
+                val without = trackWithClips.clips.filter { it.id != clip.id }
+                if (trackWithClips.track.id == clip.trackId) {
+                    trackWithClips.copy(clips = without + clip)
+                } else {
+                    trackWithClips.copy(clips = without)
+                }
+            }
+        )
+    }
+
+    /**
      * Local-only clip update used while a drag is in progress: keeps the canvas in sync at full
      * frame rate without hitting the server. The drag commit calls [updateClip].
      */
     fun updateClipLocal(clip: Clip) {
-        timeline = timeline?.copy(
-            tracks = timeline!!.tracks.map { trackWithClips ->
-                trackWithClips.copy(clips = trackWithClips.clips.map { if (it.id == clip.id) clip else it })
-            }
-        )
+        applyClipLocally(clip)
     }
 
     /** Persists a moved/resized clip. */
     fun updateClip(clip: Clip) {
         val movieId = currentMovie?.id ?: return
         // Optimistically update local state so dragging feels instant.
-        timeline = timeline?.copy(
-            tracks = timeline!!.tracks.map { trackWithClips ->
-                trackWithClips.copy(clips = trackWithClips.clips.map { if (it.id == clip.id) clip else it })
-            }
-        )
+        applyClipLocally(clip)
         viewModelScope.launch {
             try {
                 NetworkService.updateClip(movieId, clip)
@@ -389,8 +483,42 @@ class AppViewModel : ViewModel() {
             try {
                 // The asset library is global (not scoped to a single movie).
                 libraryAssets = NetworkService.getLibraryAssets(null, null)
+                libraryError = null
             } catch (e: Exception) {
-                errorMessage = "Failed to load library: ${e.message}"
+                libraryError = "Failed to load library: ${e.message}"
+            }
+        }
+    }
+
+    /**
+     * Picks an image from the device, uploads it into the image library and hands back its URL —
+     * used by the generate dialog to attach custom reference images.
+     */
+    fun uploadReferenceImage(onDone: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val uploaded = pickAndUploadDeviceFile(AssetType.IMAGE)
+                if (uploaded == null) {
+                    onDone(null)
+                    return@launch
+                }
+                NetworkService.createAsset(
+                    Asset(
+                        id = generateId(),
+                        type = AssetType.IMAGE,
+                        ossUrl = uploaded.ossUrl,
+                        durationSeconds = 5.0,
+                        movieId = null,
+                        tags = listOf("uploaded", "reference"),
+                        aiPrompt = null,
+                        description = uploaded.fileName
+                    )
+                )
+                refreshLibrary()
+                onDone(uploaded.ossUrl)
+            } catch (e: Exception) {
+                errorMessage = "Reference upload failed: ${e.message}"
+                onDone(null)
             }
         }
     }
@@ -441,6 +569,35 @@ class AppViewModel : ViewModel() {
                 refreshLibrary()
             } catch (e: Exception) {
                 errorMessage = "Upload failed: ${e.message}"
+            }
+        }
+    }
+
+    /**
+     * Saves a finished microphone recording as a VOICE asset in the global library (with the
+     * usual auto-generated transcript), used by the "Record voice..." flow.
+     */
+    fun createVoiceRecordingAsset(name: String, recording: UploadedDeviceFile, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                val asset = Asset(
+                    id = generateId(),
+                    type = AssetType.VOICE,
+                    ossUrl = recording.ossUrl,
+                    durationSeconds = recording.durationSeconds,
+                    movieId = null,
+                    tags = listOf("recorded"),
+                    aiPrompt = null,
+                    description = name.ifBlank { "Voice recording" }
+                )
+                val saved = NetworkService.createAsset(asset)
+                // Voice media auto-generates a transcript with word timings.
+                NetworkService.generateTranscript(saved.id)
+                refreshLibrary()
+            } catch (e: Exception) {
+                errorMessage = "Failed to save recording: ${e.message}"
+            } finally {
+                onDone()
             }
         }
     }
@@ -570,12 +727,11 @@ class AppViewModel : ViewModel() {
                     onDone(false)
                     return@launch
                 }
-                val publicUrl = upload.uploadUrl.substringBefore('?')
                 NetworkService.createAsset(
                     Asset(
                         id = generateId(),
                         type = AssetType.IMAGE,
-                        ossUrl = publicUrl,
+                        ossUrl = upload.downloadUrl,
                         durationSeconds = 5.0,
                         movieId = null,
                         tags = listOf("frame-capture"),

@@ -5,7 +5,8 @@ import kotlinx.coroutines.await
 
 // Opens a hidden <input type=file>, uploads the selected file to OSS via a pre-signed URL and
 // resolves with a small JSON payload ({ fileName, ossUrl, durationSeconds }), or null if the user
-// cancels. The public URL is the pre-signed URL with its query string (the signature) stripped.
+// cancels. The PUT must send exactly the server-signed Content-Type (it is part of the upload
+// URL's signature) and the persisted read URL is the signed downloadUrl (objects are private).
 @JsFun("""
 (baseUrl, accept) => new Promise((resolve) => {
     const input = document.createElement('input');
@@ -42,7 +43,7 @@ import kotlinx.coroutines.await
         const file = input.files && input.files[0];
         if (!file) { finish(null); return; }
         const objectKey = 'uploads/' + Date.now() + '-' + file.name;
-        let uploadUrl = null;
+        let downloadUrl = null;
         fetch(baseUrl + '/api/assets/upload-url', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -51,11 +52,18 @@ import kotlinx.coroutines.await
             if (!urlResp.ok) { throw new Error('upload-url request failed'); }
             return urlResp.json();
         }).then((urlJson) => {
-            uploadUrl = urlJson.uploadUrl;
-            return fetch(uploadUrl, { method: 'PUT', body: file });
-        }).then(() => readDuration(file)).then((duration) => {
-            const publicUrl = uploadUrl.split('?')[0];
-            finish(JSON.stringify({ fileName: file.name, ossUrl: publicUrl, durationSeconds: duration }));
+            downloadUrl = urlJson.downloadUrl || urlJson.uploadUrl.split('?')[0];
+            const contentType = urlJson.contentType || 'application/octet-stream';
+            return fetch(urlJson.uploadUrl, {
+                method: 'PUT',
+                headers: { 'Content-Type': contentType },
+                body: file
+            });
+        }).then((putResp) => {
+            if (!putResp.ok) { throw new Error('upload PUT failed: ' + putResp.status); }
+            return readDuration(file);
+        }).then((duration) => {
+            finish(JSON.stringify({ fileName: file.name, ossUrl: downloadUrl, durationSeconds: duration }));
         }).catch((e) => {
             finish(null);
         });
@@ -117,7 +125,7 @@ private external fun jsStartMicRecording(): Promise<JsNumber>
             const durationSeconds = Math.max(0.5, (Date.now() - state.startedAt) / 1000);
             const fileName = 'voice-recording-' + Date.now() + '.' + ext;
             const objectKey = 'uploads/' + Date.now() + '-' + fileName;
-            let uploadUrl = null;
+            let downloadUrl = null;
             fetch(baseUrl + '/api/assets/upload-url', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -126,11 +134,16 @@ private external fun jsStartMicRecording(): Promise<JsNumber>
                 if (!urlResp.ok) { throw new Error('upload-url request failed'); }
                 return urlResp.json();
             }).then((urlJson) => {
-                uploadUrl = urlJson.uploadUrl;
-                return fetch(uploadUrl, { method: 'PUT', body: blob });
-            }).then(() => {
-                const publicUrl = uploadUrl.split('?')[0];
-                resolve(JSON.stringify({ fileName: fileName, ossUrl: publicUrl, durationSeconds: durationSeconds }));
+                downloadUrl = urlJson.downloadUrl || urlJson.uploadUrl.split('?')[0];
+                const contentType = urlJson.contentType || 'application/octet-stream';
+                return fetch(urlJson.uploadUrl, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': contentType },
+                    body: blob
+                });
+            }).then((putResp) => {
+                if (!putResp.ok) { throw new Error('upload PUT failed: ' + putResp.status); }
+                resolve(JSON.stringify({ fileName: fileName, ossUrl: downloadUrl, durationSeconds: durationSeconds }));
             }).catch((e) => resolve(null));
         };
         recorder.stop();

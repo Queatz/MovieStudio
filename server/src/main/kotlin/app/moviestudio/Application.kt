@@ -10,6 +10,7 @@ import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.service.AIGenerationService
 import app.moviestudio.service.QwenAIService
 import app.moviestudio.service.QwenConfig
+import app.moviestudio.storage.OssService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import io.ktor.http.*
@@ -47,6 +48,12 @@ fun Application.module() {
         ArangoDatabase.init()
     } catch (e: Exception) {
         logger.error("Could not initialize ArangoDB on startup: ${e.message}", e)
+    }
+
+    try {
+        OssService.ensureBucketExists()
+    } catch (e: Exception) {
+        logger.error("Could not ensure OSS bucket exists on startup: ${e.message}", e)
     }
 
     QwenConfig.logStatus()

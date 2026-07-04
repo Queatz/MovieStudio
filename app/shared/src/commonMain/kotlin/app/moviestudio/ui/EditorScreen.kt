@@ -61,6 +61,22 @@ fun EditorScreen(viewModel: AppViewModel) {
     var showRenders by remember { mutableStateOf(false) }
     var rootOrigin by remember { mutableStateOf(Offset.Zero) }
 
+    // Fullscreen playback: the stage fills the window, every other control disappears.
+    if (viewModel.isFullscreenPlayback) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            PreviewPanel(viewModel, Modifier.fillMaxSize(), fullscreen = true)
+            // Discreet exit affordance (ESC also leaves fullscreen).
+            RoundIconButton(
+                "✕",
+                contentDescription = "Exit fullscreen (Esc)",
+                size = 34.dp,
+                background = Color.Black.copy(alpha = 0.45f),
+                tint = Color.White.copy(alpha = 0.8f)
+            ) { viewModel.exitFullscreenPlayback() }
+        }
+        return
+    }
+
     Box(Modifier.fillMaxSize().onGloballyPositioned { rootOrigin = it.positionInRoot() }) {
         Column(Modifier.fillMaxSize()) {
             EditorTopBar(
