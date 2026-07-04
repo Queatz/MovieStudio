@@ -24,6 +24,9 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil3.ImageLoader
+import coil3.compose.setSingletonImageLoaderFactory
+import coil3.network.ktor3.KtorNetworkFetcherFactory
 import app.moviestudio.ui.DashboardScreen
 import app.moviestudio.ui.EditorScreen
 import app.moviestudio.ui.KeyModifierState
@@ -42,6 +45,14 @@ import kotlinx.coroutines.delay
 @Composable
 fun App() {
     AppTheme {
+        // Coil loads network images (AsyncImage) on every platform through a Ktor engine, which is
+        // auto-detected from the per-target ktor-client dependency. Registered once here so the
+        // whole app (preview panel, thumbnails, ...) can render URLs with plain Compose components.
+        setSingletonImageLoaderFactory { context ->
+            ImageLoader.Builder(context)
+                .components { add(KtorNetworkFetcherFactory()) }
+                .build()
+        }
         val viewModel: AppViewModel = viewModel { AppViewModel() }
         val rootFocus = remember { FocusRequester() }
 

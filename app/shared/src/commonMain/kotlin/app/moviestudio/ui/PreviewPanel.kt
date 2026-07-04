@@ -22,9 +22,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -36,7 +38,6 @@ import app.moviestudio.AssetType
 import app.moviestudio.AudioPlayItem
 import app.moviestudio.CaptionConfig
 import app.moviestudio.Clip
-import app.moviestudio.ImagePlayer
 import app.moviestudio.TrackType
 import app.moviestudio.VideoPlayer
 import app.moviestudio.aspectRatioToFloat
@@ -48,15 +49,18 @@ import app.moviestudio.shared.resources.asap
 import app.moviestudio.shared.resources.yuyu
 import app.moviestudio.updateAudioPlayback
 import app.moviestudio.volumeAt
+import coil3.compose.AsyncImage
 import org.jetbrains.compose.resources.Font
 
 /** A clip together with its resolved asset and track type, active under the playhead. */
 private data class ActiveClip(val clip: Clip, val asset: Asset, val trackType: TrackType, val zIndex: Int)
 
 /**
- * The movie preview area (always dark, regardless of theme): plays the active video clip,
- * renders description-only items as large centered white text, overlays captions for voice clips
- * and keeps the browser audio pool in sync with everything audible under the playhead.
+ * The movie preview area (always dark, regardless of theme). It composites EVERY visual clip under
+ * the playhead onto one aspect-constrained stage, stacked by track zIndex: still images (plain
+ * Compose [AsyncImage], center-cropped), the active video and description-only text cards. It also
+ * overlays captions for voice clips and keeps the browser audio pool in sync with everything
+ * audible under the playhead. See `docs/PreviewPanel.md` for the full compositing model.
  *
  * With [fullscreen] set, all chrome (rounded corners, padding, transport controls) is hidden —
  * only the stage remains, for the distraction-free fullscreen playback mode (ESC exits).
@@ -84,13 +88,15 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
         result
     }
 
-    // The top visual clip on the video track: could be a video OR a still image asset.
-    val visualActive = activeClips
-        .filter { it.trackType == TrackType.VIDEO && it.asset.ossUrl.isNotBlank() && !it.asset.isDescriptionOnly }
-        .maxByOrNull { it.zIndex }
-    val textActive = activeClips
-        .filter { it.trackType == TrackType.VIDEO && it.asset.isDescriptionOnly }
-        .maxByOrNull { it.zIndex }
+    // Everything visual lives on VIDEO-type tracks: still images, video clips and description-only
+    // text cards. Sort ascending by zIndex so a higher clip (an overlay track) draws on top.
+    val visualClips = activeClips
+        .filter { it.trackType == TrackType.VIDEO }
+        .sortedBy { it.zIndex }
+    // The web preview shares a single <video> element, so only one video clip can play at a time —
+    // the top-most one wins; images and text on other tracks still render around it.
+    val activeVideo = visualClips
+        .lastOrNull { !it.asset.isDescriptionOnly && it.asset.type != AssetType.IMAGE }
     val captionClips = activeClips.filter { it.trackType == TrackType.VOICE }
 
     // Keep the audio-element pool in sync (music, voice, sound effects under the playhead).
@@ -111,10 +117,11 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
         updateAudioPlayback(audioItems, viewModel.isPlaying)
     }
 
-    // Keep the preview's crop position in sync with the active clip's 0-100 offsets (50 = center).
-    val activeVisualEffects = visualActive?.let { parseEffectsConfig(it.clip.effectsConfig) }
-    LaunchedEffect(visualActive?.clip?.id, activeVisualEffects?.offsetX, activeVisualEffects?.offsetY) {
-        setPreviewObjectPosition(activeVisualEffects?.offsetX ?: 50.0, activeVisualEffects?.offsetY ?: 50.0)
+    // Keep the shared <video> element's center-crop position in sync with the active video clip's
+    // 0-100 offsets (50 = center). Still images position themselves via Compose alignment (below).
+    val activeVideoEffects = activeVideo?.let { parseEffectsConfig(it.clip.effectsConfig) }
+    LaunchedEffect(activeVideo?.clip?.id, activeVideoEffects?.offsetX, activeVideoEffects?.offsetY) {
+        setPreviewObjectPosition(activeVideoEffects?.offsetX ?: 50.0, activeVideoEffects?.offsetY ?: 50.0)
     }
 
     Column(modifier = modifier) {
@@ -144,46 +151,32 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                         .background(Color.Black),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (visualActive != null) {
-                        if (visualActive.asset.type == AssetType.IMAGE) {
-                            // Still images must load through an image element, not the video player.
-                            ImagePlayer(
-                                url = visualActive.asset.ossUrl,
-                                offsetXPercent = activeVisualEffects?.offsetX ?: 50.0,
-                                offsetYPercent = activeVisualEffects?.offsetY ?: 50.0,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            val mediaTime = visualActive.asset.sourceOffsetSeconds.toFloat() +
-                                visualActive.clip.trimIn + (playhead - visualActive.clip.timelineStart)
-                            VideoPlayer(
-                                url = visualActive.asset.ossUrl,
-                                isPlaying = viewModel.isPlaying,
-                                playhead = mediaTime,
-                                onTimeUpdate = { /* the ticker is the master clock */ },
-                                modifier = Modifier.fillMaxSize()
-                            )
+                    // Render EVERY visual clip under the playhead, lowest zIndex first so overlay
+                    // tracks (higher zIndex) stack on top: still images, the active video and
+                    // description-only text cards all live together here.
+                    visualClips.forEach { active ->
+                        when {
+                            // A clip with no media yet is a description card: large centered text.
+                            active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
+                            // Still images: plain Compose AsyncImage, center-cropped + offset.
+                            active.asset.type == AssetType.IMAGE -> ClipImage(active)
+                            // The single video that owns the shared <video> element.
+                            active === activeVideo -> {
+                                val mediaTime = active.asset.sourceOffsetSeconds.toFloat() +
+                                    active.clip.trimIn + (playhead - active.clip.timelineStart)
+                                VideoPlayer(
+                                    url = active.asset.ossUrl,
+                                    isPlaying = viewModel.isPlaying,
+                                    playhead = mediaTime,
+                                    onTimeUpdate = { /* the ticker is the master clock */ },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            // Any further simultaneous videos can't share the one <video> element.
                         }
                     }
 
-                    // Description-only items render as large, centered white text.
-                    if (textActive != null) {
-                        Box(
-                            modifier = Modifier.fillMaxSize().padding(28.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                textActive.asset.description ?: textActive.asset.aiPrompt ?: "Untitled scene",
-                                color = Color.White,
-                                fontSize = 26.sp,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center,
-                                lineHeight = 34.sp
-                            )
-                        }
-                    }
-
-                    if (visualActive == null && textActive == null) {
+                    if (visualClips.isEmpty()) {
                         EmptyStageContent(viewModel)
                     }
 
@@ -202,6 +195,44 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
             Spacer(Modifier.height(10.dp))
             TransportControls(viewModel)
         }
+    }
+}
+
+/**
+ * A still-image clip, drawn with a plain Compose [AsyncImage]. [ContentScale.Crop] fills the
+ * (aspect-constrained) stage and crops the overflow; the clip's 0-100 crop offsets (50 = center)
+ * map to a [BiasAlignment] so the visible window can be nudged, matching the FFmpeg render.
+ */
+@Composable
+private fun ClipImage(active: ActiveClip) {
+    val effects = parseEffectsConfig(active.clip.effectsConfig)
+    AsyncImage(
+        model = active.asset.ossUrl,
+        contentDescription = active.asset.description ?: active.asset.aiPrompt,
+        modifier = Modifier.fillMaxSize(),
+        contentScale = ContentScale.Crop,
+        alignment = BiasAlignment(
+            horizontalBias = ((effects.offsetX - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f),
+            verticalBias = ((effects.offsetY - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f)
+        )
+    )
+}
+
+/** A description-only clip (no media yet) rendered as large, centered white text. */
+@Composable
+private fun DescriptionCard(asset: Asset) {
+    Box(
+        modifier = Modifier.fillMaxSize().padding(28.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            asset.description ?: asset.aiPrompt ?: "Untitled scene",
+            color = Color.White,
+            fontSize = 26.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            lineHeight = 34.sp
+        )
     }
 }
 

@@ -11,6 +11,20 @@ kotlin {
         jvmTarget = JvmTarget.JVM_11
     }
 }
+
+// Coil 3.5 transitively pulls androidx.lifecycle 2.11.0, whose AAR metadata demands AGP 9.1.0 while
+// this project is pinned to AGP 9.0.1 (see libs.versions.toml). Keep the atomic lifecycle group at
+// the AGP-9.0.1-compatible 2.9.4 (already present in the dependency graph); Coil's Compose
+// integration only relies on stable lifecycle APIs available since 2.8.
+configurations.all {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "androidx.lifecycle") {
+            useVersion("2.9.4")
+            because("androidx.lifecycle 2.11.0 requires AGP 9.1.0; project uses AGP 9.0.1")
+        }
+    }
+}
+
 dependencies {
     implementation(projects.app.shared)
 

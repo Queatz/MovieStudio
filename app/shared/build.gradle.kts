@@ -71,6 +71,8 @@ kotlin {
     sourceSets {
         androidMain.dependencies {
             implementation(libs.compose.uiToolingPreview)
+            // Ktor engine so Coil's KtorNetworkFetcherFactory can load network images on Android.
+            implementation(libs.ktor.clientOkhttp)
         }
         commonMain {
             kotlin.srcDir(generateBuildConfig)
@@ -85,13 +87,26 @@ kotlin {
                 implementation(libs.compose.uiToolingPreview)
                 implementation(libs.androidx.lifecycle.viewmodelCompose)
                 implementation(libs.androidx.lifecycle.runtimeCompose)
+                // Coil 3: standard Compose image component (AsyncImage) with a Ktor network fetcher.
+                implementation(libs.coil.compose)
+                implementation(libs.coil.network.ktor3)
             }
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
         }
+        jvmMain.dependencies {
+            // Ktor engine so Coil's KtorNetworkFetcherFactory can load network images on desktop.
+            implementation(libs.ktor.clientCio)
+        }
         jsMain.dependencies {
             implementation(libs.wrappers.browser)
+            // Ktor engine so Coil's KtorNetworkFetcherFactory can load network images in the browser.
+            implementation(libs.ktor.clientJs)
+        }
+        wasmJsMain.dependencies {
+            // Ktor engine so Coil's KtorNetworkFetcherFactory can load network images in the browser.
+            implementation(libs.ktor.clientJs)
         }
     }
 }

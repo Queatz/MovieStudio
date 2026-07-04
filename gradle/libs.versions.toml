@@ -11,10 +11,11 @@ androidx-lifecycle = "2.11.0-rc01"
 androidx-testExt = "1.3.0"
 composeMultiplatform = "1.11.1"
 junit = "4.13.2"
-kotlin = "2.4.0"
+kotlin = "2.4.10-RC"
 kotlin-wrappers = "2026.7.0"
 kotlinx-coroutines = "1.11.0"
 ktor = "3.5.1"
+coil = "3.5.0"
 logback = "1.5.37"
 material3 = "1.11.0-alpha07"
 kotlinx-serialization = "1.11.0"
@@ -56,7 +57,11 @@ ktor-serverWebSockets = { module = "io.ktor:ktor-server-websockets", version.ref
 ktor-serverCors = { module = "io.ktor:ktor-server-cors", version.ref = "ktor" }
 ktor-clientCore = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-clientCio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+ktor-clientJs = { module = "io.ktor:ktor-client-js", version.ref = "ktor" }
+ktor-clientOkhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
 ktor-clientWebSockets = { module = "io.ktor:ktor-client-websockets", version.ref = "ktor" }
+coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
+coil-network-ktor3 = { module = "io.coil-kt.coil3:coil-network-ktor3", version.ref = "coil" }
 arangodb-java-driver = { module = "com.arangodb:arangodb-java-driver", version.ref = "arangodb" }
 aliyun-sdk-oss = { module = "com.aliyun.oss:aliyun-sdk-oss", version.ref = "aliyun-oss" }
 jaxb-api = { module = "javax.xml.bind:jaxb-api", version.ref = "jaxb-api" }

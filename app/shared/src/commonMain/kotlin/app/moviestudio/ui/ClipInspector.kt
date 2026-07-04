@@ -102,7 +102,7 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
         if (track.type == TrackType.VIDEO) {
             Column(Modifier.width(300.dp)) {
                 Text(
-                    "Transition in (over underlying media)",
+                    "Transition",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
