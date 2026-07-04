@@ -268,7 +268,10 @@ object FFmpegService {
             }
 
             // ------------------------------------------------------------------ audio pipeline
-            val audioClips = clips.filter { it.trackId !in videoTrackIds }.sortedBy { it.timelineStart }
+            // Every clip that carries an audio stream contributes to the mix — including video
+            // clips on video tracks, whose embedded audio must be preserved. Clips with no audio
+            // stream (images, silent video, description-only items) are filtered out below.
+            val audioClips = clips.sortedBy { it.timelineStart }
             val audioStreamTags = mutableListOf<String>()
             for (clip in audioClips) {
                 val asset = assetsById[clip.assetId] ?: continue

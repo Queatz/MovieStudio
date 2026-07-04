@@ -158,6 +158,14 @@ Without this the `<video>` is drawn at `devicePixelRatio`× the position and siz
 screens — overflowing the stage with the wrong scale/offset. (Still images don't need this: an
 `AsyncImage` is a native Compose node laid out in the same coordinate space as the stage.)
 
+**Element lifecycle (don't hide on every tick).** `VideoPlayer` receives the ever-advancing
+`playhead`, so the src/play/seek sync lives in a `LaunchedEffect(url, isPlaying, playhead)`. The
+shared `<video>` is hidden (`display:none` + pause) **only** from a separate `DisposableEffect(Unit)`
+that fires when the player leaves the composition (no video clip under the playhead). Keying the hide
+on `playhead` (as before) hid the element on every frame while `display:block` was only re-applied
+from `onGloballyPositioned` (which runs on layout, not per tick), so the video showed for one frame
+and then went black.
+
 **Single-video constraint.** The web preview shares **one** `<video id="compose-video-preview">`
 element, so only one video clip can play at a time. If several video clips overlap, the panel plays
 the **top-most** (`activeVideo = visualClips.lastOrNull { it is a video }`) and skips the rest.

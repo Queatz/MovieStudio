@@ -44,7 +44,10 @@ actual fun VideoPlayer(
         setupCallback(onTimeUpdate)
     }
 
-    DisposableEffect(url, isPlaying, playhead) {
+    // Update video state (src / play / pause / seek) when they change. This must NOT hide the
+    // element on change: `playhead` advances every tick during playback, so hiding it here (as a
+    // DisposableEffect onDispose keyed on playhead did) blanked the <video> after the first frame.
+    LaunchedEffect(url, isPlaying, playhead) {
         val updateState = js("""
             function(url, isPlaying, playhead) {
                 const video = document.getElementById('compose-video-preview');
@@ -66,6 +69,11 @@ actual fun VideoPlayer(
             }
         """)
         updateState(url, isPlaying, playhead.toDouble())
+    }
+
+    // Hide the shared <video> only when this player actually leaves the composition (no video clip
+    // under the playhead anymore) — not on every state change.
+    DisposableEffect(Unit) {
         onDispose {
             val hideVideo = js("""
                 function() {
