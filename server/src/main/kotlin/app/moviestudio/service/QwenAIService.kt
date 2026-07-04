@@ -50,7 +50,9 @@ import java.util.UUID
  * - image: text-to-image, or image-to-image editing when a base image is attached.
  * - music: Fun-Music (`fun-music-preview`) with lyrics/theme/instrumental options.
  * - tts:   Qwen TTS with preset or cloned voices; transcripts + word timings are stored.
- * - sfx:   WAN video generation followed by ffmpeg audio extraction (sound-effects pipeline).
+ * - sfx:   sound effects via the mode picked in the setup — direct text-to-audio, video-driven
+ *          (scoring a WAN source video) both backed by [QwenConfig.audioModel], or the legacy
+ *          WAN video generation followed by ffmpeg audio extraction.
  * - extract-audio: pulls the audio track out of an existing media URL.
  *
  * Generated media is always downloaded and re-hosted on our own Alibaba OSS bucket, and the
@@ -350,13 +352,74 @@ object QwenAIService : AIGenerationService {
     }
 
     /**
-     * Sound-effect pipeline: generate a short WAN video for the prompt, then extract its audio
-     * track with ffmpeg. Falls back to the raw video file when extraction is unavailable
-     * (browsers and the renderer can both play the audio track of an mp4).
+     * Sound-effect generation. The mode is picked by [GenerationSetup.sfxModel], both DashScope
+     * modes backed by the same verified [QwenConfig.audioModel] (`audio-generation-v1`):
+     * - "fun-audiogen": synthesizes the audio directly from the text prompt.
+     * - "fun-audiogen-vd": video-driven, scores a freshly generated WAN source video with
+     *   audio matching its visuals.
+     * - anything else (default "wan"): the legacy WAN + ffmpeg extraction pipeline.
      */
     private suspend fun executeSoundEffect(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+        when (payload.setup.sfxModel) {
+            "fun-audiogen" -> executeSoundEffectAudioGen(job, payload, onProgress)
+            "fun-audiogen-vd" -> executeSoundEffectAudioGenVd(job, payload, onProgress)
+            else -> executeSoundEffectWan(job, payload, onProgress)
+        }
+    }
+
+    /** Direct text-to-audio: synthesizes the sound effect straight from the text prompt. */
+    private suspend fun executeSoundEffectAudioGen(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+        val setup = payload.setup
+        onProgress(15, "Generating sound effect with ${QwenConfig.audioModel}...")
+        val mediaUrl = runAsyncGenerationTask(
+            submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/audio-generation/audio-synthesis",
+            requestBody = audioGenRequestBody(QwenConfig.audioModel, setup, videoUrl = null),
+            mediaUrlKeys = listOf("audio_url", "url"),
+        ) { pct -> onProgress((20 + pct * 0.6).toInt().coerceIn(20, 80), "Generating sound effect... $pct%") }
+
+        onProgress(85, "Uploading sound effect to Alibaba OSS...")
+        val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "sfx", "mp3", setup.durationSeconds.takeIf { it > 0 } ?: 5.0)
+        GenerationCommon.finalize(job, payload, ossUrl, duration)
+    }
+
+    /**
+     * Video-driven: generates a short WAN source video for the prompt, then has the audio model
+     * score it with audio matching its visuals.
+     */
+    private suspend fun executeSoundEffectAudioGenVd(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         onProgress(12, "Generating source video for sound effect...")
+        val videoUrl = generateSfxSourceVideo(setup) { pct ->
+            onProgress((15 + pct * 0.35).toInt().coerceIn(15, 50), "Generating sound source... $pct%")
+        }
+
+        onProgress(55, "Scoring source video with ${QwenConfig.audioModel}...")
+        val mediaUrl = runAsyncGenerationTask(
+            submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/audio-generation/audio-synthesis",
+            requestBody = audioGenRequestBody(QwenConfig.audioModel, setup, videoUrl = videoUrl),
+            mediaUrlKeys = listOf("audio_url", "url"),
+        ) { pct -> onProgress((55 + pct * 0.25).toInt().coerceIn(55, 80), "Generating sound effect... $pct%") }
+
+        onProgress(85, "Uploading sound effect to Alibaba OSS...")
+        val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "sfx", "mp3", setup.durationSeconds.takeIf { it > 0 } ?: 5.0)
+        GenerationCommon.finalize(job, payload, ossUrl, duration)
+    }
+
+    /** The DashScope request body shared by the text-to-audio and video-driven sound-effect modes. */
+    private fun audioGenRequestBody(model: String, setup: GenerationSetup, videoUrl: String?) = buildJsonObject {
+        put("model", model)
+        putJsonObject("input") {
+            put("prompt", setup.prompt)
+            if (videoUrl != null) put("video_url", videoUrl)
+        }
+        putJsonObject("parameters") {
+            val dur = setup.durationSeconds.toInt()
+            if (dur in 1..30) put("duration", dur)
+        }
+    }
+
+    /** Generates the short WAN source video used by the sound-effect pipelines. */
+    private suspend fun generateSfxSourceVideo(setup: GenerationSetup, onPollProgress: suspend (Int) -> Unit): String {
         val requestBody = buildJsonObject {
             put("model", QwenConfig.videoModelT2V)
             putJsonObject("input") {
@@ -368,11 +431,25 @@ object QwenAIService : AIGenerationService {
                 if (dur in 1..15) put("duration", dur)
             }
         }
-        val mediaUrl = runAsyncGenerationTask(
+        return runAsyncGenerationTask(
             submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/video-generation/video-synthesis",
             requestBody = requestBody,
             mediaUrlKeys = listOf("video_url", "url"),
-        ) { pct -> onProgress((15 + pct * 0.5).toInt().coerceIn(15, 65), "Generating sound source... $pct%") }
+            onPollProgress = onPollProgress,
+        )
+    }
+
+    /**
+     * Legacy WAN sound-effect pipeline: generate a short WAN video for the prompt, then extract
+     * its audio track with ffmpeg. Falls back to the raw video file when extraction is
+     * unavailable (browsers and the renderer can both play the audio track of an mp4).
+     */
+    private suspend fun executeSoundEffectWan(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+        val setup = payload.setup
+        onProgress(12, "Generating source video for sound effect...")
+        val mediaUrl = generateSfxSourceVideo(setup) { pct ->
+            onProgress((15 + pct * 0.5).toInt().coerceIn(15, 65), "Generating sound source... $pct%")
+        }
 
         onProgress(70, "Extracting audio track with ffmpeg...")
         val videoFile = MediaUtil.downloadToTemp(mediaUrl, ".mp4")

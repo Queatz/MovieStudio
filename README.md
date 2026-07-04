@@ -64,6 +64,10 @@ Recognized variables:
 
 | Variable | Purpose |
 | --- | --- |
+| `ARANGO_HOST` | ArangoDB host (default `127.0.0.1`). |
+| `ARANGO_PORT` | ArangoDB port (default `8539`). |
+| `ARANGO_USER` / `ARANGO_PASSWORD` | ArangoDB credentials (default `root` / `password`). |
+| `ARANGO_DB_NAME` | ArangoDB database name (default `moviestudio`). |
 | `ALIBABA_ACCOUNT_ID` | Alibaba Cloud account id (reference only). |
 | `OSS_ENDPOINT` | OSS region endpoint (e.g. `oss-ap-southeast-1.aliyuncs.com`). |
 | `OSS_BUCKET_NAME` | OSS bucket name. |
@@ -78,6 +82,7 @@ Recognized variables:
 | `QWEN_VIDEO_MODEL_R2V` | WAN reference-to-video model (default `wan2.7-r2v`). |
 | `QWEN_IMAGE_MODEL` | Text-to-image model (default `wanx2.1-t2i-turbo`). |
 | `QWEN_MUSIC_MODEL` | Music generation model (default `fun-music-preview`). |
+| `QWEN_AUDIO_MODEL` | Sound-effect model (text-to-audio and video-driven, default `audio-generation-v1`). |
 | `QWEN_TTS_MODEL` | Text-to-speech model (default `qwen-tts`). |
 | `QWEN_VOICE_ENROLL_MODEL` | Voice cloning enrollment model (default `voice-enrollment`). |
 | `QWEN_VOICE_CLONE_TARGET` | TTS model cloned voices target (default `cosyvoice-v2`). |
@@ -86,6 +91,56 @@ Recognized variables:
 | `QWEN_POLL_TIMEOUT_MS` | Async task max wait in ms (default `300000`). |
 
 The server always uses `QwenAIService`, which calls the real Alibaba Model Studio (Qwen / DashScope) APIs to generate media, re-hosts the results on OSS, and persists them as `Asset`s. Set `QWEN_API_KEY` (and the other `QWEN_*` variables) in `.env` before running the server.
+
+### Database (ArangoDB) — persistence
+
+Movies, Assets, Tracks, Clips and background Jobs are all stored in **ArangoDB**. The server
+creates the database and collections automatically on startup (create-if-missing) and never drops
+or truncates them, so all data is expected to survive a server restart.
+
+> ⚠️ **Data must live on a persistent data directory.** If ArangoDB is started ad-hoc with its
+> data directory on an ephemeral, RAM-backed path (for example a config under `/tmp`, which is a
+> `tmpfs`), everything — Movies and Assets included — is wiped whenever the machine or database
+> restarts. This is *not* an application bug; the app persists correctly. It is purely a matter of
+> where ArangoDB keeps its files.
+
+The recommended way to run the database is the bundled `docker-compose.yml`, which stores the data
+on a persistent named volume (`moviestudio_arangodb_data`):
+
+```sudo sh
+docker compose up -d      # start ArangoDB with persistent storage
+docker compose down       # stop it — data is KEPT in the named volume
+docker compose down -v     # stop AND delete the data (destroys everything)
+```
+
+If you run ArangoDB natively instead of via Docker, make sure `[database] directory` points at a
+persistent location (e.g. `/var/lib/arangodb3`) — never a temp/`tmpfs` path. The connection
+settings are configured through the `ARANGO_*` variables above.
+
+> ⚠️ **Changing `ARANGO_HOST` / `ARANGO_PORT` / `ARANGO_DB_NAME` points the app at a *different*
+> ArangoDB instance/database.** The server never deletes data — but if you repoint the connection
+> settings (e.g. to dodge a port conflict with another local ArangoDB), any Movies/Assets created
+> under the old settings simply won't show up anymore, because the app is now talking to a
+> different, empty database — they aren't lost, just no longer connected. If this happens,
+> migrate the data with `arangodump`/`arangorestore` (or point the settings back), instead of
+> assuming the data was cleared.
+
+> ⚠️ **Data can also disappear on the *same* port if the ArangoDB container gets recreated onto a
+> different volume.** `docker-compose.yml` pins an explicit top-level `name: moviestudio`, which
+> forces Docker Compose to always resolve the *same* volume/network names
+> (`moviestudio_moviestudio_arangodb_data`, `moviestudio_default`) no matter which directory,
+> symlink, or tool (IDE integration, script, CI) runs `docker compose`. Without that pin, the
+> project name is inferred from the invoking context — if two different invocations resolve a
+> different project name, a `docker compose down` + `up` (or any recreate triggered by editing the
+> compose file) can silently attach a **brand-new, empty** volume instead of the one holding your
+> data, even though the host port, image, and credentials all stay identical. If this ever
+> happens:
+> ```
+> docker volume ls | grep arangodb_data     # more than one volume? the old one likely still has your data
+> docker volume inspect <old-volume-name>   # confirm it isn't empty
+> ```
+> then migrate the data back with `arangodump`/`arangorestore` before removing the stale volume,
+> exactly as described above.
 
 ### Running the apps
 

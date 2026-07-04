@@ -56,6 +56,7 @@ ktor-serverWebSockets = { module = "io.ktor:ktor-server-websockets", version.ref
 ktor-serverCors = { module = "io.ktor:ktor-server-cors", version.ref = "ktor" }
 ktor-clientCore = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-clientCio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+ktor-clientWebSockets = { module = "io.ktor:ktor-client-websockets", version.ref = "ktor" }
 arangodb-java-driver = { module = "com.arangodb:arangodb-java-driver", version.ref = "arangodb" }
 aliyun-sdk-oss = { module = "com.aliyun.oss:aliyun-sdk-oss", version.ref = "aliyun-oss" }
 jaxb-api = { module = "javax.xml.bind:jaxb-api", version.ref = "jaxb-api" }

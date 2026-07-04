@@ -25,7 +25,9 @@ import org.slf4j.LoggerFactory
  * - QWEN_TTS_MODEL             Text-to-speech model (default qwen-tts).
  * - QWEN_VOICE_ENROLL_MODEL    Voice cloning/enrollment model (default voice-enrollment).
  * - QWEN_VOICE_CLONE_TARGET    TTS model cloned voices target (default cosyvoice-v2).
- * - QWEN_AUDIO_MODEL           Legacy text-to-audio model (default audio-generation-v1).
+ * - QWEN_AUDIO_MODEL           Sound-effect model, used both text-to-audio and video-driven
+ *                              (default audio-generation-v1); verified against the
+ *                              audio-generation/audio-synthesis endpoint.
  * - QWEN_POLL_INTERVAL_MS      Async task poll interval in ms (default 3000).
  * - QWEN_POLL_TIMEOUT_MS       Async task max wait in ms (default 300000).
  */
@@ -51,8 +53,21 @@ object QwenConfig {
     val ttsModel: String = Env.get("QWEN_TTS_MODEL", "qwen-tts")
     val voiceEnrollModel: String = Env.get("QWEN_VOICE_ENROLL_MODEL", "voice-enrollment")
     val voiceCloneTargetModel: String = Env.get("QWEN_VOICE_CLONE_TARGET", "cosyvoice-v2")
+
+    // Sound-effect model backing the audio-generation/audio-synthesis endpoint, for both the
+    // direct text-to-audio and video-driven (GenerationSetup.sfxModel == "fun-audiogen" /
+    // "fun-audiogen-vd") pipelines; the two modes differ only in whether a video_url is attached.
     val audioModel: String = Env.get("QWEN_AUDIO_MODEL", "audio-generation-v1")
     val transcriptionModel: String = Env.get("QWEN_TRANSCRIPTION_MODEL", "paraformer-v2")
+
+    // Realtime (streaming) speech recognition used for hold-to-dictate on browsers without the
+    // Web Speech API (e.g. Firefox). DashScope exposes it over a duplex WebSocket.
+    val realtimeAsrModel: String = Env.get("QWEN_REALTIME_ASR_MODEL", "paraformer-realtime-v2")
+    val realtimeAsrWsUrl: String = Env.get(
+        "QWEN_REALTIME_ASR_WS_URL",
+        apiHost.replaceFirst("https://", "wss://").replaceFirst("http://", "ws://")
+            .removeSuffix("/") + "/api-ws/v1/inference"
+    )
 
     val pollIntervalMs: Long = Env.get("QWEN_POLL_INTERVAL_MS", "3000").toLongOrNull() ?: 3000L
     val pollTimeoutMs: Long = Env.get("QWEN_POLL_TIMEOUT_MS", "300000").toLongOrNull() ?: 300_000L

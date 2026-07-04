@@ -516,7 +516,10 @@ data class GenerationSetup(
     val theme: String = "",
     val instrumental: Boolean = false,
     // Voice-specific options.
-    val voice: String = ""
+    val voice: String = "",
+    // Sound-effect-specific options: which generation mode produces the audio (see
+    // [SUPPORTED_SFX_MODELS]).
+    val sfxModel: String = "wan"
 ) {
     /** The WAN model family this setup resolves to (for video/image kinds). */
     fun resolveVideoModelKind(): String = when {
@@ -551,6 +554,15 @@ val SUPPORTED_VIDEO_SIZES: List<String> = listOf(
 val SUPPORTED_IMAGE_SIZES: List<String> = listOf(
     "1024*1024", "1280*720", "720*1280", "768*1024", "1024*768"
 )
+
+/**
+ * Sound-effect generation modes a user can pick (see [GenerationSetup.sfxModel]); both
+ * "fun-audiogen*" modes are served by the same DashScope audio-generation model:
+ * - "wan": a short WAN video is generated and its audio track extracted (legacy pipeline).
+ * - "fun-audiogen": synthesizes the audio directly from the text prompt.
+ * - "fun-audiogen-vd": video-driven, scores a WAN source video with audio matching its visuals.
+ */
+val SUPPORTED_SFX_MODELS: List<String> = listOf("wan", "fun-audiogen", "fun-audiogen-vd")
 
 /**
  * Picks the generation size (e.g. "1280*720") from [sizes] whose aspect is closest to the

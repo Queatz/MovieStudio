@@ -261,9 +261,102 @@ private fun jsStopSpeechRecognition(): Unit = js("""
     })()
 """)
 
-actual fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean =
-    jsStartSpeechRecognition(onResult)
+// Server-backed dictation fallback for browsers without the Web Speech API (e.g. Firefox):
+// captures the microphone with WebAudio, downsamples to 16 kHz 16-bit PCM and streams it to our
+// /api/speech/ws relay, which forwards to Qwen realtime ASR and streams a running transcript back.
+// Returns false only when the browser lacks getUserMedia / WebSocket / AudioContext (so the caller
+// knows dictation is truly unavailable); mic-permission and socket outcomes resolve asynchronously.
+// NOTE: no IIFE parameters may shadow the Kotlin parameters (wsUrl/onResult) — that shadowing makes
+// the compiler rename the Kotlin ones without rewriting this js() code (a ReferenceError at runtime).
+private fun jsStartServerDictation(wsUrl: String, onResult: (String) -> Unit): Boolean = js("""
+    (function() {
+        try {
+            var AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.WebSocket || !AudioCtx) {
+                return false;
+            }
+            if (window.__msDictation) { try { window.__msDictation.stop(); } catch (e) {} }
+            var targetRate = 16000;
+            var state = { stopped: false, ws: null, ctx: null, stream: null, source: null, processor: null };
+            window.__msDictation = {
+                stop: function() {
+                    state.stopped = true;
+                    try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ action: 'stop' })); } catch (e) {}
+                    try { if (state.processor) { state.processor.onaudioprocess = null; state.processor.disconnect(); } } catch (e) {}
+                    try { if (state.source) state.source.disconnect(); } catch (e) {}
+                    try { if (state.stream) state.stream.getTracks().forEach(function(t) { t.stop(); }); } catch (e) {}
+                    try { if (state.ctx && state.ctx.state !== 'closed') state.ctx.close(); } catch (e) {}
+                    var ws = state.ws;
+                    if (ws) { setTimeout(function() { try { ws.close(); } catch (e) {} }, 300); }
+                }
+            };
+            navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+                if (state.stopped) { try { stream.getTracks().forEach(function(t) { t.stop(); }); } catch (e) {} return; }
+                state.stream = stream;
+                var ctx = new AudioCtx();
+                state.ctx = ctx;
+                if (ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} }
+                var source = ctx.createMediaStreamSource(stream);
+                state.source = source;
+                var processor = ctx.createScriptProcessor(4096, 1, 1);
+                state.processor = processor;
+                var ws = new WebSocket(wsUrl);
+                ws.binaryType = 'arraybuffer';
+                state.ws = ws;
+                ws.onopen = function() {
+                    try { ws.send(JSON.stringify({ action: 'start', sampleRate: targetRate, format: 'pcm' })); } catch (e) {}
+                };
+                ws.onmessage = function(event) {
+                    try {
+                        var msg = JSON.parse(String(event.data));
+                        if (msg && msg.type === 'transcript' && typeof msg.text === 'string') {
+                            onResult(msg.text);
+                        }
+                    } catch (e) {}
+                };
+                processor.onaudioprocess = function(e) {
+                    if (state.stopped || !ws || ws.readyState !== 1) return;
+                    var input = e.inputBuffer.getChannelData(0);
+                    var ratio = ctx.sampleRate / targetRate;
+                    var outLength = Math.max(1, Math.floor(input.length / ratio));
+                    var pcm = new Int16Array(outLength);
+                    for (var i = 0; i < outLength; i++) {
+                        var sample = input[Math.floor(i * ratio)] || 0;
+                        sample = Math.max(-1, Math.min(1, sample));
+                        pcm[i] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+                    }
+                    try { ws.send(pcm.buffer); } catch (e) {}
+                };
+                source.connect(processor);
+                processor.connect(ctx.destination);
+            }).catch(function(e) {
+                try { if (window.__msDictation) window.__msDictation.stop(); } catch (e2) {}
+                window.__msDictation = null;
+            });
+            return true;
+        } catch (e) {
+            return false;
+        }
+    })()
+""")
+
+private fun jsStopServerDictation(): Unit = js("""
+    (function() {
+        try {
+            var d = window.__msDictation;
+            window.__msDictation = null;
+            if (d) d.stop();
+        } catch (e) {}
+    })()
+""")
+
+actual fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean {
+    // Prefer the browser's native Web Speech API; fall back to the server relay (Firefox etc.).
+    if (jsStartSpeechRecognition(onResult)) return true
+    return jsStartServerDictation(NetworkService.speechWsUrl(), onResult)
+}
 
 actual fun stopRealtimeSpeechInput() {
     jsStopSpeechRecognition()
+    jsStopServerDictation()
 }

@@ -29,6 +29,8 @@ dependencies {
     // Ktor HTTP client (outbound requests to Alibaba Model Studio and media downloads)
     implementation(libs.ktor.clientCore)
     implementation(libs.ktor.clientCio)
+    // Outbound WebSocket client: relays browser mic audio to Qwen realtime speech recognition.
+    implementation(libs.ktor.clientWebSockets)
     
     // ArangoDB & Alibaba OSS
     implementation(libs.arangodb.java.driver)

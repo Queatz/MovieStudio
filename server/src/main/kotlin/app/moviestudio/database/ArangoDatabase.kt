@@ -9,7 +9,7 @@ object ArangoDatabase {
     private val logger = LoggerFactory.getLogger(ArangoDatabase::class.java)
 
     val host = Env.get("ARANGO_HOST", "127.0.0.1")
-    val port = Env.get("ARANGO_PORT", "8529").toInt()
+    val port = Env.get("ARANGO_PORT", "8539").toInt()
     val user = Env.get("ARANGO_USER", "root")
     val password = Env.get("ARANGO_PASSWORD", "password")
     val dbName = Env.get("ARANGO_DB_NAME", "moviestudio")

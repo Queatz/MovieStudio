@@ -49,6 +49,7 @@ import app.moviestudio.SEQUENCER_MIN_TEMPO_BPM
 import app.moviestudio.SEQUENCER_STEPS_PER_MEASURE
 import app.moviestudio.SEQUENCER_VISIBLE_OCTAVES
 import app.moviestudio.SUPPORTED_IMAGE_SIZES
+import app.moviestudio.SUPPORTED_SFX_MODELS
 import app.moviestudio.SUPPORTED_VIDEO_SIZES
 import app.moviestudio.SequencerNote
 import app.moviestudio.UploadedDeviceFile
@@ -866,19 +867,38 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
     }
 }
 
+/** User-facing label for a sound-effect generation mode (see [SUPPORTED_SFX_MODELS]). */
+private fun sfxModelLabel(model: String): String = when (model) {
+    "fun-audiogen" -> "Direct (text-to-audio)"
+    "fun-audiogen-vd" -> "Video-driven (audio scoring)"
+    else -> "WAN 2.7 (video + audio extraction)"
+}
+
 /**
- * Sound-effect generation: WAN 2.7 renders a short video for the prompt and the server extracts
- * its audio track into the sound-effects library.
+ * Sound-effect generation with a selectable mode: direct synthesizes audio straight from the
+ * prompt, video-driven scores a generated WAN source video, and the classic WAN 2.7 pipeline
+ * renders a short video whose audio track the server extracts into the library.
  */
 @Composable
 fun SoundEffectDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
     var prompt by remember { mutableStateOf("") }
     var duration by remember { mutableStateOf(5.0) }
+    var sfxModel by remember { mutableStateOf(SUPPORTED_SFX_MODELS.first()) }
 
     StudioDialog(title = "Generate sound effect", onDismiss = onDismiss, width = 500.dp) {
         Text(
-            "WAN 2.7 generates a short video for your prompt; its audio track is extracted into " +
-                "the sound-effects library, ready to clip.",
+            when (sfxModel) {
+                "fun-audiogen" ->
+                    "The sound is synthesized directly from your description and drops " +
+                        "into the sound-effects library, ready to clip."
+                "fun-audiogen-vd" ->
+                    "WAN 2.7 generates a short video for your prompt, then the audio is scored " +
+                        "to match the visuals — the result lands in the " +
+                        "sound-effects library, ready to clip."
+                else ->
+                    "WAN 2.7 generates a short video for your prompt; its audio track is extracted " +
+                        "into the sound-effects library, ready to clip."
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -892,6 +912,13 @@ fun SoundEffectDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
             minLines = 2
         )
         Spacer(Modifier.height(8.dp))
+        DropdownSelector(
+            label = "Model",
+            options = SUPPORTED_SFX_MODELS,
+            selected = sfxModel,
+            display = { sfxModelLabel(it) }
+        ) { sfxModel = it }
+        Spacer(Modifier.height(8.dp))
         LabeledSlider(
             label = "Duration",
             value = duration.toFloat(),
@@ -903,7 +930,9 @@ fun SoundEffectDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
             PillButton("💥 Generate", enabled = prompt.isNotBlank()) {
-                viewModel.generateMedia(GenerationSetup(kind = "sfx", prompt = prompt, durationSeconds = duration))
+                viewModel.generateMedia(
+                    GenerationSetup(kind = "sfx", prompt = prompt, durationSeconds = duration, sfxModel = sfxModel)
+                )
                 onDismiss()
             }
         }

@@ -149,15 +149,163 @@ class SpeechInputWasmJsTest {
     }
 
     @Test
-    fun startReportsFailureWithoutSpeechRecognitionSupport() {
-        // Headless Chromium has webkitSpeechRecognition; hide both to model Firefox.
+    fun fallsBackToServerRelayWhenWebSpeechUnavailable() {
+        // Model Firefox: no Web Speech API, but the mic + WebSocket + AudioContext all exist.
         hideNativeSpeechRecognition()
+        installFakeMediaStack()
+        // The fake WebSocket is only needed during the (synchronous) mic-permission callback; it
+        // is restored immediately afterwards so it can never interfere with the test runner.
+        installFakeWebSocket()
+        try {
+            var latest = ""
+            var calls = 0
+            val started = startRealtimeSpeechInput { text ->
+                latest = text
+                calls++
+            }
+            restoreWebSocket()
+
+            assertTrue(started, "must fall back to the server relay when Web Speech is unavailable")
+            assertTrue(fakeDictationWsUrl().endsWith("/api/speech/ws"), "must open the speech relay socket")
+
+            // On open the browser announces the audio format it will stream.
+            triggerFakeDictationWsOpen()
+            assertTrue(
+                fakeDictationWsSentJoined().contains("\"action\":\"start\""),
+                "must send the start/format handshake on open"
+            )
+
+            // Running transcripts pushed by the server stream straight into the field.
+            emitFakeDictationMessage("""{"type":"transcript","text":"hello world"}""")
+            assertEquals(1, calls)
+            assertEquals("hello world", latest)
+
+            emitFakeDictationMessage("""{"type":"transcript","text":"hello world again"}""")
+            assertEquals(2, calls)
+            assertEquals("hello world again", latest)
+
+            stopRealtimeSpeechInput()
+            assertTrue(
+                fakeDictationWsSentJoined().contains("\"action\":\"stop\""),
+                "releasing the press must tell the relay to stop"
+            )
+        } finally {
+            stopRealtimeSpeechInput()
+            restoreWebSocket()
+            removeFakeMediaStack()
+            restoreNativeSpeechRecognition()
+        }
+    }
+
+    @Test
+    fun startReportsFailureWhenNoSpeechSupportAtAll() {
+        // Neither the Web Speech API nor microphone capture is available: dictation stays off.
+        hideNativeSpeechRecognition()
+        installMediaDevicesWithoutGetUserMedia()
         try {
             assertFalse(startRealtimeSpeechInput { })
             // Stopping with no active session must be a safe no-op.
             stopRealtimeSpeechInput()
         } finally {
+            removeMediaDevicesShadow()
             restoreNativeSpeechRecognition()
         }
     }
 }
+
+// Installs a fully synchronous mic stack: getUserMedia resolves via a synchronous "thenable" so
+// the whole fallback setup (AudioContext, capture node, WebSocket) runs inline within the call,
+// letting the test drive it deterministically without awaiting real promises.
+@JsFun(
+    """
+() => {
+    const fakeStream = { getTracks: () => [{ stop: () => {} }] };
+    Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: {
+            getUserMedia: () => ({ then: (onF) => { onF(fakeStream); return { catch: () => {} }; } })
+        }
+    });
+    function FakeAudioContext() {
+        this.sampleRate = 48000;
+        this.state = 'running';
+        this.destination = {};
+        this.resume = () => {};
+        this.close = () => { this.state = 'closed'; };
+        this.createMediaStreamSource = () => ({ connect: () => {}, disconnect: () => {} });
+        this.createScriptProcessor = () => ({ connect: () => {}, disconnect: () => {}, onaudioprocess: null });
+    }
+    window.__savedAudioContext = window.AudioContext;
+    window.__savedWebkitAudioContext = window.webkitAudioContext;
+    window.AudioContext = FakeAudioContext;
+    window.webkitAudioContext = FakeAudioContext;
+}
+"""
+)
+private external fun installFakeMediaStack()
+
+@JsFun(
+    """
+() => {
+    try { delete navigator.mediaDevices; } catch (e) {}
+    window.AudioContext = window.__savedAudioContext;
+    window.webkitAudioContext = window.__savedWebkitAudioContext;
+    delete window.__savedAudioContext;
+    delete window.__savedWebkitAudioContext;
+    delete window.__fakeDictationWs;
+}
+"""
+)
+private external fun removeFakeMediaStack()
+
+// A recording WebSocket stand-in. It is swapped in only for the synchronous dictation setup and
+// restored right after, so the test runner's own WebSocket connection is never disturbed.
+@JsFun(
+    """
+() => {
+    window.__savedWebSocket = window.WebSocket;
+    function FakeWebSocket(url) {
+        const self = this;
+        window.__fakeDictationWs = self;
+        self.url = url;
+        self.readyState = 1;
+        self.binaryType = '';
+        self.sent = [];
+        self.onopen = null;
+        self.onmessage = null;
+        self.send = (data) => { self.sent.push(data); };
+        self.close = () => { self.readyState = 3; };
+    }
+    window.WebSocket = FakeWebSocket;
+}
+"""
+)
+private external fun installFakeWebSocket()
+
+@JsFun(
+    """
+() => {
+    if (window.__savedWebSocket) { window.WebSocket = window.__savedWebSocket; }
+    delete window.__savedWebSocket;
+}
+"""
+)
+private external fun restoreWebSocket()
+
+@JsFun("() => String(window.__fakeDictationWs.url)")
+private external fun fakeDictationWsUrl(): String
+
+@JsFun("() => window.__fakeDictationWs.sent.join('|')")
+private external fun fakeDictationWsSentJoined(): String
+
+@JsFun("() => { window.__fakeDictationWs.onopen(); }")
+private external fun triggerFakeDictationWsOpen()
+
+@JsFun("(data) => { window.__fakeDictationWs.onmessage({ data: data }); }")
+private external fun emitFakeDictationMessage(data: String)
+
+@JsFun("() => { Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: {} }); }")
+private external fun installMediaDevicesWithoutGetUserMedia()
+
+@JsFun("() => { try { delete navigator.mediaDevices; } catch (e) {} }")
+private external fun removeMediaDevicesShadow()

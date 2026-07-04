@@ -31,13 +31,19 @@ object NetworkService {
         return "$base$p"
     }
 
+    /** The base `ws(s)://` origin (the HTTP base URL with its scheme swapped for WebSockets). */
+    private fun wsBaseUrl(): String = getBaseUrl().removeSuffix("/")
+        .replaceFirst("https://", "wss://")
+        .replaceFirst("http://", "ws://")
+
     /** The WebSocket URL streaming job progress events for the given movie. */
-    fun jobEventsWsUrl(movieId: String): String {
-        val base = getBaseUrl().removeSuffix("/")
-            .replaceFirst("https://", "wss://")
-            .replaceFirst("http://", "ws://")
-        return "$base/api/jobs/ws?movieId=$movieId"
-    }
+    fun jobEventsWsUrl(movieId: String): String = "${wsBaseUrl()}/api/jobs/ws?movieId=$movieId"
+
+    /**
+     * The WebSocket URL for realtime dictation: the hold-to-dictate fallback streams microphone
+     * PCM here and receives a running transcript back when the browser lacks the Web Speech API.
+     */
+    fun speechWsUrl(): String = "${wsBaseUrl()}/api/speech/ws"
 
     // ------------------------------------------------------------------------------- movies
 

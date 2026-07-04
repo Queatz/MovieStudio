@@ -67,11 +67,14 @@ expect fun playSequencerTone(
 )
 
 /**
- * Starts realtime speech-to-text dictation (the browser Web Speech API on web targets).
+ * Starts realtime speech-to-text dictation. On web targets this prefers the browser Web Speech
+ * API and, when that is unavailable (e.g. Firefox has no `SpeechRecognition`), falls back to
+ * streaming microphone audio to the server's `/api/speech/ws` relay (Qwen realtime ASR).
  * [onResult] is called with the full text recognized so far in this dictation session — interim
  * results included, so callers can live-update a text field while the user speaks.
- * Returns false when the platform has no speech recognition support or the microphone is
- * unavailable (callers then simply don't enter dictation mode).
+ * Returns false when the platform has no speech recognition support at all or the microphone is
+ * unavailable (callers then simply don't enter dictation mode). Note that the fallback resolves
+ * microphone permission asynchronously, so a true return only means dictation was started.
  */
 expect fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean
 

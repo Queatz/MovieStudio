@@ -6,6 +6,7 @@ import app.moviestudio.routing.assetRoutes
 import app.moviestudio.routing.generationRoutes
 import app.moviestudio.routing.jobRoutes
 import app.moviestudio.routing.libraryRoutes
+import app.moviestudio.routing.speechRoutes
 import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.service.AIGenerationService
 import app.moviestudio.service.QwenAIService
@@ -56,6 +57,12 @@ fun Application.module() {
         logger.error("Could not ensure OSS bucket exists on startup: ${e.message}", e)
     }
 
+    try {
+        OssService.ensureBucketCors()
+    } catch (e: Exception) {
+        logger.error("Could not configure OSS bucket CORS on startup: ${e.message}", e)
+    }
+
     QwenConfig.logStatus()
     AIGenerationService.setInstance(QwenAIService)
     logger.info("Using QwenAIService for AI generation jobs.")
@@ -99,5 +106,6 @@ fun Application.module() {
         jobRoutes()
         generationRoutes()
         libraryRoutes()
+        speechRoutes()
     }
 }

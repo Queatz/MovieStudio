@@ -32,9 +32,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
+import app.moviestudio.AssetType
 import app.moviestudio.AudioPlayItem
 import app.moviestudio.CaptionConfig
 import app.moviestudio.Clip
+import app.moviestudio.ImagePlayer
 import app.moviestudio.TrackType
 import app.moviestudio.VideoPlayer
 import app.moviestudio.aspectRatioToFloat
@@ -82,7 +84,8 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
         result
     }
 
-    val videoActive = activeClips
+    // The top visual clip on the video track: could be a video OR a still image asset.
+    val visualActive = activeClips
         .filter { it.trackType == TrackType.VIDEO && it.asset.ossUrl.isNotBlank() && !it.asset.isDescriptionOnly }
         .maxByOrNull { it.zIndex }
     val textActive = activeClips
@@ -109,9 +112,9 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
     }
 
     // Keep the preview's crop position in sync with the active clip's 0-100 offsets (50 = center).
-    val activeVideoEffects = videoActive?.let { parseEffectsConfig(it.clip.effectsConfig) }
-    LaunchedEffect(videoActive?.clip?.id, activeVideoEffects?.offsetX, activeVideoEffects?.offsetY) {
-        setPreviewObjectPosition(activeVideoEffects?.offsetX ?: 50.0, activeVideoEffects?.offsetY ?: 50.0)
+    val activeVisualEffects = visualActive?.let { parseEffectsConfig(it.clip.effectsConfig) }
+    LaunchedEffect(visualActive?.clip?.id, activeVisualEffects?.offsetX, activeVisualEffects?.offsetY) {
+        setPreviewObjectPosition(activeVisualEffects?.offsetX ?: 50.0, activeVisualEffects?.offsetY ?: 50.0)
     }
 
     Column(modifier = modifier) {
@@ -141,16 +144,26 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                         .background(Color.Black),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (videoActive != null) {
-                        val mediaTime = videoActive.asset.sourceOffsetSeconds.toFloat() +
-                            videoActive.clip.trimIn + (playhead - videoActive.clip.timelineStart)
-                        VideoPlayer(
-                            url = videoActive.asset.ossUrl,
-                            isPlaying = viewModel.isPlaying,
-                            playhead = mediaTime,
-                            onTimeUpdate = { /* the ticker is the master clock */ },
-                            modifier = Modifier.fillMaxSize()
-                        )
+                    if (visualActive != null) {
+                        if (visualActive.asset.type == AssetType.IMAGE) {
+                            // Still images must load through an image element, not the video player.
+                            ImagePlayer(
+                                url = visualActive.asset.ossUrl,
+                                offsetXPercent = activeVisualEffects?.offsetX ?: 50.0,
+                                offsetYPercent = activeVisualEffects?.offsetY ?: 50.0,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            val mediaTime = visualActive.asset.sourceOffsetSeconds.toFloat() +
+                                visualActive.clip.trimIn + (playhead - visualActive.clip.timelineStart)
+                            VideoPlayer(
+                                url = visualActive.asset.ossUrl,
+                                isPlaying = viewModel.isPlaying,
+                                playhead = mediaTime,
+                                onTimeUpdate = { /* the ticker is the master clock */ },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
 
                     // Description-only items render as large, centered white text.
@@ -170,7 +183,7 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                         }
                     }
 
-                    if (videoActive == null && textActive == null) {
+                    if (visualActive == null && textActive == null) {
                         EmptyStageContent(viewModel)
                     }
 

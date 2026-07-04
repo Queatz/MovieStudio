@@ -1,0 +1,74 @@
+# Movie Studio – local infrastructure
+#
+# Runs ArangoDB (the document store that persists Movies, Assets, Tracks, Clips, Jobs, …)
+# with a NAMED VOLUME so its data survives container/server restarts.
+#
+# Why this file exists
+# --------------------
+# Movies and Assets were disappearing on restart because ArangoDB was being launched ad-hoc with
+# its data directory on an ephemeral, RAM-backed location (e.g. a config under /tmp, which is a
+# tmpfs). The application code persists correctly; the loss was purely a non-durable data
+# directory. Running the database through this compose file keeps the data on the persistent
+# `moviestudio_arangodb_data` volume, so nothing is wiped on restart.
+#
+# IMPORTANT: the top-level `name:` below PINS the Compose project name. Docker Compose derives
+# volume/network names from the project name (e.g. `<project>_moviestudio_arangodb_data`), and
+# that project name normally defaults to "whatever directory `docker compose` happens to be run
+# from" if it isn't pinned. If `docker compose` is ever invoked from a different working
+# directory, via a symlink, or by a different tool (IDE integration, script, CI) that resolves
+# the project name differently, a `down` + `up` cycle can silently create a BRAND-NEW, EMPTY
+# volume instead of reattaching the one that actually has your data — same host port, same image,
+# same credentials, but a completely different (empty) database. Pinning `name:` here guarantees
+# the volume/network names are always identical no matter how/where compose is invoked.
+#
+# Usage
+# -----
+#   docker compose up -d            # start ArangoDB (persistent)
+#   docker compose down             # stop it (data is KEPT in the named volume, see warning above)
+#   docker compose down -v          # stop AND delete the data volume (destroys all data)
+#
+# If your data ever appears to vanish after a `down`/`up` (or a container recreate triggered by
+# editing this file) even though the port/credentials are unchanged, do NOT assume it was deleted:
+#   docker volume ls | grep arangodb_data      # look for MORE THAN ONE volume — the old one
+#                                               # likely still holds your data, just orphaned.
+#   docker volume inspect <old-volume-name>    # confirm it has real content (Mountpoint on disk)
+# Then migrate the old data back with `arangodump`/`arangorestore` (see README) before removing
+# the stale volume.
+#
+# The credentials/port below match the defaults read by the server in
+# `server/.../database/ArangoDatabase.kt` (root / password on 8539, database "moviestudio").
+# NOTE: ArangoDB always listens on 8529 INSIDE the container; we publish it on the host as
+# 8539 (default) to avoid clashing with a locally-installed ArangoDB already using 8529.
+# Override the host port via the same `.env` file the server uses (see `.env.example`).
+
+name: moviestudio
+
+services:
+  arangodb:
+    image: arangodb:3.11
+    container_name: moviestudio-arangodb
+    restart: unless-stopped
+    environment:
+      # The official image seeds the root password from this variable on first start.
+      # Keep it in sync with ARANGO_PASSWORD that the server reads.
+      ARANGO_ROOT_PASSWORD: ${ARANGO_PASSWORD:-password}
+    ports:
+      # host:container — host defaults to 8539 (matches ARANGO_PORT), container is always 8529.
+      - "${ARANGO_PORT:-8539}:8529"
+    volumes:
+      # Persistent storage: the ArangoDB data directory lives on a named volume, NOT in the
+      # container's writable layer or a tmpfs, so it is retained across restarts. Because `name:`
+      # is pinned above, this volume is always resolved as `moviestudio_moviestudio_arangodb_data`
+      # regardless of where `docker compose` is invoked from — run `docker volume ls` to confirm.
+      - moviestudio_arangodb_data:/var/lib/arangodb3
+      - moviestudio_arangodb_apps:/var/lib/arangodb3-apps
+    healthcheck:
+      test: ["CMD", "arangosh", "--server.authentication", "false", "--javascript.execute-string", "db._version()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+volumes:
+  moviestudio_arangodb_data:
+  moviestudio_arangodb_apps:

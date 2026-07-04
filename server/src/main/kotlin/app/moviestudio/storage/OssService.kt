@@ -6,6 +6,8 @@ import com.aliyun.oss.HttpMethod
 import com.aliyun.oss.model.GeneratePresignedUrlRequest
 import com.aliyun.oss.model.ObjectMetadata
 import com.aliyun.oss.model.PutObjectRequest
+import com.aliyun.oss.model.ResponseHeaderOverrides
+import com.aliyun.oss.model.SetBucketCORSRequest
 import org.slf4j.LoggerFactory
 import java.util.Date
 
@@ -38,11 +40,24 @@ object OssService {
      * A pre-signed GET URL for reading a private object. This grants temporary, credential-signed
      * read access without requiring a public ACL, which the bucket forbids ("Put public object acl
      * is not allowed"). The TTL is long so persisted asset URLs keep working.
+     *
+     * The URL also overrides the response `Content-Disposition` to `inline`. Objects fetched through
+     * the default OSS domain (`*.aliyuncs.com`) are served with `Content-Disposition: attachment` +
+     * `x-oss-force-download: true`, so the browser downloads the file instead of rendering it in an
+     * <img>/<video>/<audio> element. Signing this `response-content-disposition` override into the
+     * URL makes OSS serve the object inline so media displays.
+     *
+     * We intentionally do NOT override `response-content-type`: this bucket rejects it with
+     * "Can not override response header on content-type" (InvalidRequest). It is unnecessary anyway
+     * because the object is stored with the correct Content-Type metadata on upload (see uploadFile).
      */
     private fun signedGetUrl(objectKey: String): String {
         val expiration = Date(System.currentTimeMillis() + DOWNLOAD_URL_TTL_MILLIS)
         val request = GeneratePresignedUrlRequest(bucketName, objectKey, HttpMethod.GET).apply {
             this.expiration = expiration
+            responseHeaders = ResponseHeaderOverrides().apply {
+                contentDisposition = "inline"
+            }
         }
         return ossClient.generatePresignedUrl(request).toString()
     }
@@ -87,6 +102,37 @@ object OssService {
         } catch (e: Exception) {
             logger.error("Failed to ensure OSS bucket '{}' exists.", bucketName, e)
             throw e
+        }
+    }
+
+    /**
+     * Configure the bucket's CORS rules so browsers can PUT directly to the pre-signed upload
+     * URLs. Without this, the browser blocks the request itself before it ever reaches OSS
+     * ("CORS header 'Access-Control-Allow-Origin' missing"), even though the URL/signature are
+     * otherwise valid — CORS is a bucket-level setting, unrelated to the app server's own CORS
+     * config. No-op when OSS credentials aren't configured (dev/CI).
+     */
+    fun ensureBucketCors() {
+        if (!isConfigured) {
+            logger.info("OSS credentials not configured; skipping CORS setup for {}", bucketName)
+            return
+        }
+        try {
+            val rule = SetBucketCORSRequest.CORSRule().apply {
+                addAllowdOrigin("*")
+                addAllowedMethod("GET")
+                addAllowedMethod("PUT")
+                addAllowedMethod("POST")
+                addAllowedMethod("HEAD")
+                addAllowedHeader("*")
+                addExposeHeader("ETag")
+                maxAgeSeconds = 3600
+            }
+            val request = SetBucketCORSRequest(bucketName).apply { addCorsRule(rule) }
+            ossClient.setBucketCORS(request)
+            logger.info("Configured CORS rules on OSS bucket '{}'.", bucketName)
+        } catch (e: Exception) {
+            logger.error("Failed to configure CORS rules on OSS bucket '{}'.", bucketName, e)
         }
     }
 

@@ -80,8 +80,9 @@ val StudioFieldShape = RoundedCornerShape(18.dp)
  * Every instance also supports hold-to-dictate: long-press the field (pointer or touch) to start
  * realtime speech-to-text — recognized words stream into the field while the press is held, and
  * dictation stops the moment the press is released. While dictation is live the border glows in
- * the error color and the placeholder switches to "Start speaking...". On platforms without
- * speech recognition the long-press does nothing.
+ * the error color and the placeholder switches to "Start speaking...". On the web this uses the
+ * browser Web Speech API when present and otherwise streams the mic to the server's realtime ASR
+ * relay (so Firefox works too); on platforms with no speech support the long-press does nothing.
  */
 @Composable
 fun StudioTextField(

@@ -65,6 +65,12 @@ class Phase2IntegrationTest {
     }
 
     @Test
+    fun testEnsureBucketCorsIsNoOpWhenUnconfigured() {
+        // On the unconfigured dev/CI path (mock credentials) this must not touch the network or throw.
+        OssService.ensureBucketCors()
+    }
+
+    @Test
     fun testFilmRepository() {
         val movieId = UUID.randomUUID().toString()
         val movie = Film(
