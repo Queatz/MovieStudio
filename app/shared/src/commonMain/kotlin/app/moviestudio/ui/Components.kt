@@ -274,8 +274,8 @@ fun <T> DropdownSelector(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(StudioFieldShape) // clip BEFORE clickable so hover matches the shape
-                    .background(Color.White.copy(alpha = 0.5f))
+                    .clip(StudioFieldShape)
+                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.5f))
                     .clickable(enabled = enabled) { expanded = true }
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -359,6 +359,39 @@ fun DialogActions(
 @Composable
 fun ActionSpacer() {
     Spacer(Modifier.width(10.dp))
+}
+
+/**
+ * Confirmation dialog shown before destructive actions (deleting movies, assets, voices, ...).
+ * The confirm button is error-colored; confirming also dismisses the dialog.
+ */
+@Composable
+fun ConfirmDialog(
+    title: String,
+    message: String,
+    confirmLabel: String = "Delete",
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    StudioDialog(title = title, onDismiss = onDismiss, width = 420.dp) {
+        Text(
+            message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        DialogActions {
+            GhostPillButton("Cancel") { onDismiss() }
+            ActionSpacer()
+            PillButton(
+                confirmLabel,
+                container = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError
+            ) {
+                onDismiss()
+                onConfirm()
+            }
+        }
+    }
 }
 
 /** Small chip used to show a selected reference (character, scene, image) with a remove action. */

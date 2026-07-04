@@ -140,3 +140,78 @@ private fun jsTriggerDownload(url: String, fileName: String): Unit = js("""
 actual fun triggerDownload(url: String, fileName: String) {
     jsTriggerDownload(url, fileName)
 }
+
+// ------------------------------------------------------------------ preview object-position
+
+private fun jsSetPreviewObjectPosition(x: Double, y: Double): Unit = js("""
+    (function(x, y) {
+        var video = document.getElementById('compose-video-preview');
+        if (video) { video.style.objectPosition = x + '% ' + y + '%'; }
+    })(x, y)
+""")
+
+actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double) {
+    jsSetPreviewObjectPosition(xPercent, yPercent)
+}
+
+// ---------------------------------------------------------------------- sequencer playback
+
+// WebAudio note playback for the sequencer dialog: oscillator waveforms, or a decoded (and
+// cached) sample buffer pitch-shifted via playbackRate — mirroring the server synthesizer.
+private fun jsPlaySequencerTone(
+    waveform: String,
+    frequencyHz: Double,
+    durationSeconds: Double,
+    volume: Double,
+    sampleUrl: String?
+): Unit = js("""
+    (function(waveform, frequencyHz, durationSeconds, volume, sampleUrl) {
+        try {
+            if (!window.__msSequencerCtx) {
+                window.__msSequencerCtx = new (window.AudioContext || window.webkitAudioContext)();
+                window.__msSequencerSamples = {};
+            }
+            var ctx = window.__msSequencerCtx;
+            if (ctx.state === 'suspended') { ctx.resume(); }
+            var gain = ctx.createGain();
+            gain.gain.setValueAtTime(Math.max(0.001, volume), ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + durationSeconds);
+            gain.connect(ctx.destination);
+            if (waveform === 'sample' && sampleUrl) {
+                var cache = window.__msSequencerSamples;
+                var play = function(buffer) {
+                    var src = ctx.createBufferSource();
+                    src.buffer = buffer;
+                    src.playbackRate.value = frequencyHz / 261.6256;
+                    src.connect(gain);
+                    src.start();
+                    src.stop(ctx.currentTime + durationSeconds);
+                };
+                if (cache[sampleUrl]) { play(cache[sampleUrl]); return; }
+                fetch(sampleUrl)
+                    .then(function(r) { return r.arrayBuffer(); })
+                    .then(function(data) { return ctx.decodeAudioData(data); })
+                    .then(function(buffer) { cache[sampleUrl] = buffer; play(buffer); })
+                    .catch(function(e) {});
+                return;
+            }
+            var osc = ctx.createOscillator();
+            osc.type = waveform === 'saw' ? 'sawtooth'
+                : (waveform === 'square' || waveform === 'triangle') ? waveform : 'sine';
+            osc.frequency.value = frequencyHz;
+            osc.connect(gain);
+            osc.start();
+            osc.stop(ctx.currentTime + durationSeconds);
+        } catch (e) {}
+    })(waveform, frequencyHz, durationSeconds, volume, sampleUrl)
+""")
+
+actual fun playSequencerTone(
+    waveform: String,
+    frequencyHz: Double,
+    durationSeconds: Double,
+    volume: Double,
+    sampleUrl: String?
+) {
+    jsPlaySequencerTone(waveform, frequencyHz, durationSeconds, volume, sampleUrl)
+}

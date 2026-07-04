@@ -168,7 +168,11 @@ object FFmpegService {
                 videoFilters.add("trim=start=$srcStart:end=$srcEnd")
                 videoFilters.add("setpts=PTS-STARTPTS")
                 videoFilters.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
-                videoFilters.add("crop=$canvasWidth:$canvasHeight")
+                // Crop-fit honoring the clip's 0-100 offsets (50 = centered): 0 shows the
+                // left/top edge of the media, 100 the right/bottom edge.
+                val offsetFx = (effects.offsetX / 100.0).coerceIn(0.0, 1.0)
+                val offsetFy = (effects.offsetY / 100.0).coerceIn(0.0, 1.0)
+                videoFilters.add("crop=$canvasWidth:$canvasHeight:(iw-ow)*$offsetFx:(ih-oh)*$offsetFy")
                 videoFilters.add("fps=30")
 
                 // Color grading from effectsConfig (kept from the original renderer).

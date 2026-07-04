@@ -135,6 +135,28 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
             Spacer(Modifier.width(16.dp))
         }
 
+        // Crop position (visual tracks): where the media sits inside the center-crop window.
+        // 0-100 on each axis, 50/50 = centered; applied in the preview and the final render.
+        if (track.type == TrackType.VIDEO) {
+            Column(Modifier.width(170.dp)) {
+                LabeledSlider(
+                    label = "Offset X",
+                    value = effects.offsetX.toFloat(),
+                    valueRange = 0f..100f,
+                    valueText = "${effects.offsetX.roundToInt()}",
+                    onValueChange = { viewModel.updateClipEffects(clip, effects.copy(offsetX = it.roundToInt().toDouble())) }
+                )
+                LabeledSlider(
+                    label = "Offset Y",
+                    value = effects.offsetY.toFloat(),
+                    valueRange = 0f..100f,
+                    valueText = "${effects.offsetY.roundToInt()}",
+                    onValueChange = { viewModel.updateClipEffects(clip, effects.copy(offsetY = it.roundToInt().toDouble())) }
+                )
+            }
+            Spacer(Modifier.width(16.dp))
+        }
+
         // Volume (audio-carrying tracks).
         if (track.type == TrackType.MUSIC || track.type == TrackType.VOICE) {
             Column(Modifier.width(170.dp)) {

@@ -300,14 +300,26 @@ object NetworkService {
         return json.decodeFromString(Job.serializer(), responseText)
     }
 
-    /** Lists jobs for the background-generations panel. */
-    suspend fun getJobs(movieId: String?, activeOnly: Boolean): List<Job> {
+    /** Lists jobs for the background-generations panel ([includeFailed] keeps FAILED jobs in). */
+    suspend fun getJobs(movieId: String?, activeOnly: Boolean, includeFailed: Boolean = false): List<Job> {
         val params = mutableListOf<String>()
         if (movieId != null) params.add("movieId=$movieId")
         if (activeOnly) params.add("active=true")
+        if (includeFailed) params.add("includeFailed=true")
         val queryString = if (params.isNotEmpty()) "?" + params.joinToString("&") else ""
         val responseText = client.get(url("/api/jobs$queryString"))
         return json.decodeFromString(ListSerializer(Job.serializer()), responseText)
+    }
+
+    /** Re-queues a failed job (back to PENDING; the server worker picks it up again). */
+    suspend fun retryJob(jobId: String): Job {
+        val responseText = client.post(url("/api/jobs/$jobId/retry"))
+        return json.decodeFromString(Job.serializer(), responseText)
+    }
+
+    /** Dismisses (deletes) a job — used to clear failed generations from the panel. */
+    suspend fun dismissJob(jobId: String) {
+        client.delete(url("/api/jobs/$jobId"))
     }
 }
 

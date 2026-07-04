@@ -44,3 +44,24 @@ expect suspend fun captureVideoFrameAndUpload(uploadUrl: String): Boolean
 
 /** Asks the platform to download the file at [url] with the suggested [fileName]. */
 expect fun triggerDownload(url: String, fileName: String)
+
+/**
+ * Positions the media inside the movie preview's center-crop window (CSS `object-position`).
+ * [xPercent]/[yPercent] are 0-100 where 50/50 is centered — mirroring the clip's
+ * [app.moviestudio.EffectsConfig.offsetX]/[app.moviestudio.EffectsConfig.offsetY].
+ */
+expect fun setPreviewObjectPosition(xPercent: Double, yPercent: Double)
+
+/**
+ * Plays one short sequencer note at [frequencyHz] for [durationSeconds]. [waveform] is one of
+ * "sine" | "square" | "saw" | "triangle", or "sample" — then [sampleUrl] is fetched (and cached)
+ * and pitch-shifted by playback rate, matching the server-side synthesizer. No-op on platforms
+ * without an audio engine.
+ */
+expect fun playSequencerTone(
+    waveform: String,
+    frequencyHz: Double,
+    durationSeconds: Double,
+    volume: Double = 0.5,
+    sampleUrl: String? = null
+)

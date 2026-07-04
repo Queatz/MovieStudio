@@ -54,9 +54,10 @@ object JobRepository {
 
     /**
      * Lists jobs for the background-generations panel: newest first, optionally restricted to a
-     * movie. When [activeOnly] is set, only PENDING/RUNNING jobs are returned.
+     * movie. When [activeOnly] is set, only PENDING/RUNNING jobs are returned; [includeFailed]
+     * additionally keeps FAILED jobs in that listing so the user can retry or dismiss them.
      */
-    fun queryJobs(movieId: String?, activeOnly: Boolean, limit: Int = 50): List<Job> {
+    fun queryJobs(movieId: String?, activeOnly: Boolean, includeFailed: Boolean = false, limit: Int = 50): List<Job> {
         val filters = mutableListOf<String>()
         val bindVars = mutableMapOf<String, Any>()
         if (movieId != null) {
@@ -64,7 +65,11 @@ object JobRepository {
             bindVars["movieId"] = movieId
         }
         if (activeOnly) {
-            filters.add("(j.status == 'PENDING' OR j.status == 'RUNNING')")
+            if (includeFailed) {
+                filters.add("(j.status == 'PENDING' OR j.status == 'RUNNING' OR j.status == 'FAILED')")
+            } else {
+                filters.add("(j.status == 'PENDING' OR j.status == 'RUNNING')")
+            }
         }
         val filterClause = if (filters.isEmpty()) "" else "FILTER " + filters.joinToString(" AND ") + " "
         val query = "FOR j IN $COLLECTION $filterClause SORT j.createdAt DESC LIMIT @limit RETURN j"

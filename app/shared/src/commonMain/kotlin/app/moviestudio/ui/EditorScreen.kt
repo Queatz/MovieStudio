@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -29,11 +30,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import app.moviestudio.AppViewModel
 import app.moviestudio.FilmStatus
 import app.moviestudio.Job
@@ -53,44 +59,67 @@ import app.moviestudio.triggerDownload
 fun EditorScreen(viewModel: AppViewModel) {
     var showJobsPanel by remember { mutableStateOf(false) }
     var showRenders by remember { mutableStateOf(false) }
+    var rootOrigin by remember { mutableStateOf(Offset.Zero) }
 
-    Column(Modifier.fillMaxSize()) {
-        EditorTopBar(
-            viewModel = viewModel,
-            onShowJobs = { showJobsPanel = true },
-            onShowRenders = {
-                viewModel.refreshRenders()
-                showRenders = true
-            }
-        )
-
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-        ) {
-            Column(Modifier.weight(1f)) {
-                PreviewPanel(viewModel, Modifier.weight(1f).fillMaxWidth())
-                val selection = viewModel.findClip(viewModel.selectedClipId)
-                if (selection != null) {
-                    Spacer(Modifier.height(8.dp))
-                    ClipInspector(viewModel, selection.first, selection.second)
+    Box(Modifier.fillMaxSize().onGloballyPositioned { rootOrigin = it.positionInRoot() }) {
+        Column(Modifier.fillMaxSize()) {
+            EditorTopBar(
+                viewModel = viewModel,
+                onShowJobs = { showJobsPanel = true },
+                onShowRenders = {
+                    viewModel.refreshRenders()
+                    showRenders = true
                 }
+            )
+
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp)
+            ) {
+                Column(Modifier.weight(1f)) {
+                    PreviewPanel(viewModel, Modifier.weight(1f).fillMaxWidth())
+                    val selection = viewModel.findClip(viewModel.selectedClipId)
+                    if (selection != null) {
+                        Spacer(Modifier.height(8.dp))
+                        ClipInspector(viewModel, selection.first, selection.second)
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                LibraryPanel(viewModel, Modifier.width(330.dp).fillMaxHeight())
             }
-            Spacer(Modifier.width(12.dp))
-            LibraryPanel(viewModel, Modifier.width(330.dp).fillMaxHeight())
+
+            Spacer(Modifier.height(10.dp))
+            TimelinePanel(
+                viewModel,
+                Modifier
+                    .fillMaxWidth()
+                    .height(280.dp)
+                    .padding(horizontal = 12.dp)
+            )
+            Spacer(Modifier.height(12.dp))
         }
 
-        Spacer(Modifier.height(10.dp))
-        TimelinePanel(
-            viewModel,
-            Modifier
-                .fillMaxWidth()
-                .height(280.dp)
-                .padding(horizontal = 12.dp)
-        )
-        Spacer(Modifier.height(12.dp))
+        // Floating ghost following the pointer while a library card is dragged to the timeline.
+        val dragged = LibraryDragState.draggedAsset
+        if (dragged != null) {
+            val pointer = LibraryDragState.pointerPosition - rootOrigin
+            Box(
+                Modifier
+                    .offset { IntOffset((pointer.x + 14f).roundToInt(), (pointer.y + 10f).roundToInt()) }
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.92f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    "${assetGlyph(dragged.type)} " + (dragged.description ?: dragged.aiPrompt ?: "media").take(26),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
     }
 
     if (viewModel.renderJobId != null) {
@@ -158,16 +187,20 @@ private fun EditorTopBar(
 
         Spacer(Modifier.weight(1f))
 
-        // Background generations indicator.
-        val activeCount = viewModel.activeJobs.size
-        GhostPillButton(
-            if (activeCount > 0) "⚙️ Generating ($activeCount)" else "⚙️ Generations",
-            compact = true
-        ) { onShowJobs() }
+        // Background generations indicator (running count, plus failed jobs awaiting attention).
+        val runningCount = viewModel.runningJobs.size
+        val failedCount = viewModel.failedJobs.size
+        val jobsLabel = when {
+            runningCount > 0 -> "⚙️ Generating ($runningCount)"
+            failedCount > 0 -> "⚠️ Failed ($failedCount)"
+            else -> "⚙️ Generations"
+        }
+        GhostPillButton(jobsLabel, compact = true) { onShowJobs() }
         Spacer(Modifier.width(8.dp))
         GhostPillButton("🎞️ Renders (${viewModel.renders.size})", compact = true) { onShowRenders() }
         Spacer(Modifier.width(8.dp))
-        PillButton("🚀 Render", compact = true) { viewModel.startRender() }
+        // Rendering an empty timeline is pointless — the button stays disabled until media lands.
+        PillButton("🚀 Render", compact = true, enabled = viewModel.timelineHasClips) { viewModel.startRender() }
     }
 }
 
@@ -375,7 +408,10 @@ private fun RenderRow(render: RenderRecord, onReplay: () -> Unit, onDownload: ()
     }
 }
 
-/** All background generations (skeletons and every asset type) currently in flight. */
+/**
+ * All background generations: running jobs with live progress, plus failed jobs which stay
+ * listed (with their failure reason) until the user retries or dismisses them.
+ */
 @Composable
 private fun BackgroundJobsDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
     StudioDialog(title = "Background generations", onDismiss = onDismiss, width = 540.dp, scrollable = false) {
@@ -388,7 +424,13 @@ private fun BackgroundJobsDialog(viewModel: AppViewModel, onDismiss: () -> Unit)
         } else {
             LazyColumn(Modifier.height(320.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(viewModel.activeJobs, key = { it.id }) { job ->
-                    JobRow(job, viewModel.jobProgress[job.id]?.progress, viewModel.jobProgress[job.id]?.message)
+                    JobRow(
+                        job = job,
+                        progress = viewModel.jobProgress[job.id]?.progress,
+                        message = viewModel.jobProgress[job.id]?.message ?: job.error,
+                        onRetry = { viewModel.retryJob(job) },
+                        onDismissJob = { viewModel.dismissJob(job) }
+                    )
                 }
             }
         }
@@ -401,12 +443,22 @@ private fun BackgroundJobsDialog(viewModel: AppViewModel, onDismiss: () -> Unit)
 }
 
 @Composable
-private fun JobRow(job: Job, progress: Int?, message: String?) {
+private fun JobRow(
+    job: Job,
+    progress: Int?,
+    message: String?,
+    onRetry: () -> Unit,
+    onDismissJob: () -> Unit
+) {
+    val failed = job.status == JobStatus.FAILED
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .background(
+                if (failed) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            )
             .padding(12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -429,24 +481,33 @@ private fun JobRow(job: Job, progress: Int?, message: String?) {
             Text(
                 job.status.name,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
+                color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold
             )
         }
         Spacer(Modifier.height(6.dp))
-        LinearProgressIndicator(
-            progress = { ((progress ?: 5) / 100f).coerceIn(0.02f, 1f) },
-            modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
-        )
+        if (!failed) {
+            LinearProgressIndicator(
+                progress = { ((progress ?: 5) / 100f).coerceIn(0.02f, 1f) },
+                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
+            )
+        }
         if (message != null) {
             Spacer(Modifier.height(4.dp))
             Text(
                 message,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+        if (failed) {
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton("🔁 Retry", compact = true) { onRetry() }
+                GhostPillButton("Dismiss", compact = true) { onDismissJob() }
+            }
         }
     }
 }

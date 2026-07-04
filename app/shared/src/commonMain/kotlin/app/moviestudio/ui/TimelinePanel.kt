@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +43,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
@@ -131,7 +134,8 @@ private fun SkeletonGenerateBar(viewModel: AppViewModel) {
             value = prompt,
             onValueChange = { prompt = it },
             modifier = Modifier.weight(1f),
-            placeholder = "Describe a scene or a whole movie — AI plans it onto the timeline at ${formatDuration(viewModel.playhead.toDouble())}...",
+            placeholder = "" +
+                    "Describe a scene or a whole movie — AI plans it onto the timeline at ${formatDuration(viewModel.playhead.toDouble())}...",
             singleLine = true
         )
         Spacer(Modifier.width(8.dp))
@@ -237,6 +241,15 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
 
     fun timeAt(x: Float): Float = scrollState + x / zoomState
 
+    // Register this canvas as the library drag-and-drop target: bounds for hit testing plus a
+    // root-position → timeline-seconds resolver used when a library card is dropped here.
+    DisposableEffect(Unit) {
+        onDispose {
+            LibraryDragState.timelineBounds = null
+            LibraryDragState.resolveDropSeconds = null
+        }
+    }
+
     fun clipHit(offset: Offset): Pair<Clip, Int>? {
         val currentTimeline = timelineState ?: return null
         val trackIndex = ((offset.y - RULER_HEIGHT - TRACK_GAP) / (TRACK_HEIGHT + TRACK_GAP)).toInt()
@@ -250,6 +263,17 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
 
     Canvas(
         modifier = modifier
+            .onGloballyPositioned { coords ->
+                val bounds = coords.boundsInRoot()
+                LibraryDragState.timelineBounds = bounds
+                LibraryDragState.resolveDropSeconds = { position ->
+                    if (bounds.contains(position)) {
+                        max(0f, scrollState + (position.x - bounds.left) / zoomState)
+                    } else {
+                        null
+                    }
+                }
+            }
             .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF1D1A24))
             // Tap: seek from the ruler, select/deselect clips.
@@ -339,6 +363,23 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
         drawRuler(this, textMeasurer, zoomState, scrollState)
         drawTracks(this, textMeasurer, currentTimeline, assetsState, zoomState, scrollState, viewModel.selectedClipId)
         drawPlayhead(this, viewModel.playhead, zoomState, scrollState)
+
+        // Drop-target feedback while a library card is dragged over the timeline.
+        if (LibraryDragState.isOverTimeline) {
+            drawRoundRect(
+                Color(0xFF8F7BFF),
+                cornerRadius = CornerRadius(8f, 8f),
+                style = Stroke(width = 3f)
+            )
+            val dropX = (LibraryDragState.pointerPosition.x - (LibraryDragState.timelineBounds?.left ?: 0f))
+                .coerceIn(0f, size.width)
+            drawLine(
+                Color(0xFF8F7BFF),
+                Offset(dropX, 0f),
+                Offset(dropX, size.height),
+                strokeWidth = 2f
+            )
+        }
     }
 }
 

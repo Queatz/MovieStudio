@@ -2,6 +2,7 @@ package app.moviestudio.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +30,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -174,7 +179,8 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                             AssetCard(
                                 asset = asset,
                                 onOpen = { detailAsset = asset },
-                                onAddToTimeline = { viewModel.addAssetToTimeline(asset) }
+                                onAddToTimeline = { viewModel.addAssetToTimeline(asset) },
+                                onDropOnTimeline = { seconds -> viewModel.addAssetToTimeline(asset, seconds) }
                             )
                         }
                     }
@@ -279,13 +285,40 @@ fun assetGlyph(type: AssetType): String = when (type) {
 }
 
 @Composable
-private fun AssetCard(asset: Asset, onOpen: () -> Unit, onAddToTimeline: () -> Unit) {
+private fun AssetCard(
+    asset: Asset,
+    onOpen: () -> Unit,
+    onAddToTimeline: () -> Unit,
+    onDropOnTimeline: (Float) -> Unit
+) {
+    // Root-space origin of the card, so drag positions can be mapped for the timeline drop.
+    var origin by remember { mutableStateOf(Offset.Zero) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .onGloballyPositioned { origin = it.positionInRoot() }
             .clip(RoundedCornerShape(12.dp)) // clip BEFORE clickable: rounded hover highlight
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             .clickable { onOpen() }
+            // Drag the card onto the timeline to place the asset at the drop position.
+            .pointerInput(asset.id) {
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        LibraryDragState.draggedAsset = asset
+                        LibraryDragState.pointerPosition = origin + offset
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        LibraryDragState.pointerPosition = origin + change.position
+                    },
+                    onDragEnd = {
+                        val seconds = LibraryDragState.resolveDropSeconds?.invoke(LibraryDragState.pointerPosition)
+                        LibraryDragState.clear()
+                        if (seconds != null) onDropOnTimeline(seconds)
+                    },
+                    onDragCancel = { LibraryDragState.clear() }
+                )
+            }
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -330,6 +363,16 @@ private fun AssetCard(asset: Asset, onOpen: () -> Unit, onAddToTimeline: () -> U
 
 @Composable
 private fun CharacterList(viewModel: AppViewModel, onEdit: (Character) -> Unit) {
+    var deleteTarget by remember { mutableStateOf<Character?>(null) }
+    deleteTarget?.let { character ->
+        ConfirmDialog(
+            title = "Delete character?",
+            message = "\"${character.name}\" will be permanently removed from the library.",
+            confirmLabel = "Delete character",
+            onConfirm = { viewModel.deleteCharacter(character.id) },
+            onDismiss = { deleteTarget = null }
+        )
+    }
     if (viewModel.characters.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
@@ -368,7 +411,7 @@ private fun CharacterList(viewModel: AppViewModel, onEdit: (Character) -> Unit) 
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                RoundIconButton("🗑", size = 26.dp) { viewModel.deleteCharacter(character.id) }
+                RoundIconButton("🗑", size = 26.dp) { deleteTarget = character }
             }
         }
     }
@@ -376,6 +419,16 @@ private fun CharacterList(viewModel: AppViewModel, onEdit: (Character) -> Unit) 
 
 @Composable
 private fun SceneList(viewModel: AppViewModel, onEdit: (Scene) -> Unit) {
+    var deleteTarget by remember { mutableStateOf<Scene?>(null) }
+    deleteTarget?.let { scene ->
+        ConfirmDialog(
+            title = "Delete scene?",
+            message = "\"${scene.name}\" will be permanently removed from the library.",
+            confirmLabel = "Delete scene",
+            onConfirm = { viewModel.deleteScene(scene.id) },
+            onDismiss = { deleteTarget = null }
+        )
+    }
     if (viewModel.scenes.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
@@ -414,7 +467,7 @@ private fun SceneList(viewModel: AppViewModel, onEdit: (Scene) -> Unit) {
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                RoundIconButton("🗑", size = 26.dp) { viewModel.deleteScene(scene.id) }
+                RoundIconButton("🗑", size = 26.dp) { deleteTarget = scene }
             }
         }
     }

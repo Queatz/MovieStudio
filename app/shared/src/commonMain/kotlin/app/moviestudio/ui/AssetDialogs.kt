@@ -16,8 +16,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RangeSlider
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,7 +36,10 @@ import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
+import app.moviestudio.AudioPlayItem
 import app.moviestudio.WordTiming
+import app.moviestudio.updateAudioPlayback
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 /**
@@ -51,7 +57,9 @@ fun AssetDetailsDialog(
     var showTweak by remember { mutableStateOf(false) }
     var showClipAudio by remember { mutableStateOf(false) }
     var showTimings by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
     var transcriptDraft by remember(asset.id, asset.transcript) { mutableStateOf(asset.transcript ?: "") }
+    val isAudioAsset = asset.type == AssetType.AUDIO || asset.type == AssetType.MUSIC || asset.type == AssetType.VOICE
 
     val hasSequence = asset.type == AssetType.MUSIC &&
         asset.generationConfig?.contains("\"notes\"") == true
@@ -127,10 +135,13 @@ fun AssetDetailsDialog(
             if (hasSequence) {
                 GhostPillButton("🎹 Edit sequence", compact = true) { onEditSequence(asset) }
             }
-            GhostPillButton("🗑 Delete", compact = true) {
-                viewModel.deleteAsset(asset)
-                onDismiss()
-            }
+            GhostPillButton("🗑 Delete", compact = true) { showDeleteConfirm = true }
+        }
+
+        // -------------------------------------------------------- audio playback with scrubber
+        if (isAudioAsset && !asset.isDescriptionOnly && asset.ossUrl.isNotBlank()) {
+            SectionLabel("Listen")
+            AssetAudioPlayer(asset)
         }
 
         // ------------------------------------------------------------------ voice: transcript
@@ -207,6 +218,88 @@ fun AssetDetailsDialog(
     }
     if (showTimings) {
         WordTimingEditorDialog(viewModel, asset) { showTimings = false }
+    }
+    if (showDeleteConfirm) {
+        ConfirmDialog(
+            title = "Delete asset?",
+            message = "\"${(asset.description ?: asset.aiPrompt ?: "This asset").take(60)}\" will be " +
+                "permanently removed from the library.",
+            confirmLabel = "Delete asset",
+            onConfirm = {
+                viewModel.deleteAsset(asset)
+                onDismiss()
+            },
+            onDismiss = { showDeleteConfirm = false }
+        )
+    }
+}
+
+/**
+ * In-dialog player for audio-carrying assets (sound, music, voice): play/pause, a scrubber and a
+ * timecode readout. Playback goes through the platform audio pool (browser targets), honoring
+ * the asset's source offset for clipped sounds.
+ */
+@Composable
+private fun AssetAudioPlayer(asset: Asset) {
+    var playing by remember(asset.id) { mutableStateOf(false) }
+    var position by remember(asset.id) { mutableStateOf(0f) }
+    val duration = asset.durationSeconds.toFloat().coerceAtLeast(0.5f)
+
+    // The scrubber is the master clock: it advances while playing and the audio pool chases it.
+    LaunchedEffect(playing) {
+        while (playing) {
+            delay(100)
+            val next = position + 0.1f
+            if (next >= duration) {
+                position = duration
+                playing = false
+            } else {
+                position = next
+            }
+        }
+    }
+    LaunchedEffect(playing, position) {
+        updateAudioPlayback(
+            listOf(
+                AudioPlayItem(
+                    key = "asset-preview-${asset.id}",
+                    url = asset.ossUrl,
+                    positionSeconds = asset.sourceOffsetSeconds + position.toDouble(),
+                    volume = 1.0
+                )
+            ),
+            playing
+        )
+    }
+    // Closing the dialog stops the preview sound.
+    DisposableEffect(asset.id) {
+        onDispose { updateAudioPlayback(emptyList(), false) }
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        RoundIconButton(
+            if (playing) "⏸" else "▶",
+            contentDescription = "Play / pause",
+            size = 34.dp,
+            background = MaterialTheme.colorScheme.primary,
+            tint = MaterialTheme.colorScheme.onPrimary
+        ) {
+            if (!playing && position >= duration - 0.05f) position = 0f
+            playing = !playing
+        }
+        Spacer(Modifier.width(10.dp))
+        Slider(
+            value = position.coerceIn(0f, duration),
+            onValueChange = { position = it },
+            valueRange = 0f..duration,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            "${formatDuration(position.toDouble())} / ${formatDuration(duration.toDouble())}",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

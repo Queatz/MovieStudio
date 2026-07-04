@@ -74,7 +74,7 @@ private fun expandReferences(setup: GenerationSetup): GenerationSetup {
 
 private fun labelFor(setup: GenerationSetup): String {
     val what = when (setup.kind) {
-        "image" -> "Image"
+        "image" -> if (setup.imageUrl.isNullOrBlank()) "Image" else "Image edit"
         "music" -> "Music"
         "tts" -> "Voice"
         "sfx" -> "Sound effect"
@@ -155,7 +155,14 @@ fun Route.generationRoutes() {
                 val tempDir = withContext(Dispatchers.IO) { Files.createTempDirectory("moviestudio_seq_").toFile() }
                 try {
                     val wavFile = File(tempDir, "sequence.wav")
-                    val duration = withContext(Dispatchers.IO) { MusicSynthesizer.renderToWav(request.sequence, wavFile) }
+                    // Sample instrument: decode the chosen library sound into PCM first (falls
+                    // back to the sine waveform when the sample cannot be decoded).
+                    val samplePcm = request.sequence.sampleUrl
+                        ?.takeIf { request.sequence.waveform == "sample" && it.isNotBlank() }
+                        ?.let { MusicSynthesizer.loadSamplePcm(it) }
+                    val duration = withContext(Dispatchers.IO) {
+                        MusicSynthesizer.renderToWav(request.sequence, wavFile, samplePcm)
+                    }
                     val objectKey = "music-sequences/${UUID.randomUUID()}.wav"
                     val ossUrl = OssService.uploadFile(objectKey, wavFile)
                     val asset = Asset(

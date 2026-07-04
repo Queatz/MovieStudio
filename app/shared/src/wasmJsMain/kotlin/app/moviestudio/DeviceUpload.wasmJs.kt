@@ -73,3 +73,102 @@ actual suspend fun pickAndUploadDeviceFile(type: AssetType): UploadedDeviceFile?
     val result = jsPickAndUpload(baseUrl, accept).await() ?: return null
     return parseUploadedDeviceFile(result.toString())
 }
+
+// ------------------------------------------------------------------------------ mic recording
+
+// Starts a MediaRecorder over the microphone stream; captured chunks accumulate on a window
+// state object until stop/cancel. Resolves 1 only when recording actually started.
+@JsFun("""
+() => new Promise((resolve) => {
+    try {
+        if (window.__msMicRecorder) { resolve(1); return; }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+            resolve(0);
+            return;
+        }
+        navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+            const recorder = new MediaRecorder(stream);
+            const chunks = [];
+            recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+            recorder.start(250);
+            window.__msMicRecorder = { recorder: recorder, stream: stream, chunks: chunks, startedAt: Date.now() };
+            resolve(1);
+        }).catch((e) => resolve(0));
+    } catch (e) { resolve(0); }
+})
+""")
+private external fun jsStartMicRecording(): Promise<JsNumber>
+
+// Stops the recorder, uploads the blob to OSS via a pre-signed URL and resolves with the same
+// JSON payload as the file picker ({ fileName, ossUrl, durationSeconds }), or null on failure.
+@JsFun("""
+(baseUrl) => new Promise((resolve) => {
+    try {
+        const state = window.__msMicRecorder;
+        if (!state) { resolve(null); return; }
+        window.__msMicRecorder = null;
+        const recorder = state.recorder;
+        recorder.onstop = () => {
+            try { state.stream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+            const mime = recorder.mimeType || 'audio/webm';
+            const ext = mime.indexOf('ogg') >= 0 ? 'ogg' : (mime.indexOf('mp4') >= 0 ? 'm4a' : 'webm');
+            const blob = new Blob(state.chunks, { type: mime });
+            if (!blob.size) { resolve(null); return; }
+            const durationSeconds = Math.max(0.5, (Date.now() - state.startedAt) / 1000);
+            const fileName = 'voice-recording-' + Date.now() + '.' + ext;
+            const objectKey = 'uploads/' + Date.now() + '-' + fileName;
+            let uploadUrl = null;
+            fetch(baseUrl + '/api/assets/upload-url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ objectKey: objectKey })
+            }).then((urlResp) => {
+                if (!urlResp.ok) { throw new Error('upload-url request failed'); }
+                return urlResp.json();
+            }).then((urlJson) => {
+                uploadUrl = urlJson.uploadUrl;
+                return fetch(uploadUrl, { method: 'PUT', body: blob });
+            }).then(() => {
+                const publicUrl = uploadUrl.split('?')[0];
+                resolve(JSON.stringify({ fileName: fileName, ossUrl: publicUrl, durationSeconds: durationSeconds }));
+            }).catch((e) => resolve(null));
+        };
+        recorder.stop();
+    } catch (e) { resolve(null); }
+})
+""")
+private external fun jsStopMicRecordingAndUpload(baseUrl: String): Promise<JsString?>
+
+@JsFun("""
+() => {
+    try {
+        const state = window.__msMicRecorder;
+        if (!state) return;
+        window.__msMicRecorder = null;
+        state.recorder.onstop = () => {};
+        state.recorder.stop();
+        state.stream.getTracks().forEach((t) => t.stop());
+    } catch (e) {}
+}
+""")
+private external fun jsCancelMicRecording()
+
+actual suspend fun startMicRecording(): Boolean = try {
+    jsStartMicRecording().await<JsNumber>().toDouble() > 0.5
+} catch (e: Throwable) {
+    false
+}
+
+actual suspend fun stopMicRecordingAndUpload(): UploadedDeviceFile? {
+    val baseUrl = getBaseUrl().removeSuffix("/")
+    val result = try {
+        jsStopMicRecordingAndUpload(baseUrl).await()
+    } catch (e: Throwable) {
+        null
+    } ?: return null
+    return parseUploadedDeviceFile(result.toString())
+}
+
+actual fun cancelMicRecording() {
+    jsCancelMicRecording()
+}

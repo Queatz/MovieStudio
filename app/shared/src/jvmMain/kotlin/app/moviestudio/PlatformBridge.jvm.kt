@@ -14,3 +14,17 @@ actual suspend fun captureVideoFrameAndUpload(uploadUrl: String): Boolean = fals
 actual fun triggerDownload(url: String, fileName: String) {
     // No-op on desktop.
 }
+
+actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double) {
+    // No-op on desktop: the preview video element is a browser feature.
+}
+
+actual fun playSequencerTone(
+    waveform: String,
+    frequencyHz: Double,
+    durationSeconds: Double,
+    volume: Double,
+    sampleUrl: String?
+) {
+    // No-op on desktop: sequencer note playback is a browser (WebAudio) feature.
+}

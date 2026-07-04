@@ -85,9 +85,7 @@ Recognized variables:
 | `QWEN_POLL_INTERVAL_MS` | Async task poll interval in ms (default `3000`). |
 | `QWEN_POLL_TIMEOUT_MS` | Async task max wait in ms (default `300000`). |
 
-If `QWEN_API_KEY` is set, the server uses `QwenAIService`, which calls the real Alibaba Model Studio (Qwen / DashScope) APIs to generate media, re-hosts the results on OSS, and persists them as `Asset`s. If `QWEN_API_KEY` is missing from `.env`, the server falls back to mock defaults and uses `MockAIService`.
-
-Set `MOVIESTUDIO_FORCE_MOCK_AI=true` (env) or `-Dmoviestudio.forceMockAI=true` to force the offline `MockAIService` even when real credentials are present — handy for demos and development without spending AI credits. The server test suite always runs with the mock forced.
+The server always uses `QwenAIService`, which calls the real Alibaba Model Studio (Qwen / DashScope) APIs to generate media, re-hosts the results on OSS, and persists them as `Asset`s. Set `QWEN_API_KEY` (and the other `QWEN_*` variables) in `.env` before running the server.
 
 ### Running the apps
 

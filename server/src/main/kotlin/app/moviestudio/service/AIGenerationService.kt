@@ -11,13 +11,11 @@ import app.moviestudio.WordTiming
 import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.JobRepository
 import app.moviestudio.database.VoiceCloneRepository
-import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import org.slf4j.LoggerFactory
 import java.util.UUID
 
 /**
@@ -58,7 +56,7 @@ interface AIGenerationService {
     suspend fun executeAiGenerationJob(job: Job, onProgress: suspend (progress: Int, message: String) -> Unit)
 
     companion object : AIGenerationService {
-        private var delegate: AIGenerationService = MockAIService
+        private var delegate: AIGenerationService = QwenAIService
 
         fun setInstance(service: AIGenerationService) {
             delegate = service
@@ -80,8 +78,8 @@ interface AIGenerationService {
 
 /**
  * Shared helpers for turning transcript text into evenly-distributed [WordTiming]s across an
- * asset's duration. Used by both the mock and Qwen-backed services so word timings are always
- * present alongside the transcript text stored in the database.
+ * asset's duration. Used by the Qwen-backed service so word timings are always present alongside
+ * the transcript text stored in the database.
  */
 object TranscriptUtil {
     fun buildWordTimings(text: String, durationSeconds: Double): List<WordTiming> =
@@ -89,9 +87,9 @@ object TranscriptUtil {
 }
 
 /**
- * Logic shared by [MockAIService] and [QwenAIService]: payload parsing (including the legacy
- * `{prompt, type}` payload shape), asset creation vs. in-place regeneration with version
- * history, and job completion bookkeeping.
+ * Logic used by [QwenAIService]: payload parsing (including the legacy `{prompt, type}` payload
+ * shape), asset creation vs. in-place regeneration with version history, and job completion
+ * bookkeeping.
  */
 object GenerationCommon {
     private val json = Json { ignoreUnknownKeys = true }
@@ -211,122 +209,5 @@ object GenerationCommon {
 
         JobRepository.update(job.copy(status = JobStatus.COMPLETED, resultUrl = ossUrl))
         return asset
-    }
-}
-
-object MockAIService : AIGenerationService {
-    private val logger = LoggerFactory.getLogger(MockAIService::class.java)
-
-    const val PLACEHOLDER_VIDEO = "https://movie-studio-bucket.oss-cn-hangzhou.aliyuncs.com/placeholder-video.mp4"
-    const val PLACEHOLDER_MUSIC = "https://movie-studio-bucket.oss-cn-hangzhou.aliyuncs.com/placeholder-music.mp3"
-    const val PLACEHOLDER_AUDIO = "https://movie-studio-bucket.oss-cn-hangzhou.aliyuncs.com/placeholder-audio.mp3"
-    const val PLACEHOLDER_IMAGE = "https://movie-studio-bucket.oss-cn-hangzhou.aliyuncs.com/placeholder-image.png"
-
-    override suspend fun generateTranscript(asset: Asset): Asset {
-        delay(300)
-        val transcript = (asset.transcript?.takeIf { it.isNotBlank() }
-            ?: asset.aiPrompt?.takeIf { it.isNotBlank() }
-            ?: "This is an automatically generated voiceover transcript.")
-        val updated = asset.copy(
-            transcript = transcript,
-            wordTimings = TranscriptUtil.buildWordTimings(transcript, asset.durationSeconds)
-        )
-        AssetRepository.update(updated)
-        logger.info("Generated mock transcript for asset ${asset.id}")
-        return updated
-    }
-
-    override suspend fun generateText(system: String, user: String): String {
-        delay(200)
-        return when {
-            system.contains("SKELETON_PLANNER") -> {
-                // Deterministic four-item plan starting at the playhead position mentioned in
-                // the user prompt (falls back to 0).
-                val at = Regex("playhead position: ([0-9.]+)").find(user)
-                    ?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
-                // Only a sanitized snippet of the request may be embedded in the JSON string.
-                val requestSnippet = (Regex("User request: (.*)").find(user)?.groupValues?.get(1) ?: user)
-                    .replace("\"", "'")
-                    .replace("\\", "/")
-                    .replace(Regex("\\s+"), " ")
-                    .trim()
-                    .take(90)
-                """
-                [
-                  {"trackType": "VIDEO", "assetType": "VIDEO", "description": "Establishing shot: $requestSnippet", "startSeconds": $at, "durationSeconds": 6},
-                  {"trackType": "VIDEO", "assetType": "VIDEO", "description": "Close-up reaction shot continuing the story", "startSeconds": ${at + 6}, "durationSeconds": 5},
-                  {"trackType": "MUSIC", "assetType": "MUSIC", "description": "Soft underscore building tension", "startSeconds": $at, "durationSeconds": 11},
-                  {"trackType": "VOICE", "assetType": "VOICE", "description": "Narrator introduces the scene", "startSeconds": ${at + 1}, "durationSeconds": 5}
-                ]
-                """.trimIndent()
-            }
-            system.contains("LYRIC", ignoreCase = true) ->
-                "Verse 1:\nCity lights are calling out my name\nEvery street remembers where we came\n\n" +
-                    "Chorus:\nWe run, we rise, we glow\nThrough the night we go\n\n" +
-                    "Verse 2:\nShadows fade behind us as we fly\nPainting silver dreams across the sky"
-            system.contains("THEME", ignoreCase = true) ->
-                "Uplifting cinematic electro-pop with soaring strings and a driving beat"
-            else -> "Mock response: ${user.take(160)}"
-        }
-    }
-
-    override suspend fun createVoiceClone(name: String, audioUrl: String): VoiceClone {
-        delay(300)
-        val clone = VoiceClone(
-            id = UUID.randomUUID().toString(),
-            name = name,
-            qwenVoiceId = "mock-voice-${name.lowercase().replace(Regex("[^a-z0-9]+"), "-")}",
-            sourceAudioUrl = audioUrl,
-            createdAt = System.currentTimeMillis()
-        )
-        VoiceCloneRepository.insert(clone)
-        logger.info("Created mock voice clone ${clone.id} (${clone.qwenVoiceId})")
-        return clone
-    }
-
-    override suspend fun executeAiGenerationJob(job: Job, onProgress: suspend (progress: Int, message: String) -> Unit) {
-        logger.info("Executing mock AI generation job ${job.id} for movie ${job.movieId}")
-        val payload = GenerationCommon.parsePayload(job.payload)
-        val setup = payload.setup
-
-        onProgress(15, "Analyzing prompt...")
-        delay(600)
-        onProgress(45, "Generating ${setup.kind} (mock)...")
-        delay(900)
-        onProgress(80, "Uploading media...")
-        delay(400)
-
-        val assetType = GenerationCommon.assetTypeFor(payload)
-        val ossUrl = when {
-            payload.setup.kind == "extract-audio" -> payload.sourceUrl ?: PLACEHOLDER_AUDIO
-            assetType == AssetType.VIDEO -> PLACEHOLDER_VIDEO
-            assetType == AssetType.IMAGE -> PLACEHOLDER_IMAGE
-            assetType == AssetType.MUSIC -> PLACEHOLDER_MUSIC
-            else -> PLACEHOLDER_AUDIO
-        }
-        val duration = when (assetType) {
-            AssetType.VIDEO -> setup.durationSeconds.takeIf { it > 0 } ?: 5.0
-            AssetType.IMAGE -> 5.0
-            AssetType.MUSIC -> 30.0
-            AssetType.VOICE -> {
-                val words = setup.prompt.split(Regex("\\s+")).count { it.isNotBlank() }
-                (words * 0.42).coerceAtLeast(2.0)
-            }
-            else -> setup.durationSeconds.takeIf { it > 0 } ?: 5.0
-        }
-
-        val transcript = if (assetType == AssetType.VOICE) setup.prompt.ifBlank { null } else null
-        val timings = transcript?.let { TranscriptUtil.buildWordTimings(it, duration) } ?: emptyList()
-
-        var asset = GenerationCommon.finalize(job, payload, ossUrl, duration, transcript, timings)
-
-        // Voice media auto-generates a transcript with word timings when none was provided.
-        if (assetType == AssetType.VOICE && asset.transcript.isNullOrBlank()) {
-            onProgress(92, "Transcribing voiceover...")
-            asset = generateTranscript(asset)
-        }
-
-        onProgress(100, "Generation completed")
-        logger.info("Mock AI generation job ${job.id} completed. Asset: ${asset.id}")
     }
 }

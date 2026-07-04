@@ -16,12 +16,6 @@ tasks.withType<JavaExec>().configureEach {
     workingDir = rootProject.projectDir
 }
 
-// Integration tests always run against the offline MockAIService, even when real Qwen
-// credentials are present in `.env` (keeps the suite deterministic and network-free).
-tasks.withType<Test>().configureEach {
-    systemProperty("moviestudio.forceMockAI", "true")
-}
-
 dependencies {
     api(projects.core)
     implementation(libs.logback)
@@ -31,15 +25,19 @@ dependencies {
     implementation(libs.ktor.serializationKotlinxJson)
     implementation(libs.ktor.serverWebSockets)
     implementation(libs.ktor.serverCors)
+
+    // Ktor HTTP client (outbound requests to Alibaba Model Studio and media downloads)
+    implementation(libs.ktor.clientCore)
+    implementation(libs.ktor.clientCio)
     
     // ArangoDB & Alibaba OSS
-    implementation("com.arangodb:arangodb-java-driver:7.1.0")
-    implementation("com.aliyun.oss:aliyun-sdk-oss:3.17.4")
-    implementation("javax.xml.bind:jaxb-api:2.3.1")
-    implementation("org.glassfish.jaxb:jaxb-runtime:2.3.3")
+    implementation(libs.arangodb.java.driver)
+    implementation(libs.aliyun.sdk.oss)
+    implementation(libs.jaxb.api)
+    implementation(libs.jaxb.runtime)
 
     // Loads secrets straight from the .env file (no need to `source` it manually)
-    implementation("io.github.cdimascio:dotenv-kotlin:6.5.1")
+    implementation(libs.dotenv.kotlin)
 
     testImplementation(libs.ktor.serverTestHost)
     testImplementation(libs.kotlin.testJunit)

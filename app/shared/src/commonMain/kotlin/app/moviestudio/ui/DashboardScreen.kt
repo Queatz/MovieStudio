@@ -62,7 +62,7 @@ fun DashboardScreen(viewModel: AppViewModel) {
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.weight(1f))
-            PillButton("➕ New Movie") { showCreateDialog = true }
+            PillButton("＋ New Movie") { showCreateDialog = true }
         }
 
         if (viewModel.isLoading && viewModel.movies.isEmpty()) {
@@ -81,12 +81,12 @@ fun DashboardScreen(viewModel: AppViewModel) {
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Create your first movie  to start producing.",
+                        "Create your first movie to start producing.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(18.dp))
-                    PillButton("➕ New Movie") { showCreateDialog = true }
+                    PillButton("＋ New Movie") { showCreateDialog = true }
                 }
             }
         } else {
@@ -120,6 +120,7 @@ fun DashboardScreen(viewModel: AppViewModel) {
 
 @Composable
 private fun MovieCard(movie: Film, onOpen: () -> Unit, onDelete: () -> Unit) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -152,7 +153,7 @@ private fun MovieCard(movie: Film, onOpen: () -> Unit, onDelete: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f)
                 )
-                RoundIconButton("🗑", contentDescription = "Delete movie", size = 28.dp) { onDelete() }
+                RoundIconButton("🗑", contentDescription = "Delete movie", size = 28.dp) { showDeleteConfirm = true }
             }
             Spacer(Modifier.height(4.dp))
             Text(
@@ -161,6 +162,17 @@ private fun MovieCard(movie: Film, onOpen: () -> Unit, onDelete: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+
+    if (showDeleteConfirm) {
+        ConfirmDialog(
+            title = "Delete movie?",
+            message = "\"${movie.title}\" and its timeline will be permanently deleted. " +
+                "Library media is kept.",
+            confirmLabel = "Delete movie",
+            onConfirm = onDelete,
+            onDismiss = { showDeleteConfirm = false }
+        )
     }
 }
 

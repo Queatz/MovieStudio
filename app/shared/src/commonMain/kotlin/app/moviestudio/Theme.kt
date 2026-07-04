@@ -15,6 +15,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontListFontFamily
+import androidx.compose.ui.text.font.SystemFontFamily
 import app.moviestudio.shared.resources.Res
 import app.moviestudio.shared.resources.asap
 import app.moviestudio.shared.resources.yuyu

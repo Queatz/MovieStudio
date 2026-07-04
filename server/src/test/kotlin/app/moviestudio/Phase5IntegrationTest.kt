@@ -2,7 +2,6 @@ package app.moviestudio
 
 import app.moviestudio.database.*
 import app.moviestudio.job.JobQueueWorker
-import app.moviestudio.service.MockAIService
 import app.moviestudio.service.MusicSynthesizer
 import app.moviestudio.service.SkeletonService
 import io.ktor.client.plugins.websocket.*
@@ -11,7 +10,6 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
 import io.ktor.websocket.*
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Before
@@ -47,98 +45,6 @@ class Phase5IntegrationTest {
         } catch (e: Exception) {
             // Ignore
         }
-    }
-
-    @Test
-    fun testMockAiVideoGenerationJob(): Unit = runBlocking {
-        val movieId = UUID.randomUUID().toString()
-        val job = Job(
-            id = UUID.randomUUID().toString(),
-            movieId = movieId,
-            type = JobType.AI_GEN,
-            status = JobStatus.PENDING,
-            payload = """{"prompt":"A futuristic sci-fi city","type":"VIDEO"}""", // legacy payload shape
-            resultUrl = null
-        )
-        JobRepository.insert(job)
-
-        MockAIService.executeAiGenerationJob(job) { _, _ -> }
-
-        val assets = AssetRepository.queryByMovieId(movieId)
-        assertEquals(1, assets.size)
-        assertEquals(AssetType.VIDEO, assets[0].type)
-        assertTrue(assets[0].ossUrl.contains("placeholder-video.mp4"))
-        assertEquals("A futuristic sci-fi city", assets[0].aiPrompt)
-
-        val dbJob = JobRepository.getById(job.id)
-        assertNotNull(dbJob)
-        assertEquals(JobStatus.COMPLETED, dbJob.status)
-    }
-
-    @Test
-    fun testMockTtsJobStoresTranscriptAndWordTimings(): Unit = runBlocking {
-        val movieId = UUID.randomUUID().toString()
-        val setup = GenerationSetup(kind = "tts", prompt = "Hello brave new world", voice = "Cherry")
-        val payload = """{"setup": ${json.encodeToString(GenerationSetup.serializer(), setup)}}"""
-        val job = Job(
-            id = UUID.randomUUID().toString(),
-            movieId = movieId,
-            type = JobType.AI_GEN,
-            status = JobStatus.PENDING,
-            payload = payload,
-            resultUrl = null
-        )
-        JobRepository.insert(job)
-
-        MockAIService.executeAiGenerationJob(job) { _, _ -> }
-
-        val assets = AssetRepository.queryByMovieId(movieId)
-        assertEquals(1, assets.size)
-        val voice = assets[0]
-        assertEquals(AssetType.VOICE, voice.type)
-        assertEquals("Hello brave new world", voice.transcript)
-        assertEquals(4, voice.wordTimings.size)
-        assertEquals("Cherry", voice.voice)
-        assertTrue(voice.wordTimings.first().start < voice.wordTimings.last().end)
-    }
-
-    @Test
-    fun testRegenerationPushesPreviousMediaToHistory(): Unit = runBlocking {
-        // Existing description-only asset gets generated, then regenerated: the first media
-        // version must be restorable from its history.
-        val asset = Asset(
-            id = UUID.randomUUID().toString(),
-            type = AssetType.VIDEO,
-            ossUrl = "https://oss.com/first-version.mp4",
-            durationSeconds = 4.0,
-            movieId = null,
-            tags = emptyList(),
-            aiPrompt = "city lights",
-            description = "city lights"
-        )
-        AssetRepository.insert(asset)
-
-        val setup = GenerationSetup(kind = "video", prompt = "city lights")
-        val payload =
-            """{"setup": ${json.encodeToString(GenerationSetup.serializer(), setup)}, "assetId": "${asset.id}"}"""
-        val job = Job(
-            id = UUID.randomUUID().toString(),
-            movieId = "",
-            type = JobType.AI_GEN,
-            status = JobStatus.PENDING,
-            payload = payload,
-            resultUrl = null
-        )
-        JobRepository.insert(job)
-
-        MockAIService.executeAiGenerationJob(job) { _, _ -> }
-
-        val updated = AssetRepository.getById(asset.id)
-        assertNotNull(updated)
-        assertTrue(updated.ossUrl.contains("placeholder-video.mp4"))
-        assertEquals(1, updated.history.size)
-        assertEquals("https://oss.com/first-version.mp4", updated.history[0].ossUrl)
-        assertNotNull(updated.generationConfig, "The generation setup must be stored for retry/tweak")
     }
 
     @Test
@@ -178,7 +84,7 @@ class Phase5IntegrationTest {
         // Queue skeleton generation via the REST endpoint.
         val response = client.post("/api/movies/$movieId/skeleton") {
             contentType(ContentType.Application.Json)
-            setBody("""{"prompt": "A short heist story", "atSeconds": 3.0}""")
+            setBody("""{"prompt": "A joyful day at a seaside carnival", "atSeconds": 3.0}""")
         }
         assertEquals(HttpStatusCode.Accepted, response.status)
         val job = json.decodeFromString(Job.serializer(), response.bodyAsText())
@@ -332,6 +238,41 @@ class Phase5IntegrationTest {
             Film(movieId, "Render History Movie", 3.0, FilmStatus.DRAFT, System.currentTimeMillis())
         )
 
+        // Rendering an empty timeline is rejected — nothing to produce.
+        val emptyRender = client.post("/api/movies/$movieId/render") {
+            contentType(ContentType.Application.Json)
+        }
+        assertEquals(HttpStatusCode.BadRequest, emptyRender.status)
+
+        // Seed one clip so the timeline is renderable.
+        val trackId = UUID.randomUUID().toString()
+        TrackRepository.insert(Track(trackId, movieId, TrackType.VIDEO, 0))
+        val assetId = UUID.randomUUID().toString()
+        AssetRepository.insert(
+            Asset(
+                id = assetId,
+                type = AssetType.VIDEO,
+                ossUrl = "https://mock-oss.invalid/mock-video.mp4",
+                durationSeconds = 3.0,
+                movieId = movieId,
+                tags = emptyList(),
+                aiPrompt = null,
+                description = "Render test clip",
+                createdAt = System.currentTimeMillis()
+            )
+        )
+        ClipRepository.insert(
+            Clip(
+                id = UUID.randomUUID().toString(),
+                trackId = trackId,
+                assetId = assetId,
+                timelineStart = 0f,
+                trimIn = 0f,
+                trimOut = 3f,
+                effectsConfig = "{}"
+            )
+        )
+
         // Kick off the render through the endpoint (job + RENDERING status).
         val response = client.post("/api/movies/$movieId/render") {
             contentType(ContentType.Application.Json)
@@ -394,6 +335,21 @@ class Phase5IntegrationTest {
             )
         )
 
+        val failedJobId = UUID.randomUUID().toString()
+        JobRepository.insert(
+            Job(
+                id = failedJobId,
+                movieId = movieId,
+                type = JobType.AI_GEN,
+                status = JobStatus.FAILED,
+                payload = "{}",
+                resultUrl = null,
+                label = "Video: broken",
+                error = "Model exploded",
+                createdAt = System.currentTimeMillis()
+            )
+        )
+
         // Stop the worker so the pending job stays pending during assertions.
         JobQueueWorker.stop()
 
@@ -402,8 +358,54 @@ class Phase5IntegrationTest {
         val active = json.decodeFromString<List<Job>>(activeRes.bodyAsText())
         assertTrue(active.all { it.status == JobStatus.PENDING || it.status == JobStatus.RUNNING })
 
+        // With includeFailed=true, failed jobs stay listed (with their reason) for retry/dismiss.
+        val withFailedRes = client.get("/api/jobs?movieId=$movieId&active=true&includeFailed=true")
+        val withFailed = json.decodeFromString<List<Job>>(withFailedRes.bodyAsText())
+        val failedListed = withFailed.firstOrNull { it.id == failedJobId }
+        assertNotNull(failedListed, "Failed jobs must stay visible in the panel listing")
+        assertEquals("Model exploded", failedListed.error)
+
         val allRes = client.get("/api/jobs?movieId=$movieId")
         val all = json.decodeFromString<List<Job>>(allRes.bodyAsText())
-        assertEquals(2, all.size)
+        assertEquals(3, all.size)
+    }
+
+    @Test
+    fun testFailedJobRetryAndDismiss() = testApplication {
+        application {
+            module()
+        }
+        JobQueueWorker.stop()
+
+        val movieId = UUID.randomUUID().toString()
+        fun failedJob() = Job(
+            id = UUID.randomUUID().toString(),
+            movieId = movieId,
+            type = JobType.AI_GEN,
+            status = JobStatus.FAILED,
+            payload = "{}",
+            resultUrl = null,
+            label = "Video: broken",
+            error = "Model exploded",
+            createdAt = System.currentTimeMillis()
+        )
+
+        // Retry re-queues the job and clears its error.
+        val retryable = JobRepository.insert(failedJob())
+        val retryRes = client.post("/api/jobs/${retryable.id}/retry")
+        assertEquals(HttpStatusCode.OK, retryRes.status)
+        val requeued = json.decodeFromString(Job.serializer(), retryRes.bodyAsText())
+        assertEquals(JobStatus.PENDING, requeued.status)
+        assertNull(requeued.error)
+
+        // Only failed jobs can be retried.
+        val conflictRes = client.post("/api/jobs/${retryable.id}/retry")
+        assertEquals(HttpStatusCode.Conflict, conflictRes.status)
+
+        // Dismiss deletes the job entirely.
+        val dismissible = JobRepository.insert(failedJob())
+        val dismissRes = client.delete("/api/jobs/${dismissible.id}")
+        assertEquals(HttpStatusCode.NoContent, dismissRes.status)
+        assertNull(JobRepository.getById(dismissible.id))
     }
 }

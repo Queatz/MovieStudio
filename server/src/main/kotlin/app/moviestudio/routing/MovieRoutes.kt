@@ -186,10 +186,15 @@ fun Route.movieRoutes() {
         }
 
         // Kicks off a final movie render job (async). The movie enters RENDERING status.
+        // Rendering an empty timeline is rejected: there is nothing to produce.
         post("/{movieId}/render") {
             try {
                 val movieId = call.parameters["movieId"] ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing movieId")
                 val movie = FilmRepository.getById(movieId) ?: return@post call.respond(HttpStatusCode.NotFound, "Movie not found")
+                val timeline = TimelineService.assemble(movieId)
+                if (timeline == null || timeline.tracks.all { it.clips.isEmpty() }) {
+                    return@post call.respond(HttpStatusCode.BadRequest, "The timeline is empty — add media before rendering")
+                }
                 val job = Job(
                     id = UUID.randomUUID().toString(),
                     movieId = movieId,

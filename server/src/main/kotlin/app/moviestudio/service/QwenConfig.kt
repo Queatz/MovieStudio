@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory
  *
  * All secrets live in the `.env` file (see [Env]), so no credentials are ever
  * checked into version control. Mock/placeholder defaults are used for the
- * host/endpoint values when they are absent (e.g. local development with [MockAIService]).
+ * host/endpoint values when they are absent.
  *
  * Expected `.env` entries:
  * - QWEN_API_KEY               Model Studio API key (sk-...).
@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory
  * - QWEN_VIDEO_MODEL_I2V       WAN image-to-video model (default wan2.7-i2v).
  * - QWEN_VIDEO_MODEL_R2V       WAN reference-to-video model (default wan2.7-r2v).
  * - QWEN_IMAGE_MODEL           Text-to-image model (default wanx2.1-t2i-turbo).
+ * - QWEN_IMAGE_EDIT_MODEL      Image-to-image editing model (default wanx2.1-imageedit).
  * - QWEN_MUSIC_MODEL           Music generation model (default fun-music-preview).
  * - QWEN_TTS_MODEL             Text-to-speech model (default qwen-tts).
  * - QWEN_VOICE_ENROLL_MODEL    Voice cloning/enrollment model (default voice-enrollment).
@@ -36,7 +37,7 @@ object QwenConfig {
     val openAiBaseUrl: String = Env.get("QWEN_OPENAI_BASE_URL", "$apiHost/compatible-mode/v1")
     val dashScopeBaseUrl: String = Env.get("QWEN_DASHSCOPE_BASE_URL", "$apiHost/api/v1")
 
-    val chatModel: String = Env.get("QWEN_CHAT_MODEL", "qwen-plus")
+    val chatModel: String = Env.get("QWEN_CHAT_MODEL", "qwen3.7-plus")
 
     // WAN 2.7 video model family. The concrete model is chosen predictably from the generation
     // setup: text only -> T2V, first-frame image -> I2V, reference images/characters/scenes -> R2V.
@@ -45,6 +46,7 @@ object QwenConfig {
     val videoModelR2V: String = Env.get("QWEN_VIDEO_MODEL_R2V", "wan2.7-r2v")
 
     val imageModel: String = Env.get("QWEN_IMAGE_MODEL", "wanx2.1-t2i-turbo")
+    val imageEditModel: String = Env.get("QWEN_IMAGE_EDIT_MODEL", "wanx2.1-imageedit")
     val musicModel: String = Env.get("QWEN_MUSIC_MODEL", "fun-music-preview")
     val ttsModel: String = Env.get("QWEN_TTS_MODEL", "qwen-tts")
     val voiceEnrollModel: String = Env.get("QWEN_VOICE_ENROLL_MODEL", "voice-enrollment")

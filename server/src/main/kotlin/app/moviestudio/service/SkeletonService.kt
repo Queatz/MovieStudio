@@ -42,7 +42,6 @@ object SkeletonService {
         val durationSeconds: Double = 5.0
     )
 
-    // The SKELETON_PLANNER marker is also what MockAIService keys on for offline development.
     private const val SYSTEM_PROMPT =
         "You are SKELETON_PLANNER, a movie pre-production planner inside a movie studio app. " +
             "Given a movie description, the current playhead position and the existing timeline items, " +

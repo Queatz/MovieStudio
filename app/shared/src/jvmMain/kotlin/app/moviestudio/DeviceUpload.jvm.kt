@@ -22,6 +22,15 @@ actual suspend fun pickAndUploadDeviceFile(type: AssetType): UploadedDeviceFile?
     }
 }
 
+// Microphone recording is a browser (MediaRecorder) feature; desktop falls back to no-ops.
+actual suspend fun startMicRecording(): Boolean = false
+
+actual suspend fun stopMicRecordingAndUpload(): UploadedDeviceFile? = null
+
+actual fun cancelMicRecording() {
+    // No-op on desktop.
+}
+
 private suspend fun pickFile(): File? = withContext(Dispatchers.IO) {
     val dialog = FileDialog(null as java.awt.Frame?, "Select media to upload", FileDialog.LOAD)
     dialog.isVisible = true

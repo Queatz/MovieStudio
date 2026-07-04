@@ -5,3 +5,12 @@ package app.moviestudio
 // on Android this is a graceful no-op (returns null, so the caller simply does nothing).
 @Suppress("UNUSED_PARAMETER")
 actual suspend fun pickAndUploadDeviceFile(type: AssetType): UploadedDeviceFile? = null
+
+// Microphone recording is a browser (MediaRecorder) feature; Android falls back to no-ops.
+actual suspend fun startMicRecording(): Boolean = false
+
+actual suspend fun stopMicRecordingAndUpload(): UploadedDeviceFile? = null
+
+actual fun cancelMicRecording() {
+    // No-op on Android.
+}

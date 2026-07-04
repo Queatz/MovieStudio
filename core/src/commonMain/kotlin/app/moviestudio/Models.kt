@@ -152,6 +152,9 @@ data class Job(
     // Short human-readable label describing what is being generated (shown in the
     // background-generations list).
     val label: String? = null,
+    // Failure reason, set when the job transitions to FAILED (shown in the background-
+    // generations list so the user can decide to retry or dismiss).
+    val error: String? = null,
     val createdAt: Long = 0
 )
 
@@ -320,12 +323,17 @@ private val effectsJson = Json { ignoreUnknownKeys = true }
 /**
  * Effects configuration carried by every clip, serialized to JSON in [Clip.effectsConfig].
  * Unknown keys written by other tools are preserved-ignored on parse.
+ *
+ * [offsetX]/[offsetY] position the media inside the center-crop window (0-100, 50 = centered):
+ * 0 shows the left/top edge of the media, 100 the right/bottom edge.
  */
 @Serializable
 data class EffectsConfig(
     val transition: TransitionSpec? = null,
     val captions: CaptionConfig? = null,
-    val volume: Double = 1.0
+    val volume: Double = 1.0,
+    val offsetX: Double = 50.0,
+    val offsetY: Double = 50.0
 )
 
 /** Parses a clip's [Clip.effectsConfig] JSON. Malformed/empty input yields default settings. */
@@ -367,9 +375,29 @@ data class MusicSequence(
     val steps: Int = 16,
     // Number of times the pattern repeats in the rendered file.
     val loops: Int = 4,
-    val waveform: String = "sine", // sine | square | saw | triangle
+    // "sine" | "square" | "saw" | "triangle", or "sample" when a library sound is the instrument.
+    val waveform: String = "sine",
+    // When the instrument is a library sound effect: its media URL (pitch-shifted per row).
+    val sampleUrl: String? = null,
+    // Human-readable name of the sample instrument (shown in the instrument picker).
+    val sampleName: String? = null,
     val notes: List<SequencerNote> = emptyList()
 )
+
+/**
+ * The pitch rows offered by the mini sequencer: C major pentatonic across two octaves plus the
+ * root on top (always-consonant rows). Shared by the server synthesizer and the in-dialog
+ * playback so both play the exact same notes.
+ */
+val SEQUENCER_SCALE_SEMITONES: List<Int> = listOf(0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24)
+
+/** Frequency (Hz) for a sequencer row: C4 root walking up the pentatonic scale. */
+fun sequencerRowFrequency(row: Int): Double {
+    val semitone = SEQUENCER_SCALE_SEMITONES[row.coerceIn(0, SEQUENCER_SCALE_SEMITONES.size - 1)]
+    var factor = 1.0
+    repeat(semitone) { factor *= 1.0594630943592953 } // 2^(1/12) without needing math libs
+    return 261.6256 * factor
+}
 
 // ---------------------------------------------------------------------------------------------
 // Media generation setups (section: generating images and videos)
@@ -421,6 +449,21 @@ data class GenerationSetup(
  * whichever ratio is currently selected.
  */
 val SUPPORTED_ASPECT_RATIOS: List<String> = listOf("16:9", "9:16", "1:1", "4:3", "21:9")
+
+/**
+ * Video generation sizes supported by the WAN 2.7 family (480p / 720p / 1080p tiers, landscape,
+ * portrait and square variants).
+ */
+val SUPPORTED_VIDEO_SIZES: List<String> = listOf(
+    "1280*720", "720*1280", "960*960",
+    "1920*1080", "1080*1920", "1440*1440",
+    "832*480", "480*832", "624*624"
+)
+
+/** Image generation sizes offered by the text-to-image / image-edit models. */
+val SUPPORTED_IMAGE_SIZES: List<String> = listOf(
+    "1024*1024", "1280*720", "720*1280", "768*1024", "1024*768"
+)
 
 /**
  * Parses an aspect ratio string like "16:9" into its numeric width/height factor.

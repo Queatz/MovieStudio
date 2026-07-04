@@ -29,6 +29,23 @@ data class UploadedDeviceFile(
 expect suspend fun pickAndUploadDeviceFile(type: AssetType): UploadedDeviceFile?
 
 /**
+ * Starts recording audio from the device microphone (asking for permission if needed).
+ * Returns true when recording actually started, false when the platform has no microphone
+ * support or the user denied access.
+ */
+expect suspend fun startMicRecording(): Boolean
+
+/**
+ * Stops the in-progress microphone recording, uploads it to object storage (via a pre-signed
+ * URL obtained from the server) and returns the uploaded file. Returns null when nothing was
+ * being recorded or the upload failed.
+ */
+expect suspend fun stopMicRecordingAndUpload(): UploadedDeviceFile?
+
+/** Cancels the in-progress microphone recording, discarding any captured audio. */
+expect fun cancelMicRecording()
+
+/**
  * The `accept` filter (MIME family) suggested for the given media [type] when opening a file
  * picker. Falls back to accepting any file type.
  */

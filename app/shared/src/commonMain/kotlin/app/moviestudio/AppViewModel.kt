@@ -61,9 +61,17 @@ class AppViewModel : ViewModel() {
     var selectedClipId by mutableStateOf<String?>(null)
 
     // ------------------------------------------------------------------------------------ jobs
-    /** Active (PENDING/RUNNING) background jobs across the whole studio, newest first. */
+    /** Active (PENDING/RUNNING) plus FAILED background jobs across the studio, newest first. */
     var activeJobs by mutableStateOf<List<Job>>(emptyList())
         private set
+
+    /** Jobs currently in flight (PENDING/RUNNING). */
+    val runningJobs: List<Job>
+        get() = activeJobs.filter { it.status == JobStatus.PENDING || it.status == JobStatus.RUNNING }
+
+    /** Failed jobs kept in the panel until the user retries or dismisses them. */
+    val failedJobs: List<Job>
+        get() = activeJobs.filter { it.status == JobStatus.FAILED }
 
     /** Latest live progress event per job id. */
     var jobProgress by mutableStateOf<Map<String, JobProgressEvent>>(emptyMap())
@@ -276,8 +284,11 @@ class AppViewModel : ViewModel() {
         }
     }
 
-    /** Adds [asset] to the first compatible track at the current playhead position. */
-    fun addAssetToTimeline(asset: Asset) {
+    /**
+     * Adds [asset] to the first compatible track, at [atSeconds] when given (e.g. a drag-and-drop
+     * position on the timeline) or at the current playhead position otherwise.
+     */
+    fun addAssetToTimeline(asset: Asset, atSeconds: Float? = null) {
         val movieId = currentMovie?.id ?: return
         val tracks = timeline?.tracks ?: return
         val targetTrackType = when (asset.type) {
@@ -296,7 +307,7 @@ class AppViewModel : ViewModel() {
                     id = generateId(),
                     trackId = track.id,
                     assetId = asset.id,
-                    timelineStart = playhead,
+                    timelineStart = (atSeconds ?: playhead).coerceAtLeast(0f),
                     trimIn = 0f,
                     trimOut = duration.toFloat(),
                     effectsConfig = "{}"
@@ -669,6 +680,20 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /** Enrolls a new cloned voice from an already-uploaded audio sample (e.g. a mic recording). */
+    fun createVoiceCloneFromAudioUrl(name: String, audioUrl: String, onDone: (VoiceClone?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val clone = NetworkService.createVoiceClone(name, audioUrl)
+                refreshVoices()
+                onDone(clone)
+            } catch (e: Exception) {
+                errorMessage = "Voice cloning failed: ${e.message}"
+                onDone(null)
+            }
+        }
+    }
+
     fun deleteVoiceClone(id: String) {
         viewModelScope.launch {
             try {
@@ -726,9 +751,17 @@ class AppViewModel : ViewModel() {
 
     // ==================================================================================== render
 
+    /** True when at least one clip sits on the timeline (renders are pointless otherwise). */
+    val timelineHasClips: Boolean
+        get() = timeline?.tracks?.any { it.clips.isNotEmpty() } == true
+
     /** Starts a final render job; the render dialog tracks [renderJobId]'s progress. */
     fun startRender() {
         val movieId = currentMovie?.id ?: return
+        if (!timelineHasClips) {
+            errorMessage = "The timeline is empty — add media before rendering"
+            return
+        }
         viewModelScope.launch {
             try {
                 val job = NetworkService.startRender(movieId)
@@ -760,9 +793,36 @@ class AppViewModel : ViewModel() {
     fun refreshActiveJobs() {
         viewModelScope.launch {
             try {
-                activeJobs = NetworkService.getJobs(movieId = null, activeOnly = true)
+                // Failed jobs stay listed so the user can retry or dismiss them.
+                activeJobs = NetworkService.getJobs(movieId = null, activeOnly = true, includeFailed = true)
             } catch (e: Exception) {
                 // Non-fatal: the jobs panel just stays stale.
+            }
+        }
+    }
+
+    /** Re-queues a failed background job on the server. */
+    fun retryJob(job: Job) {
+        viewModelScope.launch {
+            try {
+                NetworkService.retryJob(job.id)
+                jobProgress = jobProgress - job.id
+                refreshActiveJobs()
+            } catch (e: Exception) {
+                errorMessage = "Failed to retry job: ${e.message}"
+            }
+        }
+    }
+
+    /** Dismisses (removes) a failed background job from the panel. */
+    fun dismissJob(job: Job) {
+        viewModelScope.launch {
+            try {
+                NetworkService.dismissJob(job.id)
+                jobProgress = jobProgress - job.id
+                activeJobs = activeJobs.filter { it.id != job.id }
+            } catch (e: Exception) {
+                errorMessage = "Failed to dismiss job: ${e.message}"
             }
         }
     }
@@ -787,10 +847,10 @@ class AppViewModel : ViewModel() {
         jobPoller = viewModelScope.launch {
             while (isActive) {
                 delay(5000)
-                if (activeJobs.isNotEmpty()) {
+                if (runningJobs.isNotEmpty()) {
                     val before = activeJobs.map { it.id }.toSet()
                     try {
-                        val now = NetworkService.getJobs(movieId = null, activeOnly = true)
+                        val now = NetworkService.getJobs(movieId = null, activeOnly = true, includeFailed = true)
                         activeJobs = now
                         val finished = before - now.map { it.id }.toSet()
                         if (finished.isNotEmpty() && wsConnection == null) {

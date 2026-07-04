@@ -20,6 +20,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,8 +40,17 @@ import app.moviestudio.AssetType
 import app.moviestudio.GenerationSetup
 import app.moviestudio.MusicSequence
 import app.moviestudio.NetworkService
+import app.moviestudio.SEQUENCER_SCALE_SEMITONES
+import app.moviestudio.SUPPORTED_IMAGE_SIZES
+import app.moviestudio.SUPPORTED_VIDEO_SIZES
 import app.moviestudio.SequencerNote
 import app.moviestudio.VoiceClone
+import app.moviestudio.cancelMicRecording
+import app.moviestudio.playSequencerTone
+import app.moviestudio.sequencerRowFrequency
+import app.moviestudio.startMicRecording
+import app.moviestudio.stopMicRecordingAndUpload
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlin.math.roundToInt
@@ -87,10 +98,17 @@ fun GenerateMediaDialog(
     )
     val modelKind = setup.resolveVideoModelKind()
     val modelLabel = when {
+        kind == "image" && !imageUrl.isNullOrBlank() -> "Image edit (image-to-image)"
         kind == "image" -> "Text-to-image"
         modelKind == "i2v" -> "WAN 2.7 I2V (image-to-video)"
         modelKind == "r2v" -> "WAN 2.7 R2V (reference-to-video)"
         else -> "WAN 2.7 T2V (text-to-video)"
+    }
+
+    // Keep the selected size valid when switching between video and image generation.
+    LaunchedEffect(kind) {
+        val sizes = if (kind == "image") SUPPORTED_IMAGE_SIZES else SUPPORTED_VIDEO_SIZES
+        if (resolution !in sizes) resolution = sizes.first()
     }
 
     val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
@@ -131,7 +149,7 @@ fun GenerateMediaDialog(
             onValueChange = { prompt = it },
             modifier = Modifier.fillMaxWidth(),
             label = "Prompt",
-            placeholder = "A slow cinematic dolly shot through a rain-soaked neon alley...",
+            placeholder = "A sunny meadow full of wildflowers, butterflies drifting by...",
             minLines = 2,
             maxLines = 4
         )
@@ -144,6 +162,35 @@ fun GenerateMediaDialog(
             placeholder = "blurry, low quality, watermark...",
             singleLine = true
         )
+
+        if (kind == "image") {
+            // Image-to-image editing: pick any library image as the base and the prompt repaints
+            // it (repose a character, restyle a shot, swap the background...).
+            SectionLabel("Base image (optional — switches to image editing)")
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (imageUrl == null) {
+                    PillButton("None", compact = true) { }
+                } else {
+                    GhostPillButton("None", compact = true) { imageUrl = null }
+                }
+                imageAssets.take(12).forEach { image ->
+                    val selected = imageUrl == image.ossUrl
+                    val label = "🖼 " + (image.description ?: "image").take(18)
+                    if (selected) {
+                        PillButton(label, compact = true) { imageUrl = null }
+                    } else {
+                        GhostPillButton(label, compact = true) { imageUrl = image.ossUrl }
+                    }
+                }
+                if (imageAssets.isEmpty()) {
+                    Text(
+                        "No images in the library yet — generate or upload one first.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
 
         if (kind == "video") {
             SectionLabel("Start image (switches to I2V)")
@@ -225,8 +272,7 @@ fun GenerateMediaDialog(
 
         DropdownSelector(
             label = "Resolution",
-            options = if (kind == "image") listOf("1024*1024", "1280*720", "720*1280")
-            else listOf("1280*720", "1920*1080", "720*1280", "960*960"),
+            options = if (kind == "image") SUPPORTED_IMAGE_SIZES else SUPPORTED_VIDEO_SIZES,
             selected = resolution,
             display = { it }
         ) { resolution = it }
@@ -349,15 +395,44 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
             runCatching { setupJson.decodeFromString(MusicSequence.serializer(), it) }.getOrNull()
         } ?: MusicSequence()
     }
-    val rows = 11 // pentatonic rows offered by the synthesizer
+    val rows = SEQUENCER_SCALE_SEMITONES.size // pentatonic rows, shared with the synthesizer
     val steps = 16
 
     var name by remember { mutableStateOf(initial.name) }
     var tempo by remember { mutableStateOf(initial.tempoBpm) }
     var loops by remember { mutableStateOf(initial.loops) }
     var waveform by remember { mutableStateOf(initial.waveform) }
+    var sampleUrl by remember { mutableStateOf(initial.sampleUrl) }
+    var sampleName by remember { mutableStateOf(initial.sampleName) }
     var notes by remember { mutableStateOf(initial.notes.toSet()) }
     var saving by remember { mutableStateOf(false) }
+    var playing by remember { mutableStateOf(false) }
+    var currentStep by remember { mutableStateOf(-1) }
+
+    // Looping playback: the pattern repeats until stopped, sounding each step's notes through
+    // the platform audio engine while the playing column is highlighted in pink.
+    LaunchedEffect(playing) {
+        if (!playing) {
+            currentStep = -1
+            return@LaunchedEffect
+        }
+        var step = 0
+        while (playing) {
+            currentStep = step
+            val stepSeconds = 60.0 / tempo.coerceIn(40, 240) / 4.0
+            notes.filter { it.step == step }.forEach { note ->
+                playSequencerTone(
+                    waveform = waveform,
+                    frequencyHz = sequencerRowFrequency(note.pitch),
+                    durationSeconds = stepSeconds * 1.9,
+                    volume = 0.35,
+                    sampleUrl = sampleUrl
+                )
+            }
+            delay((stepSeconds * 1000).toLong())
+            step = (step + 1) % steps
+        }
+    }
 
     StudioDialog(title = "Music sequencer", onDismiss = onDismiss, width = 640.dp) {
         StudioTextField(
@@ -382,16 +457,34 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
                     for (step in 0 until steps) {
                         val note = SequencerNote(step, row)
                         val active = note in notes
+                        val isCurrent = playing && step == currentStep
                         val beatShade = if ((step / 4) % 2 == 0) Color(0xFF232030) else Color(0xFF1D1A27)
+                        // The playing column lights up pink while the loop passes over it.
+                        val cellColor = when {
+                            active && isCurrent -> Color(0xFFFF5A9E)
+                            active -> Color(0xFF8F7BFF)
+                            isCurrent -> Color(0xFF3A2136)
+                            else -> beatShade
+                        }
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(20.dp)
                                 .padding(1.dp)
                                 .clip(RoundedCornerShape(4.dp)) // clip BEFORE clickable
-                                .background(if (active) Color(0xFF8F7BFF) else beatShade)
+                                .background(cellColor)
                                 .clickable {
                                     notes = if (active) notes - note else notes + note
+                                    if (!active) {
+                                        // Audible feedback for the note just placed.
+                                        playSequencerTone(
+                                            waveform = waveform,
+                                            frequencyHz = sequencerRowFrequency(row),
+                                            durationSeconds = 0.3,
+                                            volume = 0.35,
+                                            sampleUrl = sampleUrl
+                                        )
+                                    }
                                 }
                         )
                     }
@@ -421,26 +514,56 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
                 )
             }
         }
+        // Instrument: the four classic waveforms plus every sound effect in the library, played
+        // as a pitch-shifted sample.
+        val sfxAssets = viewModel.libraryAssets.filter { it.type == AssetType.AUDIO && it.ossUrl.isNotBlank() }
+        val instrumentOptions: List<Pair<String, Asset?>> =
+            listOf("sine", "square", "saw", "triangle").map { it to null } + sfxAssets.map { "sample" to it }
+        val selectedInstrument = instrumentOptions.firstOrNull { (wf, asset) ->
+            if (waveform == "sample") asset?.ossUrl == sampleUrl else wf == waveform && asset == null
+        } ?: instrumentOptions.first()
         DropdownSelector(
-            label = "Waveform",
-            options = listOf("sine", "square", "saw", "triangle"),
-            selected = waveform,
-            display = { it.replaceFirstChar { c -> c.uppercase() } }
-        ) { waveform = it }
+            label = "Instrument",
+            options = instrumentOptions,
+            selected = selectedInstrument,
+            display = { (wf, asset) ->
+                if (asset != null) "💥 " + (asset.description ?: asset.aiPrompt ?: "Sound effect").take(28)
+                else wf.replaceFirstChar { c -> c.uppercase() }
+            }
+        ) { (wf, asset) ->
+            if (asset != null) {
+                waveform = "sample"
+                sampleUrl = asset.ossUrl
+                sampleName = (asset.description ?: asset.aiPrompt ?: "Sound effect").take(40)
+            } else {
+                waveform = wf
+                sampleUrl = null
+                sampleName = null
+            }
+        }
 
         DialogActions {
+            PillButton(
+                if (playing) "⏹ Stop" else "▶ Play",
+                compact = true,
+                enabled = notes.isNotEmpty() || playing
+            ) { playing = !playing }
+            ActionSpacer()
             GhostPillButton("Clear", compact = true) { notes = emptySet() }
             Spacer(Modifier.weight(1f))
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
             PillButton(if (saving) "Rendering..." else "💾 Save as music", enabled = notes.isNotEmpty() && !saving) {
                 saving = true
+                playing = false
                 val sequence = MusicSequence(
                     name = name.ifBlank { "Sequence" },
                     tempoBpm = tempo,
                     steps = steps,
                     loops = loops,
                     waveform = waveform,
+                    sampleUrl = sampleUrl,
+                    sampleName = sampleName,
                     notes = notes.toList().sortedWith(compareBy({ it.step }, { it.pitch }))
                 )
                 viewModel.createSequenceAsset(sequence) { onDismiss() }
@@ -548,15 +671,36 @@ fun TtsDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
     }
 }
 
-/** Voice cloning: pick a sample recording from the device and enroll it as a reusable voice. */
+/**
+ * Voice cloning: record a sample right in the dialog (with what-to-say instructions and a
+ * target length) or pick an existing recording from the device, then enroll it as a reusable
+ * voice.
+ */
 @Composable
 fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Unit) {
     var name by remember { mutableStateOf("") }
     var working by remember { mutableStateOf(false) }
+    var recording by remember { mutableStateOf(false) }
+    var recordSeconds by remember { mutableStateOf(0) }
+    var deleteTarget by remember { mutableStateOf<VoiceClone?>(null) }
+    val scope = rememberCoroutineScope()
+
+    // Elapsed-time ticker while recording.
+    LaunchedEffect(recording) {
+        recordSeconds = 0
+        while (recording) {
+            delay(1000)
+            recordSeconds++
+        }
+    }
+    // Abandoning the dialog mid-recording discards the capture.
+    DisposableEffect(Unit) {
+        onDispose { cancelMicRecording() }
+    }
 
     StudioDialog(title = "Create voice (cloning)", onDismiss = { onClose(null) }, width = 480.dp) {
         Text(
-            "Pick a clean voice sample (10–60s). Qwen voice cloning (China mainland) enrolls it " +
+            "Record or pick a clean voice sample. Qwen voice cloning (China mainland) enrolls it " +
                 "as a reusable voice for all future narration.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -570,6 +714,64 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
             placeholder = "My narrator voice",
             singleLine = true
         )
+
+        SectionLabel("Record your voice")
+        Text(
+            "Speak naturally in a quiet room, about 20–30 cm from the microphone. Read a couple " +
+                "of sentences in your normal voice, for example:\n\n“The morning sun rose over " +
+                "the valley, painting the hills in gold. I took a deep breath, smiled, and " +
+                "started walking toward the river.”\n\nAim for 10–60 seconds — around 20 seconds " +
+                "works best.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!recording) {
+                PillButton("🔴 Record", compact = true, enabled = !working) {
+                    scope.launch {
+                        recording = startMicRecording()
+                        if (!recording) {
+                            viewModel.errorMessage = "Microphone unavailable or permission denied"
+                        }
+                    }
+                }
+            } else {
+                PillButton(
+                    "⏹ Stop & clone",
+                    compact = true,
+                    enabled = name.isNotBlank() && recordSeconds >= 5 && !working,
+                    container = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                ) {
+                    recording = false
+                    working = true
+                    scope.launch {
+                        val uploaded = stopMicRecordingAndUpload()
+                        if (uploaded == null) {
+                            working = false
+                            viewModel.errorMessage = "Recording failed — nothing was captured"
+                        } else {
+                            viewModel.createVoiceCloneFromAudioUrl(name.trim(), uploaded.ossUrl) { clone ->
+                                working = false
+                                if (clone != null) onClose(clone)
+                            }
+                        }
+                    }
+                }
+                GhostPillButton("Discard", compact = true) {
+                    recording = false
+                    cancelMicRecording()
+                }
+                Text(
+                    "● ${formatDuration(recordSeconds.toDouble())}" +
+                        if (recordSeconds < 10) " — keep going, at least ~10s" else "",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
 
         if (viewModel.voiceOptions.clones.isNotEmpty()) {
             SectionLabel("Your cloned voices")
@@ -591,7 +793,7 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
                         modifier = Modifier.weight(1f),
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    RoundIconButton("🗑", size = 24.dp) { viewModel.deleteVoiceClone(clone.id) }
+                    RoundIconButton("🗑", size = 24.dp) { deleteTarget = clone }
                 }
             }
         }
@@ -601,7 +803,7 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
             ActionSpacer()
             PillButton(
                 if (working) "Cloning..." else "🎤 Pick sample & clone",
-                enabled = name.isNotBlank() && !working
+                enabled = name.isNotBlank() && !working && !recording
             ) {
                 working = true
                 viewModel.createVoiceCloneFromDevice(name.trim()) { clone ->
@@ -610,6 +812,16 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
                 }
             }
         }
+    }
+
+    deleteTarget?.let { clone ->
+        ConfirmDialog(
+            title = "Delete cloned voice?",
+            message = "\"${clone.name}\" will no longer be available for narration.",
+            confirmLabel = "Delete voice",
+            onConfirm = { viewModel.deleteVoiceClone(clone.id) },
+            onDismiss = { deleteTarget = null }
+        )
     }
 }
 

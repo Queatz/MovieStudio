@@ -8,7 +8,6 @@ import app.moviestudio.routing.jobRoutes
 import app.moviestudio.routing.libraryRoutes
 import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.service.AIGenerationService
-import app.moviestudio.service.MockAIService
 import app.moviestudio.service.QwenAIService
 import app.moviestudio.service.QwenConfig
 import kotlinx.coroutines.CoroutineScope
@@ -51,16 +50,8 @@ fun Application.module() {
     }
 
     QwenConfig.logStatus()
-    // Tests (and local dev) can force the offline mock AI regardless of configured credentials.
-    val forceMockAi = System.getProperty("moviestudio.forceMockAI") == "true" ||
-        System.getenv("MOVIESTUDIO_FORCE_MOCK_AI") == "true"
-    if (QwenConfig.isConfigured && !forceMockAi) {
-        AIGenerationService.setInstance(QwenAIService)
-        logger.info("Using QwenAIService for AI generation jobs.")
-    } else {
-        AIGenerationService.setInstance(MockAIService)
-        logger.info("Qwen not configured (or mock forced); using MockAIService for AI generation jobs.")
-    }
+    AIGenerationService.setInstance(QwenAIService)
+    logger.info("Using QwenAIService for AI generation jobs.")
 
     JobQueueWorker.start(this)
 

@@ -20,21 +20,25 @@ import androidx.compose.ui.unit.dp
 import app.moviestudio.AppViewModel
 import app.moviestudio.AssetType
 import app.moviestudio.Character
+import app.moviestudio.GenerationSetup
 import app.moviestudio.Scene
 import app.moviestudio.generateId
 
 /**
  * Reference-image picker shared by the character and scene editors: choose up to [max] images
- * from the global image library (or upload new ones first).
+ * from the global image library, upload new ones, generate them with AI from [aiPrompt] (the
+ * subject's description), or repose an attached image via image-to-image editing.
  */
 @Composable
 private fun ReferenceImagePicker(
     viewModel: AppViewModel,
     selected: List<String>,
     max: Int,
+    aiPrompt: String,
     onChange: (List<String>) -> Unit
 ) {
     val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
+    var showRepose by remember { mutableStateOf(false) }
 
     SectionLabel("Reference images (${selected.size}/$max)")
     if (selected.isNotEmpty()) {
@@ -61,13 +65,84 @@ private fun ReferenceImagePicker(
             ) { onChange((selected + image.ossUrl).take(max)) }
         }
         GhostPillButton("📤 Upload image", compact = true) { viewModel.uploadAsset(AssetType.IMAGE) }
+        GhostPillButton("✨ Generate with AI", compact = true, enabled = aiPrompt.isNotBlank()) {
+            viewModel.generateMedia(GenerationSetup(kind = "image", prompt = aiPrompt))
+        }
+        GhostPillButton("🎭 Repose with AI", compact = true, enabled = selected.isNotEmpty()) {
+            showRepose = true
+        }
     }
+    Text(
+        "AI images generate in the background and appear in the list above when ready.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
     if (imageAssets.isEmpty()) {
         Text(
             "Upload or generate images first — then attach up to $max of them as references.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+
+    if (showRepose) {
+        ReposeImageDialog(viewModel, baseOptions = selected) { showRepose = false }
+    }
+}
+
+/**
+ * Image-to-image reposing: pick one of the attached reference images and describe the new pose,
+ * angle or expression — the image-edit model repaints the same subject into a fresh library
+ * image that can then be attached as another reference.
+ */
+@Composable
+private fun ReposeImageDialog(
+    viewModel: AppViewModel,
+    baseOptions: List<String>,
+    onDismiss: () -> Unit
+) {
+    var baseUrl by remember { mutableStateOf(baseOptions.firstOrNull()) }
+    var prompt by remember { mutableStateOf("") }
+
+    StudioDialog(title = "Repose with AI", onDismiss = onDismiss, width = 500.dp) {
+        Text(
+            "Pick a base image and describe the new pose, camera angle or expression. The " +
+                "image-edit model repaints the same subject into a new reference image.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        SectionLabel("Base image")
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            baseOptions.forEach { url ->
+                val label = "🖼 " + url.substringAfterLast('/').take(18)
+                if (baseUrl == url) {
+                    PillButton(label, compact = true) { }
+                } else {
+                    GhostPillButton(label, compact = true) { baseUrl = url }
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        StudioTextField(
+            value = prompt,
+            onValueChange = { prompt = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "New pose / variation",
+            placeholder = "Same character, three-quarter view, arms crossed, confident smile...",
+            minLines = 2,
+            maxLines = 4
+        )
+        DialogActions {
+            GhostPillButton("Cancel") { onDismiss() }
+            ActionSpacer()
+            PillButton("✨ Generate", enabled = baseUrl != null && prompt.isNotBlank()) {
+                viewModel.generateMedia(GenerationSetup(kind = "image", prompt = prompt.trim(), imageUrl = baseUrl))
+                onDismiss()
+            }
+        }
     }
 }
 
@@ -102,7 +177,12 @@ fun CharacterEditorDialog(viewModel: AppViewModel, existing: Character?, onDismi
             maxLines = 6
         )
         Spacer(Modifier.height(4.dp))
-        ReferenceImagePicker(viewModel, referenceImages, Character.MAX_REFERENCE_IMAGES) { referenceImages = it }
+        ReferenceImagePicker(
+            viewModel,
+            referenceImages,
+            Character.MAX_REFERENCE_IMAGES,
+            aiPrompt = "Character reference portrait of ${name.ifBlank { "the character" }}: $description"
+        ) { referenceImages = it }
 
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
@@ -155,7 +235,12 @@ fun SceneEditorDialog(viewModel: AppViewModel, existing: Scene?, onDismiss: () -
             maxLines = 6
         )
         Spacer(Modifier.height(4.dp))
-        ReferenceImagePicker(viewModel, referenceImages, Scene.MAX_REFERENCE_IMAGES) { referenceImages = it }
+        ReferenceImagePicker(
+            viewModel,
+            referenceImages,
+            Scene.MAX_REFERENCE_IMAGES,
+            aiPrompt = "Establishing shot of the scene ${name.ifBlank { "" }}: $description".trim()
+        ) { referenceImages = it }
 
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }

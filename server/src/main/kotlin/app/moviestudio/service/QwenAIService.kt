@@ -9,6 +9,20 @@ import app.moviestudio.WordTiming
 import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.VoiceCloneRepository
 import app.moviestudio.storage.OssService
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.request
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -25,11 +39,6 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
 import java.io.File
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
-import java.time.Duration
 import java.util.UUID
 
 /**
@@ -38,7 +47,7 @@ import java.util.UUID
  *
  * Supported generation tasks (all executed asynchronously through the job queue):
  * - video: WAN 2.7 family — T2V (prompt only), I2V (first-frame image), R2V (reference images).
- * - image: text-to-image.
+ * - image: text-to-image, or image-to-image editing when a base image is attached.
  * - music: Fun-Music (`fun-music-preview`) with lyrics/theme/instrumental options.
  * - tts:   Qwen TTS with preset or cloned voices; transcripts + word timings are stored.
  * - sfx:   WAN video generation followed by ffmpeg audio extraction (sound-effects pipeline).
@@ -51,11 +60,16 @@ object QwenAIService : AIGenerationService {
     private val logger = LoggerFactory.getLogger(QwenAIService::class.java)
     private val json = Json { ignoreUnknownKeys = true }
 
+    // All outbound HTTP goes through this Ktor client (CIO engine).
     private val httpClient: HttpClient by lazy {
-        HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
-            .followRedirects(HttpClient.Redirect.NORMAL)
-            .build()
+        HttpClient(CIO) {
+            followRedirects = true
+            install(HttpTimeout) {
+                connectTimeoutMillis = 30_000
+                requestTimeoutMillis = 300_000
+                socketTimeoutMillis = 300_000
+            }
+        }
     }
 
     // ------------------------------------------------------------------------------------------
@@ -63,6 +77,9 @@ object QwenAIService : AIGenerationService {
     // ------------------------------------------------------------------------------------------
 
     override suspend fun generateText(system: String, user: String): String {
+        // Graceful degradation: without Model Studio credentials, answer offline with
+        // deterministic canned responses so planning/lyrics/themes keep working in dev.
+        if (!QwenConfig.isConfigured) return offlineGenerateText(system, user)
         val body = buildJsonObject {
             put("model", QwenConfig.chatModel)
             put("messages", buildJsonArray {
@@ -110,6 +127,19 @@ object QwenAIService : AIGenerationService {
     // ------------------------------------------------------------------------------------------
 
     override suspend fun createVoiceClone(name: String, audioUrl: String): VoiceClone {
+        // Graceful degradation: enroll an offline mock voice when Qwen is not configured.
+        if (!QwenConfig.isConfigured) {
+            logger.warn("Qwen not configured; enrolling offline mock voice clone for '{}'.", name)
+            val clone = VoiceClone(
+                id = UUID.randomUUID().toString(),
+                name = name,
+                qwenVoiceId = "mock-voice-${name.lowercase().replace(Regex("[^a-z0-9]+"), "-")}",
+                sourceAudioUrl = audioUrl,
+                createdAt = System.currentTimeMillis()
+            )
+            VoiceCloneRepository.insert(clone)
+            return clone
+        }
         val prefix = name.lowercase().replace(Regex("[^a-z0-9]"), "").take(9).ifBlank { "voice" }
         val body = buildJsonObject {
             put("model", QwenConfig.voiceEnrollModel)
@@ -203,23 +233,44 @@ object QwenAIService : AIGenerationService {
         GenerationCommon.finalize(job, payload, ossUrl, duration)
     }
 
-    /** Text-to-image generation. */
+    /**
+     * Image generation. Text-to-image by default; when the setup carries a base image
+     * ([app.moviestudio.GenerationSetup.imageUrl]) the image-edit (image-to-image) model is used
+     * instead, repainting the base image according to the prompt (repose, restyle, etc.).
+     */
     private suspend fun executeImage(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
-        onProgress(15, "Submitting image task (${QwenConfig.imageModel})...")
-        val requestBody = buildJsonObject {
-            put("model", QwenConfig.imageModel)
-            putJsonObject("input") {
-                put("prompt", setup.prompt)
-                if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
+        val baseImageUrl = setup.imageUrl?.takeIf { it.isNotBlank() }
+        val (submitUrl, requestBody) = if (baseImageUrl != null) {
+            onProgress(15, "Submitting image edit task (${QwenConfig.imageEditModel})...")
+            "${QwenConfig.dashScopeBaseUrl}/services/aigc/image2image/image-synthesis" to buildJsonObject {
+                put("model", QwenConfig.imageEditModel)
+                putJsonObject("input") {
+                    put("function", "description_edit")
+                    put("prompt", setup.prompt)
+                    put("base_image_url", baseImageUrl)
+                    if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
+                }
+                putJsonObject("parameters") {
+                    put("n", 1)
+                }
             }
-            putJsonObject("parameters") {
-                put("n", 1)
-                put("size", setup.resolution.replace("x", "*").ifBlank { "1024*1024" })
+        } else {
+            onProgress(15, "Submitting image task (${QwenConfig.imageModel})...")
+            "${QwenConfig.dashScopeBaseUrl}/services/aigc/text2image/image-synthesis" to buildJsonObject {
+                put("model", QwenConfig.imageModel)
+                putJsonObject("input") {
+                    put("prompt", setup.prompt)
+                    if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
+                }
+                putJsonObject("parameters") {
+                    put("n", 1)
+                    put("size", setup.resolution.replace("x", "*").ifBlank { "1024*1024" })
+                }
             }
         }
         val mediaUrl = runAsyncGenerationTask(
-            submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/text2image/image-synthesis",
+            submitUrl = submitUrl,
             requestBody = requestBody,
             mediaUrlKeys = listOf("url", "img_url"),
         ) { pct -> onProgress((20 + pct * 0.6).toInt().coerceIn(20, 80), "Generating image... $pct%") }
@@ -404,9 +455,8 @@ object QwenAIService : AIGenerationService {
             mediaUrlKeys = listOf("transcription_url", "url"),
         ) { /* no-op progress */ }
 
-        val resultJson = withContext(Dispatchers.IO) {
-            URI(transcriptionUrl).toURL().readText()
-        }
+        // The transcription document lives on a plain (pre-signed) URL: no auth headers needed.
+        val resultJson = httpClient.get(transcriptionUrl).bodyAsText()
         return parseTranscription(resultJson, durationSeconds)
     }
 
@@ -530,40 +580,69 @@ object QwenAIService : AIGenerationService {
         }
     }
 
-    private suspend fun postJson(url: String, body: JsonObject, async: Boolean, timeoutSeconds: Long = 60): JsonObject {
-        val builder = HttpRequest.newBuilder()
-            .uri(URI(url))
-            .timeout(Duration.ofSeconds(timeoutSeconds))
-            .header("Authorization", "Bearer ${QwenConfig.apiKey}")
-            .header("Content-Type", "application/json")
-        if (async) {
-            builder.header("X-DashScope-Async", "enable")
+    /**
+     * Offline stand-in for [generateText] used when no Model Studio credentials are configured:
+     * deterministic responses shaped for the known callers (skeleton planning, lyrics, themes).
+     */
+    private fun offlineGenerateText(system: String, user: String): String {
+        return when {
+            system.contains("SKELETON_PLANNER") -> {
+                // Deterministic four-item plan starting at the playhead position mentioned in
+                // the user prompt (falls back to 0).
+                val at = Regex("playhead position: ([0-9.]+)").find(user)
+                    ?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
+                // Only a sanitized snippet of the request may be embedded in the JSON string.
+                val requestSnippet = (Regex("User request: (.*)").find(user)?.groupValues?.get(1) ?: user)
+                    .replace("\"", "'")
+                    .replace("\\", "/")
+                    .replace(Regex("\\s+"), " ")
+                    .trim()
+                    .take(90)
+                """
+                [
+                  {"trackType": "VIDEO", "assetType": "VIDEO", "description": "Establishing shot: $requestSnippet", "startSeconds": $at, "durationSeconds": 6},
+                  {"trackType": "VIDEO", "assetType": "VIDEO", "description": "Close-up reaction shot continuing the story", "startSeconds": ${at + 6}, "durationSeconds": 5},
+                  {"trackType": "MUSIC", "assetType": "MUSIC", "description": "Warm, uplifting underscore", "startSeconds": $at, "durationSeconds": 11},
+                  {"trackType": "VOICE", "assetType": "VOICE", "description": "Narrator introduces the scene", "startSeconds": ${at + 1}, "durationSeconds": 5}
+                ]
+                """.trimIndent()
+            }
+            system.contains("LYRIC", ignoreCase = true) ->
+                "Verse 1:\nCity lights are calling out my name\nEvery street remembers where we came\n\n" +
+                    "Chorus:\nWe run, we rise, we glow\nThrough the night we go\n\n" +
+                    "Verse 2:\nShadows fade behind us as we fly\nPainting silver dreams across the sky"
+            system.contains("THEME", ignoreCase = true) ->
+                "Uplifting cinematic electro-pop with soaring strings and a driving beat"
+            else -> "Offline response: ${user.take(160)}"
         }
-        val request = builder
-            .POST(HttpRequest.BodyPublishers.ofString(json.encodeToString(JsonObject.serializer(), body)))
-            .build()
-        return sendForJson(request)
+    }
+
+    private suspend fun postJson(url: String, body: JsonObject, async: Boolean, timeoutSeconds: Long = 60): JsonObject {
+        val response = httpClient.post(url) {
+            header("Authorization", "Bearer ${QwenConfig.apiKey}")
+            if (async) header("X-DashScope-Async", "enable")
+            contentType(ContentType.Application.Json)
+            timeout { requestTimeoutMillis = timeoutSeconds * 1000 }
+            setBody(json.encodeToString(JsonObject.serializer(), body))
+        }
+        return parseJsonResponse(response)
     }
 
     private suspend fun getJson(url: String): JsonObject {
-        val request = HttpRequest.newBuilder()
-            .uri(URI(url))
-            .timeout(Duration.ofSeconds(60))
-            .header("Authorization", "Bearer ${QwenConfig.apiKey}")
-            .GET()
-            .build()
-        return sendForJson(request)
+        val response = httpClient.get(url) {
+            header("Authorization", "Bearer ${QwenConfig.apiKey}")
+            timeout { requestTimeoutMillis = 60_000 }
+        }
+        return parseJsonResponse(response)
     }
 
-    private suspend fun sendForJson(request: HttpRequest): JsonObject {
-        val response = withContext(Dispatchers.IO) {
-            httpClient.send(request, HttpResponse.BodyHandlers.ofString())
-        }
-        if (response.statusCode() !in 200..299) {
+    private suspend fun parseJsonResponse(response: HttpResponse): JsonObject {
+        val bodyText = response.bodyAsText()
+        if (!response.status.isSuccess()) {
             throw IllegalStateException(
-                "Model Studio request to ${request.uri()} failed with HTTP ${response.statusCode()}: ${response.body()}"
+                "Model Studio request to ${response.request.url} failed with HTTP ${response.status.value}: $bodyText"
             )
         }
-        return json.parseToJsonElement(response.body()).jsonObject
+        return json.parseToJsonElement(bodyText).jsonObject
     }
 }

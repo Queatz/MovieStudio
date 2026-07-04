@@ -90,7 +90,9 @@ object JobQueueWorker {
             }
         } catch (e: Exception) {
             logger.error("Failed to execute job ${job.id}: ${e.message}", e)
-            val failedJob = job.copy(status = JobStatus.FAILED)
+            // Keep the failed job (with its reason) so the user can retry or dismiss it from the
+            // background-generations panel instead of it silently vanishing.
+            val failedJob = job.copy(status = JobStatus.FAILED, error = e.message ?: "Unknown error")
             JobRepository.update(failedJob)
             broadcast(job, JobStatus.FAILED, 100, "Job failed: ${e.message}")
         }

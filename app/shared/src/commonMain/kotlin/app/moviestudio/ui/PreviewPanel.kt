@@ -40,6 +40,7 @@ import app.moviestudio.VideoPlayer
 import app.moviestudio.aspectRatioToFloat
 import app.moviestudio.calculatedDuration
 import app.moviestudio.parseEffectsConfig
+import app.moviestudio.setPreviewObjectPosition
 import app.moviestudio.shared.resources.Res
 import app.moviestudio.shared.resources.asap
 import app.moviestudio.shared.resources.yuyu
@@ -100,6 +101,12 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
         }
     LaunchedEffect(audioItems, viewModel.isPlaying) {
         updateAudioPlayback(audioItems, viewModel.isPlaying)
+    }
+
+    // Keep the preview's crop position in sync with the active clip's 0-100 offsets (50 = center).
+    val activeVideoEffects = videoActive?.let { parseEffectsConfig(it.clip.effectsConfig) }
+    LaunchedEffect(videoActive?.clip?.id, activeVideoEffects?.offsetX, activeVideoEffects?.offsetY) {
+        setPreviewObjectPosition(activeVideoEffects?.offsetX ?: 50.0, activeVideoEffects?.offsetY ?: 50.0)
     }
 
     Column(modifier = modifier) {
@@ -206,7 +213,7 @@ private fun EmptyStageContent(viewModel: AppViewModel) {
                 value = prompt,
                 onValueChange = { prompt = it },
                 modifier = Modifier.weight(1f),
-                placeholder = "A heist gone wrong in a neon city...",
+                placeholder = "A joyful hot-air balloon festival at sunrise...",
                 singleLine = true
             )
             Spacer(Modifier.width(10.dp))
