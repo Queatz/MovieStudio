@@ -105,6 +105,28 @@ object NetworkService {
         client.delete(url("/api/movies/$movieId/clips/$clipId"))
     }
 
+    /** All timeline notes of the movie (text-only plot-builder markers), sorted by time. */
+    suspend fun getNotes(movieId: String): List<TimelineNote> {
+        val responseText = client.get(url("/api/movies/$movieId/notes"))
+        return json.decodeFromString(ListSerializer(TimelineNote.serializer()), responseText)
+    }
+
+    suspend fun createNote(movieId: String, note: TimelineNote): TimelineNote {
+        val body = json.encodeToString(TimelineNote.serializer(), note)
+        val responseText = client.post(url("/api/movies/$movieId/notes"), body)
+        return json.decodeFromString(TimelineNote.serializer(), responseText)
+    }
+
+    suspend fun updateNote(movieId: String, note: TimelineNote): TimelineNote {
+        val body = json.encodeToString(TimelineNote.serializer(), note)
+        val responseText = client.put(url("/api/movies/$movieId/notes/${note.id}"), body)
+        return json.decodeFromString(TimelineNote.serializer(), responseText)
+    }
+
+    suspend fun deleteNote(movieId: String, noteId: String) {
+        client.delete(url("/api/movies/$movieId/notes/$noteId"))
+    }
+
     /** Queues server-side skeleton generation (Qwen plans placeholder items on the timeline). */
     suspend fun generateSkeleton(movieId: String, prompt: String, atSeconds: Double): Job {
         val body = buildJsonObject {

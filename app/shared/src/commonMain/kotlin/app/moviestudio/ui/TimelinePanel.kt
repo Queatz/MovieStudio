@@ -62,18 +62,35 @@ import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
 import app.moviestudio.Clip
 import app.moviestudio.FilmTimeline
+import app.moviestudio.TimelineNote
 import app.moviestudio.Track
 import app.moviestudio.TrackType
 import app.moviestudio.TransitionType
 import app.moviestudio.calculatedDuration
 import app.moviestudio.parseEffectsConfig
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 private const val RULER_HEIGHT = 26f
 private const val TRACK_HEIGHT = 52f
 private const val TRACK_GAP = 6f
 private const val EDGE_GRAB = 10f
+
+// Note markers: blue pills with the note's text, sitting in the lower band of the ruler.
+private const val NOTE_PILL_TOP = 13f
+private const val NOTE_PILL_HEIGHT = 13f
+private const val NOTE_PILL_MAX_WIDTH = 170f
+private val noteTextStyle = TextStyle(color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+
+/** The single-line label shown inside a note's blue marker pill. */
+private fun noteLabel(note: TimelineNote): String = note.text.replace('\n', ' ').take(24)
+
+/** Width of a note's marker pill: its measured label plus padding, capped. */
+private fun notePillWidth(textMeasurer: androidx.compose.ui.text.TextMeasurer, label: String): Float {
+    val measured = textMeasurer.measure(label, style = noteTextStyle, maxLines = 1)
+    return min(measured.size.width + 10f, NOTE_PILL_MAX_WIDTH)
+}
 
 /** What a drag that started on the timeline is currently doing. */
 private sealed interface DragSession {
@@ -365,6 +382,7 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
     val zoomState by rememberUpdatedState(viewModel.zoomScale)
     val scrollState by rememberUpdatedState(viewModel.scrollOffset)
     val assetsState by rememberUpdatedState(viewModel.libraryAssets)
+    val notesState by rememberUpdatedState(viewModel.timelineNotes)
 
     var dragSession by remember { mutableStateOf<DragSession?>(null) }
 
@@ -400,6 +418,15 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
             time >= clip.timelineStart && time <= clip.timelineStart + (clip.trimOut - clip.trimIn)
         } ?: return null
         return clip to trackIndex
+    }
+
+    // The note whose marker pill sits under the pointer (topmost pill wins).
+    fun noteHit(offset: Offset): TimelineNote? {
+        if (offset.y < NOTE_PILL_TOP || offset.y > RULER_HEIGHT) return null
+        return notesState.lastOrNull { note ->
+            val x = (note.atSeconds.toFloat() - scrollState) * zoomState
+            offset.x >= x && offset.x <= x + notePillWidth(textMeasurer, noteLabel(note))
+        }
     }
 
     Canvas(
@@ -439,11 +466,16 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
                     }
                 }
             }
-            // Tap: seek from the ruler, select/deselect clips.
+            // Tap: focus a note marker or seek from the ruler, select/deselect clips below it.
             .pointerInput(Unit) {
                 detectTapGestures { offset ->
                     if (offset.y <= RULER_HEIGHT) {
-                        viewModel.seek(timeAt(offset.x))
+                        val note = noteHit(offset)
+                        if (note != null) {
+                            viewModel.focusNote(note)
+                        } else {
+                            viewModel.seek(timeAt(offset.x))
+                        }
                     } else {
                         val hit = clipHit(offset)
                         viewModel.selectedClipId = hit?.first?.id
@@ -548,6 +580,7 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
         val currentTimeline = timelineState ?: return@Canvas
         drawRuler(this, textMeasurer, zoomState, scrollState)
         drawTracks(this, textMeasurer, currentTimeline, assetsState, zoomState, scrollState, viewModel.selectedClipId)
+        drawNoteMarkers(this, textMeasurer, notesState, zoomState, scrollState, viewModel.selectedNoteId)
         drawPlayhead(this, viewModel.playhead, zoomState, scrollState)
 
         // Drop-target feedback while a library card is dragged over the timeline.
@@ -708,6 +741,61 @@ private fun drawTracks(
                 )
             }
         }
+    }
+}
+
+/**
+ * Timeline notes as blue markers: a pill with the note's text in the ruler band plus a vertical
+ * guide line through the tracks at the note's position. Tapping a pill focuses the note in the
+ * notes side panel; the selected note is outlined and its guide line brightened.
+ */
+private fun drawNoteMarkers(
+    scope: DrawScope,
+    textMeasurer: androidx.compose.ui.text.TextMeasurer,
+    notes: List<TimelineNote>,
+    zoom: Float,
+    scroll: Float,
+    selectedNoteId: String?
+) = with(scope) {
+    notes.forEach { note ->
+        val x = (note.atSeconds.toFloat() - scroll) * zoom
+        if (x < -NOTE_PILL_MAX_WIDTH || x > size.width) return@forEach
+        val selected = note.id == selectedNoteId
+
+        // Vertical guide line through the tracks.
+        drawLine(
+            NoteBlue.copy(alpha = if (selected) 0.85f else 0.4f),
+            Offset(x, RULER_HEIGHT),
+            Offset(x, size.height),
+            strokeWidth = if (selected) 2f else 1.5f
+        )
+
+        // The blue marker pill with the note's text.
+        val label = noteLabel(note)
+        val pillWidth = notePillWidth(textMeasurer, label)
+        drawRoundRect(
+            if (selected) NoteBlue else NoteBlue.copy(alpha = 0.85f),
+            topLeft = Offset(x, NOTE_PILL_TOP),
+            size = Size(pillWidth, NOTE_PILL_HEIGHT),
+            cornerRadius = CornerRadius(4f, 4f)
+        )
+        if (selected) {
+            drawRoundRect(
+                Color.White,
+                topLeft = Offset(x - 1f, NOTE_PILL_TOP - 1f),
+                size = Size(pillWidth + 2f, NOTE_PILL_HEIGHT + 2f),
+                cornerRadius = CornerRadius(5f, 5f),
+                style = Stroke(width = 1.5f)
+            )
+        }
+        drawText(
+            textMeasurer,
+            label,
+            topLeft = Offset(x + 5f, NOTE_PILL_TOP + 1f),
+            style = noteTextStyle,
+            maxLines = 1,
+            size = Size(max(pillWidth - 8f, 4f), NOTE_PILL_HEIGHT)
+        )
     }
 }
 

@@ -247,6 +247,21 @@ data class RenderRecord(
 )
 
 /**
+ * A text-only note pinned to a position on a movie's timeline — the plot-builder track. Notes
+ * carry no media: they are planning/writing aids shown on the timeline as blue markers with
+ * their text, and are managed from the editor's expandable notes side panel.
+ */
+@Serializable
+data class TimelineNote(
+    val id: String,
+    val movieId: String,
+    // Timeline position of the note's marker, in seconds.
+    val atSeconds: Double,
+    val text: String,
+    val createdAt: Long = 0
+)
+
+/**
  * The Qwen TTS preset voices available out of the box. Cloned voices from the user's voice
  * library are offered alongside these.
  */

@@ -92,8 +92,11 @@ fun EditorScreen(viewModel: AppViewModel) {
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    .padding(top = 12.dp)
                     .padding(horizontal = 12.dp)
             ) {
+                TimelineNotesPanel(viewModel, Modifier.fillMaxHeight())
+                Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     PreviewPanel(viewModel, Modifier.weight(1f).fillMaxWidth())
                     val selection = viewModel.findClip(viewModel.selectedClipId)

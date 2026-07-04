@@ -60,6 +60,17 @@ class AppViewModel : ViewModel() {
     var renders by mutableStateOf<List<RenderRecord>>(emptyList())
         private set
 
+    // -------------------------------------------------------------------------- timeline notes
+    /** Text-only notes pinned to timeline positions (the plot builder), sorted by time. */
+    var timelineNotes by mutableStateOf<List<TimelineNote>>(emptyList())
+        private set
+
+    /** True while the expandable notes side panel is open. */
+    var notesPanelExpanded by mutableStateOf(false)
+
+    /** The note highlighted in the panel (also set by clicking a marker on the timeline). */
+    var selectedNoteId by mutableStateOf<String?>(null)
+
     // -------------------------------------------------------------------------------- playback
     var playhead by mutableStateOf(0f)
         private set
@@ -168,7 +179,10 @@ class AppViewModel : ViewModel() {
         playhead = 0f
         isPlaying = false
         selectedClipId = null
+        selectedNoteId = null
+        timelineNotes = emptyList()
         refreshTimeline()
+        refreshNotes()
         refreshLibrary()
         refreshCharactersAndScenes()
         refreshVoices()
@@ -182,6 +196,7 @@ class AppViewModel : ViewModel() {
         currentMovie = null
         timeline = null
         selectedClipId = null
+        selectedNoteId = null
         loadMovies()
     }
 
@@ -475,6 +490,77 @@ class AppViewModel : ViewModel() {
     }
 
     fun assetById(assetId: String): Asset? = libraryAssets.firstOrNull { it.id == assetId }
+
+    // ============================================================================ timeline notes
+
+    fun refreshNotes() {
+        val movieId = currentMovie?.id ?: return
+        viewModelScope.launch {
+            try {
+                timelineNotes = NetworkService.getNotes(movieId)
+            } catch (e: Exception) {
+                errorMessage = "Failed to load notes: ${e.message}"
+            }
+        }
+    }
+
+    /** Adds a text-only note pinned at [atSeconds] (defaults to the current playhead). */
+    fun addNote(text: String, atSeconds: Float = playhead) {
+        val movieId = currentMovie?.id ?: return
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                val note = TimelineNote(
+                    id = generateId(),
+                    movieId = movieId,
+                    atSeconds = atSeconds.toDouble().coerceAtLeast(0.0),
+                    text = trimmed
+                )
+                val saved = NetworkService.createNote(movieId, note)
+                timelineNotes = (timelineNotes + saved).sortedBy { it.atSeconds }
+                selectedNoteId = saved.id
+            } catch (e: Exception) {
+                errorMessage = "Failed to add note: ${e.message}"
+            }
+        }
+    }
+
+    /** Persists an edited note (text and/or marker position). */
+    fun updateNote(note: TimelineNote) {
+        val movieId = currentMovie?.id ?: return
+        if (note.text.isBlank()) return
+        // Optimistic local update so edits and re-pins feel instant.
+        timelineNotes = timelineNotes.map { if (it.id == note.id) note else it }.sortedBy { it.atSeconds }
+        viewModelScope.launch {
+            try {
+                NetworkService.updateNote(movieId, note)
+            } catch (e: Exception) {
+                errorMessage = "Failed to update note: ${e.message}"
+                refreshNotes()
+            }
+        }
+    }
+
+    fun deleteNote(noteId: String) {
+        val movieId = currentMovie?.id ?: return
+        viewModelScope.launch {
+            try {
+                NetworkService.deleteNote(movieId, noteId)
+                if (selectedNoteId == noteId) selectedNoteId = null
+                timelineNotes = timelineNotes.filter { it.id != noteId }
+            } catch (e: Exception) {
+                errorMessage = "Failed to delete note: ${e.message}"
+            }
+        }
+    }
+
+    /** Focuses [note]: highlights it, reveals the notes panel and seeks to its marker. */
+    fun focusNote(note: TimelineNote) {
+        selectedNoteId = note.id
+        notesPanelExpanded = true
+        seek(note.atSeconds.toFloat())
+    }
 
     // =================================================================================== library
 

@@ -6,10 +6,12 @@ import app.moviestudio.FilmStatus
 import app.moviestudio.Job
 import app.moviestudio.JobStatus
 import app.moviestudio.JobType
+import app.moviestudio.TimelineNote
 import app.moviestudio.Track
 import app.moviestudio.database.ClipRepository
 import app.moviestudio.database.FilmRepository
 import app.moviestudio.database.JobRepository
+import app.moviestudio.database.NoteRepository
 import app.moviestudio.database.RenderRepository
 import app.moviestudio.database.TrackRepository
 import app.moviestudio.service.TimelineService
@@ -67,11 +69,12 @@ fun Route.movieRoutes() {
         delete("/{id}") {
             try {
                 val id = call.parameters["id"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing id")
-                // Remove the movie's tracks and clips along with it.
+                // Remove the movie's tracks, clips and timeline notes along with it.
                 TrackRepository.queryByMovieId(id).forEach { track ->
                     ClipRepository.deleteByTrackId(track.id)
                     TrackRepository.delete(track.id)
                 }
+                NoteRepository.deleteByMovieId(id)
                 FilmRepository.delete(id)
                 call.respond(HttpStatusCode.OK, mapOf("deleted" to true))
             } catch (e: Exception) {
@@ -166,6 +169,58 @@ fun Route.movieRoutes() {
                 val clipId = call.parameters["clipId"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing clipId")
                 ClipRepository.delete(clipId)
                 TimelineService.refreshMovieDuration(movieId)
+                call.respond(HttpStatusCode.OK, mapOf("deleted" to true))
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+
+        // Timeline notes: text-only plot-builder markers pinned to timeline positions. Shown on
+        // the timeline as blue markers and managed from the editor's notes side panel.
+        get("/{movieId}/notes") {
+            try {
+                val movieId = call.parameters["movieId"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing movieId")
+                call.respond(NoteRepository.queryByMovieId(movieId))
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+
+        post("/{movieId}/notes") {
+            try {
+                val movieId = call.parameters["movieId"] ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing movieId")
+                val note = call.receive<TimelineNote>()
+                val stamped = note.copy(
+                    movieId = movieId,
+                    createdAt = if (note.createdAt == 0L) System.currentTimeMillis() else note.createdAt
+                )
+                val saved = NoteRepository.insert(stamped)
+                call.respond(HttpStatusCode.Created, saved)
+            } catch (e: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, e.message ?: "Validation failed")
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+
+        put("/{movieId}/notes/{noteId}") {
+            try {
+                val movieId = call.parameters["movieId"] ?: return@put call.respond(HttpStatusCode.BadRequest, "Missing movieId")
+                val noteId = call.parameters["noteId"] ?: return@put call.respond(HttpStatusCode.BadRequest, "Missing noteId")
+                val note = call.receive<TimelineNote>()
+                val updated = NoteRepository.update(note.copy(id = noteId, movieId = movieId))
+                call.respond(HttpStatusCode.OK, updated)
+            } catch (e: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, e.message ?: "Validation failed")
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+
+        delete("/{movieId}/notes/{noteId}") {
+            try {
+                val noteId = call.parameters["noteId"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing noteId")
+                NoteRepository.delete(noteId)
                 call.respond(HttpStatusCode.OK, mapOf("deleted" to true))
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
