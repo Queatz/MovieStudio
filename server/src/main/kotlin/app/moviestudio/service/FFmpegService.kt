@@ -196,12 +196,14 @@ object FFmpegService {
                 val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
                 var overlayExtra = ""
                 if (transition != null && transition.type != TransitionType.NONE) {
+                    // How the incoming clip is composited over the accumulated video. The signs and
+                    // window math mirror the shared TransitionSpec.visualAt(...) in core/Models.kt so
+                    // the export matches the live preview.
                     when (transition.type) {
                         TransitionType.SLIDE -> {
                             // Slide the clip in from the chosen edge across the transition window.
-                            // progress p = (t-start)/dur; the off-screen offset is W|H*(1-p). The
-                            // signs mirror TransitionSpec.visualAt(...) so the export matches the
-                            // preview (see core Models.kt): FROM_RIGHT enters from +W and moves to 0.
+                            // progress p = (t-start)/dur; the off-screen offset is W|H*(1-p).
+                            // FROM_RIGHT enters from +W and moves to 0.
                             val p = "(t-$start)/$transitionDur"
                             overlayExtra = when (transition.direction) {
                                 SlideDirection.FROM_RIGHT ->
@@ -214,18 +216,41 @@ object FFmpegService {
                                     ":y='if(lt(t-$start,$transitionDur),H-H*$p,0)'"
                             }
                         }
+                        TransitionType.CIRCLE -> {
+                            // Growing circular reveal: an alpha mask that is opaque inside a centered
+                            // circle whose radius grows from 0 to the corner distance over the window
+                            // (matches TransitionVisual.revealRadiusFraction = progress). No fade.
+                            videoFilters.add("format=yuva420p")
+                            videoFilters.add(
+                                "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':" +
+                                    "a='if(lte(hypot(X-W/2,Y-H/2),hypot(W/2,H/2)*min(T/$transitionDur,1)),255,0)'"
+                            )
+                        }
                         else -> {
+                            // ALPHA / NOISE / VORONOI / PIXELATE all cross-fade in.
                             videoFilters.add("format=yuva420p")
                             videoFilters.add("fade=t=in:st=0:d=$transitionDur:alpha=1")
                         }
                     }
+                    // Grain / mosaic layered on top of the fade for the textured transitions.
                     when (transition.type) {
                         TransitionType.NOISE ->
                             videoFilters.add("noise=alls=48:allf=t:enable='between(t,0,$transitionDur)'")
                         TransitionType.VORONOI ->
                             videoFilters.add("pixelize=width=42:height=42:enable='between(t,0,$transitionDur)'")
-                        TransitionType.PIXELATE ->
-                            videoFilters.add("pixelize=width=16:height=16:enable='between(t,0,$transitionDur)'")
+                        TransitionType.PIXELATE -> {
+                            // Animate the mosaic: downscale (nearest-neighbor) to a time-varying tiny
+                            // size, then scale back up, so the blocks start large (maxBlock px at
+                            // t=0) and shrink to 1px (crisp) as the window ends — this is the real
+                            // animation of pixelateFraction = 1 - progress.
+                            val maxBlock = 48.0
+                            val blockPx = "max(1,$maxBlock*(1-min(t/$transitionDur,1)))"
+                            videoFilters.add(
+                                "scale=w='max(2,2*floor($canvasWidth/($blockPx)/2))':" +
+                                    "h='max(2,2*floor($canvasHeight/($blockPx)/2))':eval=frame:flags=neighbor"
+                            )
+                            videoFilters.add("scale=$canvasWidth:$canvasHeight:flags=neighbor")
+                        }
                         else -> {}
                     }
                 }

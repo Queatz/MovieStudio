@@ -6,6 +6,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 
@@ -18,7 +19,8 @@ actual fun VideoPlayer(
     modifier: Modifier,
     alpha: Float,
     offsetXFraction: Float,
-    offsetYFraction: Float
+    offsetYFraction: Float,
+    revealRadiusFraction: Float
 ) {
     Box(
         modifier = modifier
@@ -27,6 +29,10 @@ actual fun VideoPlayer(
                 translationX = offsetXFraction * size.width
                 translationY = offsetYFraction * size.height
             }
+            .then(
+                if (revealRadiusFraction < 1f) Modifier.clip(CircleRevealShape(revealRadiusFraction))
+                else Modifier
+            )
             .background(Color.Black),
         contentAlignment = Alignment.Center
     ) {

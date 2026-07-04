@@ -84,20 +84,36 @@ the FFmpeg render, so the two can't drift:
 /** Progress 0f..1f of the transition at clip-local time; 1f = settled / no effect. */
 fun TransitionSpec?.progressAt(clipLocalSeconds: Double, clipDuration: Double): Float
 
-/** The incoming clip's opacity + fractional slide offset at a given progress. */
-data class TransitionVisual(val alpha: Float, val translateXFraction: Float, val translateYFraction: Float)
+/**
+ * The incoming clip's visual at a given progress, described with a small set of orthogonal,
+ * interpretable *primitives* — not a hard-coded transform per transition. Each renderer applies the
+ * primitives it can express.
+ */
+data class TransitionVisual(
+    val alpha: Float = 1f,               // cross-fade opacity
+    val translateXFraction: Float = 0f,  // slide offset, fraction of stage (+ = right)
+    val translateYFraction: Float = 0f,  // slide offset, fraction of stage (+ = down)
+    val revealRadiusFraction: Float = 1f,// centered circular reveal (1 = no mask, 0 = nothing)
+    val pixelateFraction: Float = 0f,    // mosaic amount (0 = crisp, 1 = maximally blocky)
+)
 fun TransitionSpec.visualAt(progress: Float): TransitionVisual
 ```
 
 - `progressAt(...)` clamps the window to `[TRANSITION_MIN_SECONDS, clipDuration]` and returns the
   normalized progress; it is the shared window math.
-- `visualAt(...)` maps a transition to a **visual transform**: `SLIDE` translates the clip in from
-  its `direction` at full opacity (`translate = ±(1 - progress)` on X or Y); every other type is a
-  **cross-fade** (`alpha = progress`). The grain/pixelate/voronoi overlays FFmpeg layers on top of
-  the fade can't be reproduced with Compose modifiers, so the preview approximates them as the
-  dominant alpha fade.
-- The slide offset signs in `visualAt(...)` are defined to match the FFmpeg overlay expressions in
-  §4, so a slide looks the same in the preview and the export.
+- `visualAt(...)` maps a transition to a set of **primitives** so preview and export agree:
+  - `SLIDE` → translate the clip in from its `direction` at full opacity (`translate = ±(1 - p)`).
+  - `CIRCLE` → a centered circular reveal that grows from nothing to full (`revealRadiusFraction = p`)
+    at full opacity — **no** cross-fade.
+  - `PIXELATE` → the clip resolves out of large mosaic blocks (`pixelateFraction = 1 - p`) while it
+    cross-fades in (`alpha = p`).
+  - `ALPHA` / `NOISE` / `VORONOI` → a cross-fade (`alpha = p`).
+- The reveal fraction and slide-offset signs in `visualAt(...)` are defined to match the FFmpeg
+  expressions in §4, so those transitions look the same in the preview and the export.
+- **Not every primitive is reproducible everywhere.** Compose modifiers can express `alpha`,
+  `translate` and a circular clip (`revealRadiusFraction`), but *not* an arbitrary mosaic, so the
+  preview leaves `pixelateFraction` to FFmpeg and only shows the accompanying alpha fade. This
+  asymmetry is exactly why a primitive set is a **bridge, not the endgame** — see §7.
 
 ---
 
@@ -121,17 +137,33 @@ and applied as follows (clip-local time `0..transitionDur`):
 | `ALPHA`          | `format=yuva420p`, `fade=t=in:st=0:d=dur:alpha=1` (alpha fade-in)                                        |
 | `NOISE`          | alpha fade-in **+** `noise=alls=48:allf=t:enable='between(t,0,dur)'`                                     |
 | `VORONOI`        | alpha fade-in **+** `pixelize=width=42:height=42:enable='between(t,0,dur)'`                              |
-| `PIXELATE`       | alpha fade-in **+** `pixelize=width=16:height=16:enable='between(t,0,dur)'`                              |
-| `CIRCLE`         | alpha fade-in only (see the gap below)                                                                   |
+| `PIXELATE`       | alpha fade-in **+** **animated mosaic** (see below)                                                     |
+| `CIRCLE`         | `format=yuva420p` **+** growing circular alpha mask via `geq` (see below) — no fade                     |
 
-Notes / current gaps in the render:
+The two textured/masked transitions now have real, animated implementations:
 
-- **`CIRCLE` has no dedicated implementation.** It falls through to the alpha-fade branch and adds
-  no extra filter, so today a "Circle reveal" renders identically to an "Alpha fade". A real
-  implementation would need e.g. a masked/`geq` circular wipe.
-- All effects are keyed with `enable='between(...)'`/`fade ... st=0:d=dur`, i.e. they only run
-  during the window and the clip plays clean afterwards — reinforcing that these are
-  transition-**in** effects only.
+- **`CIRCLE` — growing circular reveal.** After `format=yuva420p`, a `geq` sets the alpha plane to
+  opaque only inside a centered circle whose radius grows over the window:
+  ```
+  geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':
+      a='if(lte(hypot(X-W/2,Y-H/2), hypot(W/2,H/2)*min(T/dur,1)), 255, 0)'
+  ```
+  `hypot(W/2,H/2)` is the center-to-corner distance, so at `T=dur` the circle covers the whole
+  frame. Outside the circle the clip is transparent, so the `overlay` shows the media beneath — a
+  true iris-in. This is the exact analog of the preview's `CircleRevealShape`
+  (`revealRadiusFraction = min(T/dur, 1)`), so preview and export match.
+- **`PIXELATE` — animated mosaic.** Instead of a constant `pixelize=16`, the block size is animated:
+  the clip is downscaled with nearest-neighbor to a *time-varying* tiny size and scaled back up, so
+  the blocks start large (`maxBlock` px at `t=0`) and shrink to 1px (crisp) as the window ends:
+  ```
+  scale=w='max(2,2*floor(W/blockPx/2))':h='max(2,2*floor(H/blockPx/2))':eval=frame:flags=neighbor,
+  scale=W:H:flags=neighbor            // blockPx = max(1, maxBlock*(1 - min(t/dur, 1)))
+  ```
+  This is the real animation of `pixelateFraction = 1 - progress`; the accompanying alpha fade is
+  what the preview approximates.
+- All effects are keyed with `enable='between(...)'` / `fade ... st=0:d=dur`, or (for the scales)
+  become the identity transform after the window, so the clip plays clean afterwards — reinforcing
+  that these are transition-**in** effects only.
 
 ---
 
@@ -145,10 +177,14 @@ applies the shared `visualAt(progressAt(...))` to every visual clip under the pl
   `clipDuration = clip.trimOut - clip.trimIn`, then `transition.visualAt(transition.progressAt(...))`
   (`ActiveClip.transitionVisual(playhead)`).
 - **Images** (`AssetType.IMAGE`) apply the resulting `TransitionVisual` via a `graphicsLayer`
-  (`alpha`, and `translationX/Y = fraction * size`), so they fade / slide in over the media beneath.
-- **Video** passes `alpha` / `offsetXFraction` / `offsetYFraction` into `VideoPlayer` (below).
+  (`alpha`, and `translationX/Y = fraction * size`) plus, when `revealRadiusFraction < 1`, a
+  `Modifier.clip(CircleRevealShape(...))` — so they fade / slide / iris in over the media beneath.
+- **Video** passes `alpha` / `offsetXFraction` / `offsetYFraction` / `revealRadiusFraction` into
+  `VideoPlayer` (below).
 - **Description-only cards** are *not* transitioned, matching FFmpeg (those items skip the
   transition block in the render).
+- **Pixelate** shows only its alpha fade in the preview (Compose can't mosaic the content); the real
+  animated blocks appear in the export. See §7 for why and the plan to close this gap.
 
 Because a transitioning clip becomes partly transparent / offset, the lower-`zIndex` clips (or the
 black stage) show through exactly as the FFmpeg overlay reveals `currentVideoTag`.
@@ -168,48 +204,101 @@ expect fun VideoPlayer(
     playhead: Float,
     onTimeUpdate: (Float) -> Unit,
     modifier: Modifier = Modifier,
-    alpha: Float = 1f,              // cross-fade opacity of the incoming clip
-    offsetXFraction: Float = 0f,    // slide offset, fraction of the player size (+ = right)
-    offsetYFraction: Float = 0f,    // slide offset, fraction of the player size (+ = down)
+    alpha: Float = 1f,               // cross-fade opacity of the incoming clip
+    offsetXFraction: Float = 0f,     // slide offset, fraction of the player size (+ = right)
+    offsetYFraction: Float = 0f,     // slide offset, fraction of the player size (+ = down)
+    revealRadiusFraction: Float = 1f,// circular reveal (1 = no mask, 0 = nothing shown)
 )
 ```
 
 How each `actual` honors them:
 
 - **JVM / Android** (placeholder players): a `graphicsLayer` applies `alpha` and
-  `translationX/Y = fraction * size`.
+  `translationX/Y = fraction * size`, plus `Modifier.clip(CircleRevealShape(revealRadiusFraction))`
+  when the reveal is partial.
 - **Web (`VideoPlayer.wasmJs.kt` / `VideoPlayer.js.kt`).** The player is a single shared
   `<video id="compose-video-preview">` DOM element drawn *on top of* the Compose canvas (see
-  `docs/PreviewPanel.md` §5.2), so a Compose `Modifier.alpha` can't fade it. Instead the element's
-  own `style.opacity` and `style.left`/`style.top` are driven from the transition: the un-transformed
-  stage bounds are stored on the element (`dataset.baseX/Y/W/H`) whenever layout changes, and a
-  separate `LaunchedEffect(alpha, offsetX, offsetY)` re-applies opacity + `base + fraction * size`
-  offset every tick as the progress advances.
+  `docs/PreviewPanel.md` §5.2), so Compose modifiers can't transform it. Instead the element's own
+  CSS is driven from the transition: the un-transformed stage bounds are stored on the element
+  (`dataset.baseX/Y/W/H`) whenever layout changes, and a separate
+  `LaunchedEffect(alpha, offsetX, offsetY, reveal)` re-applies `style.opacity`, the
+  `base + fraction * size` position, and a `style.clipPath = circle(<reveal * cornerDist>px at 50% 50%)`
+  every tick. The circle radius uses the same center-to-corner distance as the FFmpeg `geq` mask, so
+  the web iris matches the export. `pixelateFraction` has no CSS analog on a `<video>`, so pixelate
+  on web video is fade-only in the preview (see §7).
 
 ---
 
-## 7. Remaining gaps
+## 7. Scaling to many transitions — is the primitive model the right direction?
 
-- **`CIRCLE` still has no dedicated implementation** in either the render or the preview — it renders
-  as a plain alpha fade in both (kept consistent between them). A real version needs a masked/`geq`
-  circular wipe on the render side and an equivalent clip mask in the preview.
-- **Grain / pixelate detail is fade-only in the preview.** `NOISE`, `VORONOI` and `PIXELATE` add
-  their FFmpeg grain/pixelize on top of the fade in the export; the preview approximates them as the
-  dominant alpha fade (the timing and reveal match; the texture doesn't).
+**Short answer:** the *shared, progress-driven definition* consumed by both the preview and the
+export is the right idea and worth keeping; encoding it as a fixed set of Compose/FFmpeg primitives
+(`alpha` / `translate` / `revealRadiusFraction` / `pixelateFraction`) is a good **bridge for the
+handful of transitions we ship today, but it will not scale to the "hundreds" we want.**
+
+Why the primitive set doesn't scale:
+
+- Each new primitive must be hand-implemented **twice** (a Compose modifier *and* an FFmpeg filter
+  chain) and every renderer must be able to express it. We already have an unavoidable asymmetry —
+  Compose can't mosaic content, and the web `<video>` is a DOM overlay we can only tweak with a few
+  CSS properties — so `pixelateFraction` is export-only. Arbitrary wipes / irises / dissolves /
+  morphs each add another special case and another asymmetry.
+
+The scalable endgame — **one GLSL shader per transition (the [GL Transitions](https://gl-transitions.com)
+model):** a transition becomes a fragment shader `transition(vec2 uv, float progress)` that mixes a
+`from` and a `to` texture. There are 80+ open-source ones, and authoring a new transition is *data*
+(a shader), not code changes in two renderers. It maps cleanly onto our stack:
+
+- **Preview (GPU):** run the shader over the two frames — Android `RuntimeShader` (AGSL) and desktop
+  Skia `RuntimeEffect` (`org.jetbrains.skia.RuntimeEffect`) already exist in Compose Multiplatform.
+  On **web** this means promoting the preview from a DOM `<video>` overlay to a `<canvas>` that draws
+  the decoded video frame and runs the shader in WebGL — the biggest single piece of work, but it
+  also removes the overlay's current transform limitations (it's why pixelate/arbitrary effects are
+  impossible on web today).
+- **Export (FFmpeg):** the same GLSL runs via the `gl-transition` filter, or we lean on FFmpeg's
+  built-in **`xfade`** filter, which already ships ~50 transitions (`fade`, `wipe*`, `slide*`,
+  `circleopen`/`circleclose`/`circlecrop`, `pixelize`, `dissolve`, `radial`, …) plus a `custom=`
+  expression. `xfade` blends two equal-length streams, whereas we currently *overlay each clip onto
+  an accumulator*, so adopting it is a render-pipeline change (build a `from`/`to` pair per
+  transition window) — the main reason it isn't wired up yet.
+
+**Recommended path:** (1) keep the shared `progressAt` window math; (2) evolve `visualAt` into a
+`TransitionRecipe` that can also name a **shader id + uniforms**; (3) add the GPU shader preview and
+the `xfade`/`gl-transition` export path; (4) migrate the existing primitive transitions onto shaders
+so there is a single implementation per transition. Until then, the primitive set keeps preview and
+export in lock-step for the transitions we ship.
+
+---
+
+## 8. Remaining gaps
+
+- **Pixelate is fade-only in the preview.** The export animates the real mosaic; the preview shows
+  the accompanying alpha fade because Compose can't mosaic content and the web video is a DOM
+  overlay. Closing this needs the shader/canvas preview from §7.
+- **Grain detail is fade-only in the preview.** `NOISE` and `VORONOI` add their FFmpeg grain on top
+  of the fade in the export; the preview approximates them as the dominant alpha fade (timing and
+  reveal match; the texture doesn't).
 - **Transition-out** is still unsupported (see the note at the top).
+- **`CIRCLE`'s `geq` mask is per-pixel per-frame**, so it's the most expensive transition to render;
+  the `xfade=circleopen` route in §7 would be cheaper.
 
 ---
 
-## 8. Summary
+## 9. Summary
 
 - Transitions are per-clip, **transition-in only**, stored in `EffectsConfig.transition`
   (`TransitionSpec`), authored in `ClipInspector` for `VIDEO`-track clips.
-- `TransitionSpec` now carries a **parameter** — `direction` (`SlideDirection`) for `SLIDE` — and is
-  the template for future per-type parameters.
+- `TransitionSpec` carries a **parameter** — `direction` (`SlideDirection`) for `SLIDE` — and is the
+  template for future per-type parameters.
 - The window math (`progressAt`) and the effect mapping (`visualAt` → `TransitionVisual`) live in
-  **shared `core` code**, so the preview and FFmpeg stay in lock-step.
-- The **live `PreviewPanel` now applies transitions** to both images (`graphicsLayer`) and video
-  (via the extended `VideoPlayer`, which honors `alpha`/offset — on web by driving the DOM overlay's
-  `style.opacity`/position), matching the FFmpeg export.
-- Remaining gaps: `CIRCLE` renders as a plain fade everywhere; the preview approximates
-  noise/pixelate/voronoi as their dominant fade; and there is still no transition-**out**.
+  **shared `core` code** as a small set of orthogonal **primitives** (alpha / translate / circular
+  reveal / pixelate), so the preview and FFmpeg stay in lock-step.
+- **`CIRCLE`** is now a real growing circular reveal (FFmpeg `geq` alpha mask; preview
+  `CircleRevealShape` / web `clip-path`), and **`PIXELATE`** now **animates** the mosaic in the
+  export (time-varying nearest-neighbor down/up-scale) instead of a constant block size.
+- The **live `PreviewPanel` applies transitions** to images (`graphicsLayer` + circle clip) and
+  video (via the extended `VideoPlayer`, which honors `alpha` / offset / reveal — on web by driving
+  the DOM overlay's `style.opacity` / position / `clipPath`).
+- Remaining gaps and the path to **hundreds** of transitions (GL-Transitions shaders + `xfade` /
+  `gl-transition`, and a WebGL canvas preview) are in §7–§8; the preview still shows pixelate/noise/
+  voronoi as their dominant fade, and there is no transition-**out**.

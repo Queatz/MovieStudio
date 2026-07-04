@@ -60,8 +60,8 @@ private external fun jsUpdateVideoState(url: String, isPlaying: Boolean, playhea
 (x, y, w, h) => {
     const video = document.getElementById('compose-video-preview');
     if (video) {
-        // Remember the un-transformed stage bounds so the transition (opacity + slide offset) can
-        // be re-applied on top of them independently of layout changes.
+        // Remember the un-transformed stage bounds so the transition (opacity + slide offset +
+        // circular reveal) can be re-applied on top of them independently of layout changes.
         video.dataset.baseX = x;
         video.dataset.baseY = y;
         video.dataset.baseW = w;
@@ -69,11 +69,17 @@ private external fun jsUpdateVideoState(url: String, isPlaying: Boolean, playhea
         const dx = parseFloat(video.dataset.trDx || '0');
         const dy = parseFloat(video.dataset.trDy || '0');
         const op = video.dataset.trOp || '1';
+        const rev = parseFloat(video.dataset.trReveal || '1');
         video.style.left = (x + dx * w) + 'px';
         video.style.top = (y + dy * h) + 'px';
         video.style.width = w + 'px';
         video.style.height = h + 'px';
         video.style.opacity = op;
+        // Circular reveal (CIRCLE transition): radius as a fraction of the center-to-corner
+        // distance, matching the FFmpeg geq mask. rev >= 1 means no mask.
+        const cp = rev >= 1 ? 'none' : ('circle(' + (rev * Math.hypot(w / 2, h / 2)) + 'px at 50% 50%)');
+        video.style.clipPath = cp;
+        video.style.webkitClipPath = cp;
         video.style.display = 'block';
     }
 }
@@ -81,13 +87,15 @@ private external fun jsUpdateVideoState(url: String, isPlaying: Boolean, playhea
 private external fun jsUpdateVideoBounds(x: Double, y: Double, w: Double, h: Double)
 
 @JsFun("""
-(opacity, dx, dy) => {
+(opacity, dx, dy, reveal) => {
     const video = document.getElementById('compose-video-preview');
     if (video) {
-        // Transition-in state (cross-fade + slide), re-applied over the last known stage bounds.
+        // Transition-in state (cross-fade + slide + circular reveal), re-applied over the last
+        // known stage bounds.
         video.dataset.trOp = opacity;
         video.dataset.trDx = dx;
         video.dataset.trDy = dy;
+        video.dataset.trReveal = reveal;
         const x = parseFloat(video.dataset.baseX || '0');
         const y = parseFloat(video.dataset.baseY || '0');
         const w = parseFloat(video.dataset.baseW || '0');
@@ -95,10 +103,13 @@ private external fun jsUpdateVideoBounds(x: Double, y: Double, w: Double, h: Dou
         video.style.left = (x + dx * w) + 'px';
         video.style.top = (y + dy * h) + 'px';
         video.style.opacity = opacity;
+        const cp = reveal >= 1 ? 'none' : ('circle(' + (reveal * Math.hypot(w / 2, h / 2)) + 'px at 50% 50%)');
+        video.style.clipPath = cp;
+        video.style.webkitClipPath = cp;
     }
 }
 """)
-private external fun jsUpdateVideoTransition(opacity: Double, dx: Double, dy: Double)
+private external fun jsUpdateVideoTransition(opacity: Double, dx: Double, dy: Double, reveal: Double)
 
 @JsFun("""
 () => {
@@ -120,7 +131,8 @@ actual fun VideoPlayer(
     modifier: Modifier,
     alpha: Float,
     offsetXFraction: Float,
-    offsetYFraction: Float
+    offsetYFraction: Float,
+    revealRadiusFraction: Float
 ) {
     LaunchedEffect(Unit) {
         jsSetupVideoCallback { sec ->
@@ -135,10 +147,15 @@ actual fun VideoPlayer(
         jsUpdateVideoState(url, isPlaying, playhead.toDouble())
     }
 
-    // Drive the transition-in (cross-fade + slide) onto the shared <video> overlay. Kept separate
-    // from bounds so it re-applies every tick as the progress advances.
-    LaunchedEffect(alpha, offsetXFraction, offsetYFraction) {
-        jsUpdateVideoTransition(alpha.toDouble(), offsetXFraction.toDouble(), offsetYFraction.toDouble())
+    // Drive the transition-in (cross-fade + slide + circular reveal) onto the shared <video>
+    // overlay. Kept separate from bounds so it re-applies every tick as the progress advances.
+    LaunchedEffect(alpha, offsetXFraction, offsetYFraction, revealRadiusFraction) {
+        jsUpdateVideoTransition(
+            alpha.toDouble(),
+            offsetXFraction.toDouble(),
+            offsetYFraction.toDouble(),
+            revealRadiusFraction.toDouble()
+        )
     }
 
     // Hide the shared <video> only when this player actually leaves the composition (no video clip

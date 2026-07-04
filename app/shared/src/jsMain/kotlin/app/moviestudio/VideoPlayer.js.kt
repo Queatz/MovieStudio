@@ -19,7 +19,8 @@ actual fun VideoPlayer(
     modifier: Modifier,
     alpha: Float,
     offsetXFraction: Float,
-    offsetYFraction: Float
+    offsetYFraction: Float,
+    revealRadiusFraction: Float
 ) {
     LaunchedEffect(Unit) {
         val setupCallback = js("""
@@ -74,16 +75,17 @@ actual fun VideoPlayer(
         updateState(url, isPlaying, playhead.toDouble())
     }
 
-    // Drive the transition-in (cross-fade + slide) onto the shared <video> overlay. Kept separate
-    // from bounds so it re-applies every tick as the progress advances.
-    LaunchedEffect(alpha, offsetXFraction, offsetYFraction) {
+    // Drive the transition-in (cross-fade + slide + circular reveal) onto the shared <video>
+    // overlay. Kept separate from bounds so it re-applies every tick as the progress advances.
+    LaunchedEffect(alpha, offsetXFraction, offsetYFraction, revealRadiusFraction) {
         val updateTransition = js("""
-            function(opacity, dx, dy) {
+            function(opacity, dx, dy, reveal) {
                 const video = document.getElementById('compose-video-preview');
                 if (video) {
                     video.dataset.trOp = opacity;
                     video.dataset.trDx = dx;
                     video.dataset.trDy = dy;
+                    video.dataset.trReveal = reveal;
                     const x = parseFloat(video.dataset.baseX || '0');
                     const y = parseFloat(video.dataset.baseY || '0');
                     const w = parseFloat(video.dataset.baseW || '0');
@@ -91,10 +93,19 @@ actual fun VideoPlayer(
                     video.style.left = (x + dx * w) + 'px';
                     video.style.top = (y + dy * h) + 'px';
                     video.style.opacity = opacity;
+                    // Circular reveal (CIRCLE transition), matching the FFmpeg geq mask.
+                    const cp = reveal >= 1 ? 'none' : ('circle(' + (reveal * Math.hypot(w / 2, h / 2)) + 'px at 50% 50%)');
+                    video.style.clipPath = cp;
+                    video.style.webkitClipPath = cp;
                 }
             }
         """)
-        updateTransition(alpha.toDouble(), offsetXFraction.toDouble(), offsetYFraction.toDouble())
+        updateTransition(
+            alpha.toDouble(),
+            offsetXFraction.toDouble(),
+            offsetYFraction.toDouble(),
+            revealRadiusFraction.toDouble()
+        )
     }
 
     // Hide the shared <video> only when this player actually leaves the composition (no video clip
@@ -130,7 +141,8 @@ actual fun VideoPlayer(
                         const video = document.getElementById('compose-video-preview');
                         if (video) {
                             // Remember the un-transformed stage bounds so the transition (opacity +
-                            // slide offset) can be re-applied over them independently of layout.
+                            // slide offset + circular reveal) can be re-applied over them
+                            // independently of layout.
                             video.dataset.baseX = x;
                             video.dataset.baseY = y;
                             video.dataset.baseW = w;
@@ -138,11 +150,15 @@ actual fun VideoPlayer(
                             const dx = parseFloat(video.dataset.trDx || '0');
                             const dy = parseFloat(video.dataset.trDy || '0');
                             const op = video.dataset.trOp || '1';
+                            const rev = parseFloat(video.dataset.trReveal || '1');
                             video.style.left = (x + dx * w) + 'px';
                             video.style.top = (y + dy * h) + 'px';
                             video.style.width = w + 'px';
                             video.style.height = h + 'px';
                             video.style.opacity = op;
+                            const cp = rev >= 1 ? 'none' : ('circle(' + (rev * Math.hypot(w / 2, h / 2)) + 'px at 50% 50%)');
+                            video.style.clipPath = cp;
+                            video.style.webkitClipPath = cp;
                             video.style.display = 'block';
                         }
                     }

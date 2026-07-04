@@ -39,6 +39,7 @@ import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.AudioPlayItem
 import app.moviestudio.CaptionConfig
+import app.moviestudio.CircleRevealShape
 import app.moviestudio.Clip
 import app.moviestudio.NO_TRANSITION
 import app.moviestudio.TrackType
@@ -183,7 +184,8 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                                     modifier = Modifier.fillMaxSize(),
                                     alpha = transitionVisual.alpha,
                                     offsetXFraction = transitionVisual.translateXFraction,
-                                    offsetYFraction = transitionVisual.translateYFraction
+                                    offsetYFraction = transitionVisual.translateYFraction,
+                                    revealRadiusFraction = transitionVisual.revealRadiusFraction
                                 )
                             }
                             // Any further simultaneous videos can't share the one <video> element.
@@ -243,7 +245,13 @@ private fun ClipImage(active: ActiveClip, transitionVisual: TransitionVisual) {
                 alpha = transitionVisual.alpha
                 translationX = transitionVisual.translateXFraction * size.width
                 translationY = transitionVisual.translateYFraction * size.height
-            },
+            }
+            // Circular reveal (CIRCLE transition): clip to the growing circle, matching FFmpeg.
+            .then(
+                if (transitionVisual.revealRadiusFraction < 1f)
+                    Modifier.clip(CircleRevealShape(transitionVisual.revealRadiusFraction))
+                else Modifier
+            ),
         contentScale = ContentScale.Crop,
         alignment = BiasAlignment(
             horizontalBias = ((effects.offsetX - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f),

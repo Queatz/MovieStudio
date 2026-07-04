@@ -329,17 +329,32 @@ const val TRANSITION_MIN_SECONDS: Double = 0.05
  * The visual transform applied to the *incoming* clip at a given point in its transition. This is
  * the single definition shared by the live preview and the FFmpeg render so they stay in lock-step.
  *
- * [alpha] is the clip's opacity (0 = fully transparent, 1 = opaque). [translateXFraction] and
- * [translateYFraction] offset the clip as a fraction of the stage size (+X = right, +Y = down);
- * a slide starts fully off-screen (|fraction| = 1) and settles at 0.
+ * Rather than hard-coding a separate implementation per transition in each renderer (which does not
+ * scale to the many transitions we want to offer), a transition is described here as a small set of
+ * orthogonal, interpretable *primitives*. Each renderer applies the primitives it can express:
+ *
+ * - [alpha]: the clip's opacity (0 = fully transparent, 1 = opaque) — a cross-fade.
+ * - [translateXFraction] / [translateYFraction]: offset the clip as a fraction of the stage size
+ *   (+X = right, +Y = down); a slide starts fully off-screen (|fraction| = 1) and settles at 0.
+ * - [revealRadiusFraction]: a centered circular reveal mask, as a fraction of the distance from the
+ *   center to a corner (0 = nothing shown, 1 = fully revealed / no mask).
+ * - [pixelateFraction]: mosaic amount (0 = crisp, 1 = maximally blocky). Compose modifiers cannot
+ *   pixelate arbitrary content, so the live preview leaves this to the FFmpeg render and only
+ *   approximates a pixelate transition via its [alpha]; see `docs/Transitions.md`.
+ *
+ * This primitive set is a bridge, not the endgame: truly arbitrary transitions (the "hundreds" of
+ * wipes / irises / dissolves / GL-Transitions) are ultimately a `progress`-driven shader that mixes
+ * the from/to frames. See `docs/Transitions.md` for the shader roadmap.
  */
 data class TransitionVisual(
     val alpha: Float = 1f,
     val translateXFraction: Float = 0f,
-    val translateYFraction: Float = 0f
+    val translateYFraction: Float = 0f,
+    val revealRadiusFraction: Float = 1f,
+    val pixelateFraction: Float = 0f
 )
 
-/** A clip with no transition: fully opaque and un-offset. */
+/** A clip with no transition: fully opaque, un-offset, fully revealed and crisp. */
 val NO_TRANSITION: TransitionVisual = TransitionVisual()
 
 /**
@@ -357,24 +372,36 @@ fun TransitionSpec?.progressAt(clipLocalSeconds: Double, clipDuration: Double): 
 }
 
 /**
- * The [TransitionVisual] for this transition at the given [progress] (0..1). [TransitionType.SLIDE]
- * translates the clip in from its [TransitionSpec.direction] at full opacity; every other type is a
- * cross-fade (the noise / pixelate / voronoi grain the FFmpeg render layers on top can't be
- * reproduced in the Compose preview, so it approximates them as the dominant alpha fade).
+ * The [TransitionVisual] for this transition at the given [progress] (0..1), expressed with the
+ * shared primitives so the preview and the FFmpeg render agree:
+ *
+ * - [TransitionType.SLIDE]: translate the clip in from its [TransitionSpec.direction] at full
+ *   opacity (`translate = ±(1 - progress)`).
+ * - [TransitionType.CIRCLE]: a centered circular reveal that grows from nothing to full
+ *   (`revealRadiusFraction = progress`) at full opacity — no cross-fade.
+ * - [TransitionType.PIXELATE]: the clip resolves out of large mosaic blocks
+ *   (`pixelateFraction = 1 - progress`) while it cross-fades in (`alpha = progress`). Compose can't
+ *   pixelate the preview, so there it shows as the alpha fade; FFmpeg animates the real mosaic.
+ * - [TransitionType.ALPHA] / [NOISE] / [VORONOI]: a cross-fade (`alpha = progress`). The extra
+ *   grain FFmpeg layers on top of noise / voronoi is not reproducible with Compose modifiers, so
+ *   the preview approximates them as the dominant alpha fade.
  */
 fun TransitionSpec.visualAt(progress: Float): TransitionVisual {
     if (type == TransitionType.NONE) return NO_TRANSITION
     val p = progress.coerceIn(0f, 1f)
-    return if (type == TransitionType.SLIDE) {
-        val off = 1f - p
-        when (direction) {
-            SlideDirection.FROM_RIGHT -> TransitionVisual(translateXFraction = off)
-            SlideDirection.FROM_LEFT -> TransitionVisual(translateXFraction = -off)
-            SlideDirection.FROM_TOP -> TransitionVisual(translateYFraction = -off)
-            SlideDirection.FROM_BOTTOM -> TransitionVisual(translateYFraction = off)
+    return when (type) {
+        TransitionType.SLIDE -> {
+            val off = 1f - p
+            when (direction) {
+                SlideDirection.FROM_RIGHT -> TransitionVisual(translateXFraction = off)
+                SlideDirection.FROM_LEFT -> TransitionVisual(translateXFraction = -off)
+                SlideDirection.FROM_TOP -> TransitionVisual(translateYFraction = -off)
+                SlideDirection.FROM_BOTTOM -> TransitionVisual(translateYFraction = off)
+            }
         }
-    } else {
-        TransitionVisual(alpha = p)
+        TransitionType.CIRCLE -> TransitionVisual(revealRadiusFraction = p)
+        TransitionType.PIXELATE -> TransitionVisual(alpha = p, pixelateFraction = 1f - p)
+        else -> TransitionVisual(alpha = p)
     }
 }
 
