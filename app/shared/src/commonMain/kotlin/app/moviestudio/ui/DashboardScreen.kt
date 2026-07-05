@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items as lazyItems
@@ -285,12 +286,14 @@ private fun TipsPanel(viewModel: AppViewModel) {
             .width(width)
             .clipToBounds()
     ) {
-        // Keep the content at its full width and anchored to the right edge so it slides in from
-        // the side rather than squashing while the panel width animates.
+        // Give the content a fixed width via requiredWidth so it ignores the animating box's
+        // (smaller) width constraint instead of squashing to fit it. It keeps a 140.dp floor and
+        // animates its width up to the full 340.dp as the box grows, anchored to the right edge so
+        // it slides in from the side; the box clips whatever hasn't slid into view yet.
         if (width > 0.dp) {
             TipsPanelContent(
                 viewModel,
-                Modifier.width(340.dp).fillMaxHeight().align(Alignment.CenterEnd)
+                Modifier.requiredWidth(width.coerceAtLeast((340 / 2).dp)).fillMaxHeight().align(Alignment.CenterEnd)
             )
         }
     }

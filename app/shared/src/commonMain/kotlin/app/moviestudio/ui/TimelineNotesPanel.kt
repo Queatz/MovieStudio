@@ -8,9 +8,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -29,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,69 +57,81 @@ fun TimelineNotesPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     var editTarget by remember { mutableStateOf<TimelineNote?>(null) }
     var deleteTarget by remember { mutableStateOf<TimelineNote?>(null) }
 
-    Column(
+    Box(
         modifier = modifier
             .width(width)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(if (expanded) 10.dp else 6.dp)
+            .clipToBounds()
     ) {
-        if (!expanded) {
-            CollapsedNotesRail(viewModel)
-        } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "📝 Notes",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                GhostPillButton("＋", compact = true) { showAdd = true }
-                Spacer(Modifier.width(4.dp))
-                RoundIconButton("⏴", contentDescription = "Collapse the notes panel", size = 28.dp) {
-                    viewModel.notesPanelExpanded = false
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-
-            if (viewModel.timelineNotes.isEmpty() && viewModel.notesError != null) {
-                // Notes failed to load: error + retry instead of the empty state.
-                ErrorRetryBox(
-                    message = viewModel.notesError ?: "Failed to load notes",
-                    modifier = Modifier.fillMaxWidth(),
-                    onRetry = { viewModel.refreshNotes() }
-                )
-            } else if (viewModel.timelineNotes.isEmpty()) {
-                Text(
-                    "No notes yet. Pin text-only notes to the timeline to plot your movie — " +
-                        "they show up there as blue markers.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        // Give the content a fixed width via requiredWidth so it ignores the animating box's
+        // (smaller) width constraint instead of being squashed to fit it. Expanded content keeps
+        // a 140.dp floor and animates its width up to the full 280.dp as the box grows, so the
+        // panel reveals smoothly; the box clips whatever hasn't slid into view yet.
+        Column(
+            modifier = Modifier
+                .requiredWidth(if (expanded) width.coerceAtLeast((280 / 2).dp) else 44.dp)
+                .then(if (expanded) Modifier.fillMaxHeight() else Modifier)
+                .align(Alignment.TopStart)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(if (expanded) 10.dp else 6.dp)
+        ) {
+            if (!expanded) {
+                CollapsedNotesRail(viewModel)
             } else {
-                // Reveal the highlighted note when a marker is clicked on the timeline.
-                val listState = rememberLazyListState()
-                LaunchedEffect(viewModel.selectedNoteId) {
-                    val index = viewModel.timelineNotes.indexOfFirst { it.id == viewModel.selectedNoteId }
-                    if (index >= 0) listState.animateScrollToItem(index)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "📝 Notes",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    GhostPillButton("＋", compact = true) { showAdd = true }
+                    Spacer(Modifier.width(4.dp))
+                    RoundIconButton("⏴", contentDescription = "Collapse the notes panel", size = 28.dp) {
+                        viewModel.notesPanelExpanded = false
+                    }
                 }
-                LazyColumn(
-                    state = listState,
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    items(viewModel.timelineNotes, key = { it.id }) { note ->
-                        NoteRow(
-                            note = note,
-                            selected = note.id == viewModel.selectedNoteId,
-                            onClick = { viewModel.focusNote(note) },
-                            onRepin = { viewModel.updateNote(note.copy(atSeconds = viewModel.playhead.toDouble())) },
-                            onEdit = { editTarget = note },
-                            onDelete = { deleteTarget = note }
-                        )
+                Spacer(Modifier.height(8.dp))
+
+                if (viewModel.timelineNotes.isEmpty() && viewModel.notesError != null) {
+                    // Notes failed to load: error + retry instead of the empty state.
+                    ErrorRetryBox(
+                        message = viewModel.notesError ?: "Failed to load notes",
+                        modifier = Modifier.fillMaxWidth(),
+                        onRetry = { viewModel.refreshNotes() }
+                    )
+                } else if (viewModel.timelineNotes.isEmpty()) {
+                    Text(
+                        "No notes yet. Pin text-only notes to the timeline to plot your movie — " +
+                            "they show up there as blue markers.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    // Reveal the highlighted note when a marker is clicked on the timeline.
+                    val listState = rememberLazyListState()
+                    LaunchedEffect(viewModel.selectedNoteId) {
+                        val index = viewModel.timelineNotes.indexOfFirst { it.id == viewModel.selectedNoteId }
+                        if (index >= 0) listState.animateScrollToItem(index)
+                    }
+                    LazyColumn(
+                        state = listState,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        items(viewModel.timelineNotes, key = { it.id }) { note ->
+                            NoteRow(
+                                note = note,
+                                selected = note.id == viewModel.selectedNoteId,
+                                onClick = { viewModel.focusNote(note) },
+                                onRepin = { viewModel.updateNote(note.copy(atSeconds = viewModel.playhead.toDouble())) },
+                                onEdit = { editTarget = note },
+                                onDelete = { deleteTarget = note }
+                            )
+                        }
                     }
                 }
             }

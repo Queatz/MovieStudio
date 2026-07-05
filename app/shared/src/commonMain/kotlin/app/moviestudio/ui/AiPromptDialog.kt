@@ -152,6 +152,7 @@ fun AiPromptDialog(
                         placeholder = promptPlaceholder,
                         minLines = 2,
                         maxLines = 6,
+                        autoFocus = true,
                         enabled = !loading,
                         onSubmit = { send(prompt) { restored -> prompt = restored } },
                         onDismiss = onDismiss,
@@ -215,6 +216,7 @@ fun AiPromptDialog(
                         placeholder = followUpPlaceholder,
                         minLines = 1,
                         maxLines = 4,
+                        autoFocus = true,
                         onSubmit = {
                             send(followUp) { restored -> followUp = restored }
                             followUp = ""
