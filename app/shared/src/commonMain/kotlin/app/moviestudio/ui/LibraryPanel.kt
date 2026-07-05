@@ -59,17 +59,27 @@ private sealed interface LibTab {
 }
 
 private fun tabLabel(tab: LibTab): String = when (tab) {
+    // "All" is intentionally emoji-free; every type/library filter carries its identity emoji.
     LibTab.All -> "All"
     is LibTab.OfType -> when (tab.type) {
-        AssetType.VIDEO -> "Video"
-        AssetType.IMAGE -> "Images"
-        AssetType.MUSIC -> "Music"
-        AssetType.AUDIO -> "Sound FX"
-        AssetType.VOICE -> "Voice"
-        AssetType.TEXT -> "Text"
+        AssetType.VIDEO -> "🎬 Video"
+        AssetType.IMAGE -> "🖼️ Images"
+        AssetType.MUSIC -> "🎵 Music"
+        AssetType.AUDIO -> "💥 Sound FX"
+        AssetType.VOICE -> "🎙️ Voice"
+        AssetType.TEXT -> "📝 Text"
     }
-    LibTab.Characters -> "Characters"
-    LibTab.Scenes -> "Scenes"
+    LibTab.Characters -> "👤 Characters"
+    LibTab.Scenes -> "🏞️ Scenes"
+}
+
+/** True when [asset] matches the free-text library [query] (case-insensitive) across its text fields. */
+private fun assetMatchesQuery(asset: Asset, query: String): Boolean {
+    val q = query.lowercase()
+    return (asset.description ?: "").lowercase().contains(q) ||
+        (asset.aiPrompt ?: "").lowercase().contains(q) ||
+        (asset.transcript ?: "").lowercase().contains(q) ||
+        asset.tags.any { it.lowercase().contains(q) }
 }
 
 /**
@@ -94,6 +104,11 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     var showNewCharacter by remember { mutableStateOf(false) }
     var sceneEditor by remember { mutableStateOf<Scene?>(null) }
     var showNewScene by remember { mutableStateOf(false) }
+
+    // Text search: a magnifier reveals a filter field that narrows the visible media (and the
+    // characters/scenes libraries) by name, description, prompt or tags.
+    var searchOpen by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
 
     // Dropping files from the OS (file manager, browser...) onto the panel uploads them straight
     // into the global library; the type of each asset is inferred from the file's extension.
@@ -121,6 +136,17 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f)
             )
+            RoundIconButton(
+                "🔍",
+                contentDescription = "Search media",
+                size = 34.dp,
+                background = if (searchOpen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                tint = if (searchOpen) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+            ) {
+                searchOpen = !searchOpen
+                if (!searchOpen) searchQuery = ""
+            }
+            Spacer(Modifier.width(6.dp))
             AddMenu(
                 onGenerateMedia = { showGenerateMedia = true },
                 onGenerateMusic = { showGenerateMusic = true },
@@ -135,6 +161,19 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
             )
         }
         Spacer(Modifier.height(8.dp))
+
+        // Reveal-able search field to filter the media by text.
+        if (searchOpen) {
+            StudioTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = "Search media by name, description or tag...",
+                singleLine = true,
+                leadingIcon = { Text("🔍", fontSize = 14.sp) }
+            )
+            Spacer(Modifier.height(8.dp))
+        }
 
         // Tab chips
         Row(
@@ -182,15 +221,17 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
             Spacer(Modifier.height(8.dp))
         }
 
+        val query = searchQuery.trim()
         when (val current = tab) {
-            LibTab.Characters -> CharacterList(viewModel) { characterEditor = it }
-            LibTab.Scenes -> SceneList(viewModel) { sceneEditor = it }
+            LibTab.Characters -> CharacterList(viewModel, query) { characterEditor = it }
+            LibTab.Scenes -> SceneList(viewModel, query) { sceneEditor = it }
             else -> {
-                val assets = when (current) {
+                val typed = when (current) {
                     LibTab.All -> viewModel.libraryAssets
                     is LibTab.OfType -> viewModel.libraryAssets.filter { it.type == current.type }
                     else -> emptyList()
                 }
+                val assets = if (query.isBlank()) typed else typed.filter { assetMatchesQuery(it, query) }
                 if (viewModel.libraryAssets.isEmpty() && viewModel.libraryError != null) {
                     // The library failed to load: error + retry instead of an empty list.
                     ErrorRetryBox(
@@ -201,7 +242,8 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 } else if (assets.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
-                            "Nothing here yet.\nUse ＋ Add or drop files here to create or upload media.",
+                            if (query.isNotBlank()) "No media matches “$query”."
+                            else "Nothing here yet.\nUse ＋ Add or drop files here to create or upload media.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -435,7 +477,7 @@ private fun AssetCard(
 }
 
 @Composable
-private fun CharacterList(viewModel: AppViewModel, onEdit: (Character) -> Unit) {
+private fun CharacterList(viewModel: AppViewModel, query: String = "", onEdit: (Character) -> Unit) {
     var deleteTarget by remember { mutableStateOf<Character?>(null) }
     deleteTarget?.let { character ->
         ConfirmDialog(
@@ -446,10 +488,15 @@ private fun CharacterList(viewModel: AppViewModel, onEdit: (Character) -> Unit) 
             onDismiss = { deleteTarget = null }
         )
     }
-    if (viewModel.characters.isEmpty()) {
+    val characters = if (query.isBlank()) viewModel.characters
+    else viewModel.characters.filter {
+        it.name.contains(query, ignoreCase = true) || it.description.contains(query, ignoreCase = true)
+    }
+    if (characters.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
-                "No saved characters.\nUse ＋ Add → New character.",
+                if (query.isNotBlank()) "No characters match “$query”."
+                else "No saved characters.\nUse ＋ Add → New character.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -457,7 +504,7 @@ private fun CharacterList(viewModel: AppViewModel, onEdit: (Character) -> Unit) 
         return
     }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        items(viewModel.characters, key = { it.id }) { character ->
+        items(characters, key = { it.id }) { character ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -491,7 +538,7 @@ private fun CharacterList(viewModel: AppViewModel, onEdit: (Character) -> Unit) 
 }
 
 @Composable
-private fun SceneList(viewModel: AppViewModel, onEdit: (Scene) -> Unit) {
+private fun SceneList(viewModel: AppViewModel, query: String = "", onEdit: (Scene) -> Unit) {
     var deleteTarget by remember { mutableStateOf<Scene?>(null) }
     deleteTarget?.let { scene ->
         ConfirmDialog(
@@ -502,10 +549,15 @@ private fun SceneList(viewModel: AppViewModel, onEdit: (Scene) -> Unit) {
             onDismiss = { deleteTarget = null }
         )
     }
-    if (viewModel.scenes.isEmpty()) {
+    val scenes = if (query.isBlank()) viewModel.scenes
+    else viewModel.scenes.filter {
+        it.name.contains(query, ignoreCase = true) || it.description.contains(query, ignoreCase = true)
+    }
+    if (scenes.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
-                "No saved scenes.\nUse ＋ Add → New scene.",
+                if (query.isNotBlank()) "No scenes match “$query”."
+                else "No saved scenes.\nUse ＋ Add → New scene.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -513,7 +565,7 @@ private fun SceneList(viewModel: AppViewModel, onEdit: (Scene) -> Unit) {
         return
     }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        items(viewModel.scenes, key = { it.id }) { scene ->
+        items(scenes, key = { it.id }) { scene ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

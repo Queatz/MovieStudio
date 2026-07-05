@@ -394,15 +394,66 @@ fun CaptionEditorDialog(
 private fun isValidHexColor(hex: String): Boolean =
     Regex("^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$").matches(hex)
 
-/** Small popup letting the user type an arbitrary hex color for the "custom color" swatch. */
+/** `[hue (0..360), saturation (0..1), value (0..1)]` for an RGB color (each component 0..1). */
+private fun rgbToHsv(r: Float, g: Float, b: Float): FloatArray {
+    val max = maxOf(r, g, b)
+    val min = minOf(r, g, b)
+    val delta = max - min
+    val hue = when {
+        delta == 0f -> 0f
+        max == r -> 60f * (((g - b) / delta) % 6f)
+        max == g -> 60f * (((b - r) / delta) + 2f)
+        else -> 60f * (((r - g) / delta) + 4f)
+    }.let { if (it < 0f) it + 360f else it }
+    val saturation = if (max == 0f) 0f else delta / max
+    return floatArrayOf(hue, saturation, max)
+}
+
+/**
+ * Formats HSVA (`hue` 0..360, `saturation`/`value`/`alpha` 0..1) into a `#RRGGBB` string, or
+ * `#AARRGGBB` when the color is not fully opaque.
+ */
+private fun hsvaToHex(hue: Float, saturation: Float, value: Float, alpha: Float): String {
+    val color = Color.hsv(hue.coerceIn(0f, 360f), saturation.coerceIn(0f, 1f), value.coerceIn(0f, 1f))
+    fun channel(component: Float) = (component * 255f).roundToInt().coerceIn(0, 255)
+    fun hex2(x: Int) = x.toString(16).padStart(2, '0').uppercase()
+    val r = hex2(channel(color.red))
+    val g = hex2(channel(color.green))
+    val b = hex2(channel(color.blue))
+    val a = channel(alpha)
+    return if (a >= 255) "#$r$g$b" else "#${hex2(a)}$r$g$b"
+}
+
+/**
+ * Custom color picker: HSVA sliders (hue, saturation, value, alpha) driving a live preview, plus
+ * a synced hex field so a color can also be typed. Every control stays in step with the others.
+ */
 @Composable
 private fun CustomColorPickerDialog(
     initialHex: String,
     onDismiss: () -> Unit,
     onPick: (String) -> Unit
 ) {
-    var hex by remember { mutableStateOf(initialHex) }
+    val initialColor = if (isValidHexColor(initialHex)) parseHexColor(initialHex) else Color.White
+    val initialHsv = rgbToHsv(initialColor.red, initialColor.green, initialColor.blue)
+    var hue by remember { mutableStateOf(initialHsv[0]) }
+    var saturation by remember { mutableStateOf(initialHsv[1]) }
+    var brightness by remember { mutableStateOf(initialHsv[2]) }
+    var alpha by remember { mutableStateOf(initialColor.alpha) }
+    var hex by remember { mutableStateOf(hsvaToHex(initialHsv[0], initialHsv[1], initialHsv[2], initialColor.alpha)) }
+
+    // Keep the hex field mirroring the sliders whenever one moves.
+    fun syncHexFromHsva() {
+        hex = hsvaToHex(hue, saturation, brightness, alpha)
+    }
+
     val valid = isValidHexColor(hex)
+    val previewColor = Color.hsv(
+        hue.coerceIn(0f, 360f),
+        saturation.coerceIn(0f, 1f),
+        brightness.coerceIn(0f, 1f),
+        alpha.coerceIn(0f, 1f)
+    )
 
     StudioDialog(title = "Custom color", onDismiss = onDismiss, width = 320.dp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -410,21 +461,63 @@ private fun CustomColorPickerDialog(
                 modifier = Modifier
                     .size(36.dp)
                     .clip(CircleShape)
-                    .background(if (valid) parseHexColor(hex) else Color.Transparent)
+                    .background(previewColor)
             )
             Spacer(Modifier.width(12.dp))
             StudioTextField(
                 value = hex,
-                onValueChange = { hex = it },
+                onValueChange = { input ->
+                    hex = input
+                    // Typing a full, valid hex drives the sliders back the other way.
+                    if (isValidHexColor(input)) {
+                        val color = parseHexColor(input)
+                        val hsv = rgbToHsv(color.red, color.green, color.blue)
+                        hue = hsv[0]
+                        saturation = hsv[1]
+                        brightness = hsv[2]
+                        alpha = color.alpha
+                    }
+                },
                 modifier = Modifier.width(160.dp),
                 label = "Hex",
                 placeholder = "#RRGGBB",
                 singleLine = true,
-                autoFocus = true,
+                autoFocus = false,
                 onSubmit = { if (valid) onPick(hex) },
                 onDismiss = onDismiss
             )
         }
+
+        Spacer(Modifier.height(12.dp))
+        LabeledSlider(
+            label = "Hue",
+            value = hue,
+            valueRange = 0f..360f,
+            valueText = "${hue.roundToInt()}°",
+            onValueChange = { hue = it; syncHexFromHsva() }
+        )
+        LabeledSlider(
+            label = "Saturation",
+            value = saturation * 100f,
+            valueRange = 0f..100f,
+            valueText = "${(saturation * 100f).roundToInt()}%",
+            onValueChange = { saturation = it / 100f; syncHexFromHsva() }
+        )
+        LabeledSlider(
+            label = "Value",
+            value = brightness * 100f,
+            valueRange = 0f..100f,
+            valueText = "${(brightness * 100f).roundToInt()}%",
+            onValueChange = { brightness = it / 100f; syncHexFromHsva() }
+        )
+        LabeledSlider(
+            label = "Alpha",
+            value = alpha * 100f,
+            valueRange = 0f..100f,
+            valueText = "${(alpha * 100f).roundToInt()}%",
+            onValueChange = { alpha = it / 100f; syncHexFromHsva() }
+        )
+
         if (!valid) {
             Spacer(Modifier.height(6.dp))
             Text(

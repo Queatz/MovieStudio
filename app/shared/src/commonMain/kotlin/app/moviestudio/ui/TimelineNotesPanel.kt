@@ -82,7 +82,14 @@ fun TimelineNotesPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
             }
             Spacer(Modifier.height(8.dp))
 
-            if (viewModel.timelineNotes.isEmpty()) {
+            if (viewModel.timelineNotes.isEmpty() && viewModel.notesError != null) {
+                // Notes failed to load: error + retry instead of the empty state.
+                ErrorRetryBox(
+                    message = viewModel.notesError ?: "Failed to load notes",
+                    modifier = Modifier.fillMaxWidth(),
+                    onRetry = { viewModel.refreshNotes() }
+                )
+            } else if (viewModel.timelineNotes.isEmpty()) {
                 Text(
                     "No notes yet. Pin text-only notes to the timeline to plot your movie — " +
                         "they show up there as blue markers.",

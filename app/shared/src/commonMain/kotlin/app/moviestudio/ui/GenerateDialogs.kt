@@ -158,6 +158,7 @@ fun GenerateMediaDialog(
     }
 
     val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
+    val videoAssets = viewModel.libraryAssets.filter { it.type == AssetType.VIDEO && it.ossUrl.isNotBlank() }
 
     StudioDialog(
         title = if (initialAsset != null) "Edit" else "Generate video or image",
@@ -213,6 +214,11 @@ fun GenerateMediaDialog(
             // Image-to-image editing: pick any library image as the base and the prompt repaints
             // it (repose a character, restyle a shot, swap the background...).
             SectionLabel("Base image (optional — switches to image editing)")
+            // Preview of the currently attached base image.
+            imageUrl?.let { url ->
+                ImageThumbnail(url, size = 96.dp) { imageUrl = null }
+                Spacer(Modifier.height(6.dp))
+            }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (imageUrl == null) {
                     PillButton("None", compact = true) { }
@@ -239,7 +245,43 @@ fun GenerateMediaDialog(
         }
 
         if (kind == "video") {
+            // Base video: attach a source clip to edit it with the wan2.7-videoedit model.
+            SectionLabel("Base video (switches to video editing)")
+            // Preview of the currently attached base video.
+            videoUrl?.let { url ->
+                VideoPreview(url, Modifier.fillMaxWidth())
+                Spacer(Modifier.height(6.dp))
+            }
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (videoUrl == null) {
+                    PillButton("None", compact = true) { }
+                } else {
+                    GhostPillButton("None", compact = true) { videoUrl = null }
+                }
+                videoAssets.take(12).forEach { video ->
+                    val selected = videoUrl == video.ossUrl
+                    val label = "🎬 " + (video.description ?: "video").take(18)
+                    if (selected) {
+                        PillButton(label, compact = true) { videoUrl = null }
+                    } else {
+                        GhostPillButton(label, compact = true) { videoUrl = video.ossUrl }
+                    }
+                }
+                if (videoAssets.isEmpty()) {
+                    Text(
+                        "No videos in the library yet — generate or upload one first.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
             SectionLabel("Start image (switches to I2V)")
+            // Preview of the currently attached start image.
+            imageUrl?.let { url ->
+                ImageThumbnail(url, size = 96.dp) { imageUrl = null }
+                Spacer(Modifier.height(6.dp))
+            }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (imageUrl == null) {
                     PillButton("None", compact = true) { }
@@ -287,6 +329,17 @@ fun GenerateMediaDialog(
             }
 
             SectionLabel("Extra reference images (R2V)")
+            // Preview of the attached reference images.
+            if (referenceImages.isNotEmpty()) {
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    referenceImages.forEach { url ->
+                        ImageThumbnail(url, size = 64.dp) { referenceImages = referenceImages - url }
+                    }
+                }
+            }
             var uploadingReference by remember { mutableStateOf(false) }
             Row(
                 Modifier.horizontalScroll(rememberScrollState()),

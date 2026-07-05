@@ -18,13 +18,13 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,6 +48,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,6 +62,7 @@ import app.moviestudio.AudioPlayItem
 import app.moviestudio.WordTiming
 import app.moviestudio.loadAudioWaveform
 import app.moviestudio.updateAudioPlayback
+import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -111,6 +113,9 @@ fun AssetDetailsDialog(
             }
         }
         Spacer(Modifier.height(8.dp))
+
+        // A preview of the media itself, rendered according to the asset's type.
+        AssetMediaPreview(asset)
 
         StudioTextField(
             value = description,
@@ -265,6 +270,37 @@ fun AssetDetailsDialog(
 }
 
 /**
+ * A preview of the asset's media, shown at the top of [AssetDetailsDialog] and rendered according
+ * to the asset's type: images as a still, videos as an inline (tap-to-play) player. Audio types
+ * have their own dedicated player section further down the dialog, and description-only assets
+ * have no media to preview yet, so those are skipped here.
+ */
+@Composable
+private fun AssetMediaPreview(asset: Asset) {
+    if (asset.isDescriptionOnly || asset.ossUrl.isBlank()) return
+    when (asset.type) {
+        AssetType.IMAGE -> {
+            AsyncImage(
+                model = asset.ossUrl,
+                contentDescription = asset.description ?: asset.aiPrompt,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 260.dp)
+                    .clip(RoundedCornerShape(10.dp)),
+                contentScale = ContentScale.Fit
+            )
+            Spacer(Modifier.height(10.dp))
+        }
+        AssetType.VIDEO -> {
+            VideoPreview(asset.ossUrl, Modifier.fillMaxWidth())
+            Spacer(Modifier.height(10.dp))
+        }
+        // Audio (sound / music / voice) has its dedicated "Listen" player; text has no media.
+        else -> {}
+    }
+}
+
+/**
  * In-dialog player for audio-carrying assets (sound, music, voice): play/pause, a scrubber and a
  * timecode readout. Playback goes through the platform audio pool (browser targets), honoring
  * the asset's source offset for clipped sounds.
@@ -340,39 +376,194 @@ private fun AssetAudioPlayer(asset: Asset) {
 @Composable
 fun ClipAudioDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () -> Unit) {
     val total = asset.durationSeconds.toFloat().coerceAtLeast(0.5f)
-    var range by remember { mutableStateOf(0f..total) }
+    var clipStart by remember(asset.id) { mutableStateOf(0f) }
+    var clipEnd by remember(asset.id) { mutableStateOf(total) }
     var name by remember { mutableStateOf("") }
 
-    StudioDialog(title = "Clip sound", onDismiss = onDismiss, width = 500.dp) {
+    val canPlay = !asset.isDescriptionOnly && asset.ossUrl.isNotBlank()
+    var playing by remember(asset.id) { mutableStateOf(false) }
+    var position by remember(asset.id) { mutableStateOf(0f) }
+
+    // Decoded waveform peaks (null → a synthetic placeholder is drawn instead).
+    var waveform by remember(asset.id) { mutableStateOf<FloatArray?>(null) }
+    LaunchedEffect(asset.id, asset.ossUrl, canPlay) {
+        waveform = if (canPlay) loadAudioWaveform(asset.ossUrl, WAVEFORM_BUCKETS) else null
+    }
+
+    // While playing, loop the playhead within the selected clip window so the user previews exactly
+    // what will be saved.
+    LaunchedEffect(playing, clipStart, clipEnd) {
+        if (position < clipStart || position > clipEnd) position = clipStart
+        while (playing) {
+            delay(50)
+            val next = position + 0.05f
+            position = if (next >= clipEnd) clipStart else next
+        }
+    }
+    LaunchedEffect(playing, position) {
+        if (canPlay) {
+            updateAudioPlayback(
+                listOf(
+                    AudioPlayItem(
+                        key = "clipaudio-${asset.id}",
+                        url = asset.ossUrl,
+                        positionSeconds = asset.sourceOffsetSeconds + position.toDouble(),
+                        volume = 1.0
+                    )
+                ),
+                playing
+            )
+        }
+    }
+    // Closing the dialog stops the preview sound.
+    DisposableEffect(asset.id) {
+        onDispose { updateAudioPlayback(emptyList(), false) }
+    }
+
+    StudioDialog(title = "Clip sound", onDismiss = onDismiss, width = 560.dp) {
         Text(
-            "Choose the window to keep. It becomes a new asset in the sound-effects library.",
+            "Drag the white handles on the waveform to choose the window to keep. It becomes a new " +
+                "asset in the sound-effects library. Play to preview just the selected window.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
+
+        // Waveform with draggable clip-window handles: everything outside the window is dimmed.
+        val minClipGap = 0.1f
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(110.dp)
+                .clip(RoundedCornerShape(10.dp)) // clip BEFORE pointerInput: rounded hover/press
+                .background(Color(0xFF17151C))
+                .pointerInput(total, clipStart, clipEnd) {
+                    detectTapGestures { offset ->
+                        position = (offset.x / size.width * total).coerceIn(clipStart, clipEnd)
+                    }
+                }
+        ) {
+            val density = LocalDensity.current
+            val stripWidthPx = with(density) { maxWidth.toPx() }
+            val pxPerSecond = stripWidthPx / total
+            val handleWidthPx = with(density) { 14.dp.toPx() }
+
+            Canvas(Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                val mid = h / 2f
+                val maxBar = h * 0.42f
+                val startX = (clipStart / total * w).coerceIn(0f, w)
+                val endX = (clipEnd / total * w).coerceIn(0f, w)
+
+                // Dim the regions outside the selected window.
+                drawRect(Color.Black.copy(alpha = 0.45f), topLeft = Offset(0f, 0f), size = Size(startX, h))
+                drawRect(Color.Black.copy(alpha = 0.45f), topLeft = Offset(endX, 0f), size = Size((w - endX).coerceAtLeast(0f), h))
+                // Tint the selected window.
+                drawRect(
+                    Color(0xFF8F7BFF).copy(alpha = 0.15f),
+                    topLeft = Offset(startX, 0f),
+                    size = Size((endX - startX).coerceAtLeast(1.5f), h)
+                )
+
+                // Waveform bars: brighter inside the window, filled up to the playhead.
+                val barStride = 3f
+                val barWidth = 2f
+                val count = (w / barStride).toInt().coerceAtLeast(1)
+                for (i in 0 until count) {
+                    val x = i * barStride
+                    val t = i.toFloat() / count * total
+                    val bh = (waveformBarHeight(waveform, i, count) * maxBar).coerceAtLeast(1f)
+                    val inWindow = t in clipStart..clipEnd
+                    val color = when {
+                        inWindow && t <= position -> Color(0xFFC9BCFF)
+                        inWindow -> Color(0xFF8F7BFF)
+                        else -> Color(0xFF3A3550)
+                    }
+                    drawRect(color, topLeft = Offset(x, mid - bh), size = Size(barWidth, bh * 2f))
+                }
+
+                // Window boundary lines.
+                drawLine(Color.White, Offset(startX, 0f), Offset(startX, h), strokeWidth = 2f)
+                drawLine(Color.White, Offset(endX, 0f), Offset(endX, h), strokeWidth = 2f)
+
+                // Playhead.
+                val px = (position / total * w).coerceIn(0f, w)
+                drawLine(Color(0xFFFF5A6E), Offset(px, 0f), Offset(px, h), strokeWidth = 2f)
+            }
+
+            // Left handle → drags the clip start (never past the end).
+            val startX = clipStart * pxPerSecond
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset((startX - handleWidthPx / 2f).roundToInt(), 0) }
+                    .width(with(density) { handleWidthPx.toDp() })
+                    .fillMaxHeight()
+                    .padding(vertical = 6.dp)
+                    .clip(RoundedCornerShape(4.dp)) // clip BEFORE pointerInput
+                    .background(Color.White)
+                    .pointerInput(pxPerSecond, clipEnd) {
+                        detectHorizontalDragGestures { change, dragAmount ->
+                            change.consume()
+                            val deltaS = dragAmount / pxPerSecond
+                            clipStart = (clipStart + deltaS).coerceIn(0f, clipEnd - minClipGap)
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("\u22EE", color = Color(0xFF17151C), fontSize = 12.sp)
+            }
+
+            // Right handle → drags the clip end (never past the start).
+            val endX = clipEnd * pxPerSecond
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset((endX - handleWidthPx / 2f).roundToInt(), 0) }
+                    .width(with(density) { handleWidthPx.toDp() })
+                    .fillMaxHeight()
+                    .padding(vertical = 6.dp)
+                    .clip(RoundedCornerShape(4.dp)) // clip BEFORE pointerInput
+                    .background(Color.White)
+                    .pointerInput(pxPerSecond, clipStart) {
+                        detectHorizontalDragGestures { change, dragAmount ->
+                            change.consume()
+                            val deltaS = dragAmount / pxPerSecond
+                            clipEnd = (clipEnd + deltaS).coerceIn(clipStart + minClipGap, total)
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("\u22EE", color = Color(0xFF17151C), fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // Transport (play/pause the window) + start/end/length readouts.
         Row(verticalAlignment = Alignment.CenterVertically) {
+            RoundIconButton(
+                if (playing) "⏸" else "▶",
+                contentDescription = "Play / pause",
+                size = 34.dp,
+                enabled = canPlay,
+                background = MaterialTheme.colorScheme.primary,
+                tint = MaterialTheme.colorScheme.onPrimary
+            ) {
+                if (!playing && (position < clipStart || position >= clipEnd - 0.05f)) position = clipStart
+                playing = !playing
+            }
+            Spacer(Modifier.width(10.dp))
             Text(
-                formatDuration(range.start.toDouble()),
+                "${formatDuration(clipStart.toDouble())} → ${formatDuration(clipEnd.toDouble())}",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            RangeSlider(
-                value = range,
-                onValueChange = { range = it },
-                valueRange = 0f..total,
-                modifier = Modifier.weight(1f).padding(horizontal = 10.dp)
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
             )
             Text(
-                formatDuration(range.endInclusive.toDouble()),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface
+                "Length: ${formatDuration((clipEnd - clipStart).toDouble())}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Text(
-            "Length: ${formatDuration((range.endInclusive - range.start).toDouble())}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
         Spacer(Modifier.height(8.dp))
         StudioTextField(
             value = name,
@@ -385,11 +576,11 @@ fun ClipAudioDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () -> Unit
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
-            PillButton("✂️ Save clip", enabled = range.endInclusive - range.start >= 0.2f) {
+            PillButton("✂️ Save clip", enabled = clipEnd - clipStart >= 0.2f) {
                 viewModel.clipAudioAsset(
                     asset,
-                    range.start.toDouble(),
-                    range.endInclusive.toDouble(),
+                    clipStart.toDouble(),
+                    clipEnd.toDouble(),
                     name.trim()
                 )
                 onDismiss()

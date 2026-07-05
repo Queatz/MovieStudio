@@ -57,6 +57,8 @@ class AppViewModel : ViewModel() {
         private set
     var timelineError by mutableStateOf<String?>(null)
         private set
+    var notesError by mutableStateOf<String?>(null)
+        private set
 
     // --------------------------------------------------------------------------------- library
     var libraryAssets by mutableStateOf<List<Asset>>(emptyList())
@@ -533,8 +535,9 @@ class AppViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 timelineNotes = NetworkService.getNotes(movieId)
+                notesError = null
             } catch (e: Exception) {
-                errorMessage = "Failed to load notes: ${e.message}"
+                notesError = "Failed to load notes: ${e.message}"
             }
         }
     }
