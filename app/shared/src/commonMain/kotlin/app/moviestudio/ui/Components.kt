@@ -128,7 +128,7 @@ fun StudioTextField(
     minLines: Int = 1,
     maxLines: Int = if (singleLine) 1 else Int.MAX_VALUE,
     enabled: Boolean = true,
-    autoFocus: Boolean = true,
+    autoFocus: Boolean = false,
     textStyle: TextStyle = LocalTextStyle.current,
     leadingIcon: @Composable (() -> Unit)? = null,
     trailingIcon: @Composable (() -> Unit)? = null,

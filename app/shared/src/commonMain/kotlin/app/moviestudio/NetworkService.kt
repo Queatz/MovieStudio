@@ -31,6 +31,24 @@ object NetworkService {
         return "$base$p"
     }
 
+    /** Percent-encodes a value so it can be safely used as a URL query-string component. */
+    private fun encodeQueryParam(value: String): String {
+        val unreserved = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~"
+        val sb = StringBuilder()
+        for (byte in value.encodeToByteArray()) {
+            val code = byte.toInt() and 0xFF
+            val ch = code.toChar()
+            if (ch in unreserved) {
+                sb.append(ch)
+            } else {
+                sb.append('%')
+                sb.append(((code shr 4) and 0xF).toString(16).uppercase())
+                sb.append((code and 0xF).toString(16).uppercase())
+            }
+        }
+        return sb.toString()
+    }
+
     /** The base `ws(s)://` origin (the HTTP base URL with its scheme swapped for WebSockets). */
     private fun wsBaseUrl(): String = getBaseUrl().removeSuffix("/")
         .replaceFirst("https://", "wss://")
@@ -169,6 +187,31 @@ object NetworkService {
     suspend fun getRenders(movieId: String): List<RenderRecord> {
         val responseText = client.get(url("/api/movies/$movieId/renders"))
         return json.decodeFromString(ListSerializer(RenderRecord.serializer()), responseText)
+    }
+
+    // --------------------------------------------------------------------------------- tips
+
+    /** Studio-wide tips, newest first. When [query] is non-blank, only matching tips are returned. */
+    suspend fun getTips(query: String = ""): List<Tip> {
+        val queryString = if (query.isNotBlank()) "?q=${encodeQueryParam(query)}" else ""
+        val responseText = client.get(url("/api/tips$queryString"))
+        return json.decodeFromString(ListSerializer(Tip.serializer()), responseText)
+    }
+
+    suspend fun createTip(tip: Tip): Tip {
+        val body = json.encodeToString(Tip.serializer(), tip)
+        val responseText = client.post(url("/api/tips"), body)
+        return json.decodeFromString(Tip.serializer(), responseText)
+    }
+
+    suspend fun updateTip(tip: Tip): Tip {
+        val body = json.encodeToString(Tip.serializer(), tip)
+        val responseText = client.put(url("/api/tips/${tip.id}"), body)
+        return json.decodeFromString(Tip.serializer(), responseText)
+    }
+
+    suspend fun deleteTip(id: String) {
+        client.delete(url("/api/tips/$id"))
     }
 
     // ------------------------------------------------------------------------------- assets

@@ -75,6 +75,21 @@ class AppViewModel : ViewModel() {
     var renders by mutableStateOf<List<RenderRecord>>(emptyList())
         private set
 
+    // ------------------------------------------------------------------------------------ tips
+    /** Studio-wide tips (reusable workflow advice), newest first. */
+    var tips by mutableStateOf<List<Tip>>(emptyList())
+        private set
+
+    /** True while the dashboard tips side panel is open. */
+    var tipsPanelExpanded by mutableStateOf(false)
+
+    /** The current tips search query (empty = show all). */
+    var tipsSearchQuery by mutableStateOf("")
+        private set
+
+    var tipsError by mutableStateOf<String?>(null)
+        private set
+
     // -------------------------------------------------------------------------- timeline notes
     /** Text-only notes pinned to timeline positions (the plot builder), sorted by time. */
     var timelineNotes by mutableStateOf<List<TimelineNote>>(emptyList())
@@ -1235,6 +1250,81 @@ class AppViewModel : ViewModel() {
                 scenes = scenes.filter { it.id != id }
             } catch (e: Exception) {
                 errorMessage = "Failed to delete scene: ${e.message}"
+            }
+        }
+    }
+
+    // ====================================================================================== tips
+
+    /** Loads tips matching the current [tipsSearchQuery] (newest first). */
+    fun refreshTips() {
+        viewModelScope.launch {
+            tipsError = null
+            try {
+                tips = NetworkService.getTips(tipsSearchQuery)
+            } catch (e: Exception) {
+                tipsError = "Failed to load tips: ${e.message}"
+            }
+        }
+    }
+
+    /** Updates the tips search query and reloads the matching tips. */
+    fun searchTips(query: String) {
+        tipsSearchQuery = query
+        refreshTips()
+    }
+
+    /** Creates a new tip, then reloads the (unfiltered) list so it appears at the top. */
+    fun createTip(title: String, content: String) {
+        viewModelScope.launch {
+            try {
+                NetworkService.createTip(
+                    Tip(id = generateId(), title = title.trim(), content = content.trim())
+                )
+                tipsSearchQuery = ""
+                tips = NetworkService.getTips()
+            } catch (e: Exception) {
+                errorMessage = "Failed to create tip: ${e.message}"
+            }
+        }
+    }
+
+    /** Flips a tip between read and unread, updating it in place so its position doesn't change. */
+    fun toggleTipRead(tip: Tip) {
+        val updated = tip.copy(read = !tip.read)
+        tips = tips.map { if (it.id == tip.id) updated else it }
+        viewModelScope.launch {
+            try {
+                NetworkService.updateTip(updated)
+            } catch (e: Exception) {
+                // Revert the optimistic change on failure.
+                tips = tips.map { if (it.id == tip.id) tip else it }
+                errorMessage = "Failed to update tip: ${e.message}"
+            }
+        }
+    }
+
+    /** Saves edits to a tip's title/content, updating it in place. */
+    fun updateTip(tip: Tip, title: String, content: String) {
+        val updated = tip.copy(title = title.trim(), content = content.trim())
+        viewModelScope.launch {
+            try {
+                val saved = NetworkService.updateTip(updated)
+                tips = tips.map { if (it.id == saved.id) saved else it }
+            } catch (e: Exception) {
+                errorMessage = "Failed to update tip: ${e.message}"
+            }
+        }
+    }
+
+    /** Deletes a tip and drops it from the list. */
+    fun deleteTip(id: String) {
+        viewModelScope.launch {
+            try {
+                NetworkService.deleteTip(id)
+                tips = tips.filter { it.id != id }
+            } catch (e: Exception) {
+                errorMessage = "Failed to delete tip: ${e.message}"
             }
         }
     }

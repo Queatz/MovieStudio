@@ -1,17 +1,23 @@
 package app.moviestudio.ui
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items as lazyItems
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -19,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -39,6 +47,7 @@ import app.moviestudio.AppViewModel
 import app.moviestudio.Movie
 import app.moviestudio.MovieStatus
 import app.moviestudio.SUPPORTED_ASPECT_RATIOS
+import app.moviestudio.Tip
 import app.moviestudio.displayName
 
 /** Home screen: the movie list plus the create-movie flow (which auto-opens the new movie). */
@@ -46,7 +55,8 @@ import app.moviestudio.displayName
 fun DashboardScreen(viewModel: AppViewModel) {
     var showCreateDialog by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Row(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
         // Header bar
         Row(
             modifier = Modifier
@@ -64,6 +74,17 @@ fun DashboardScreen(viewModel: AppViewModel) {
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.weight(1f))
+            // Tips: reveals the right-hand tips panel.
+            RoundIconButton(
+                "💡",
+                contentDescription = "Tips",
+                background = if (viewModel.tipsPanelExpanded) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent,
+                size = 40.dp
+            ) {
+                viewModel.tipsPanelExpanded = !viewModel.tipsPanelExpanded
+                if (viewModel.tipsPanelExpanded) viewModel.refreshTips()
+            }
+            Spacer(Modifier.width(10.dp))
             PillButton("＋ New Movie") { showCreateDialog = true }
         }
 
@@ -114,6 +135,10 @@ fun DashboardScreen(viewModel: AppViewModel) {
                 }
             }
         }
+        }
+
+        // Always composed so it can slide in and out with a width animation.
+        TipsPanel(viewModel)
     }
 
     if (showCreateDialog) {
@@ -242,6 +267,277 @@ private fun CreateMovieDialog(onDismiss: () -> Unit, onCreate: (String, String) 
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
             PillButton("Create Movie", enabled = title.isNotBlank()) { onCreate(title.trim(), aspect) }
+        }
+    }
+}
+
+/**
+ * The dashboard's right-hand tips panel: search, create, and browse studio-wide tips (newest
+ * first). Toggled by the header's tips icon; slides in and out with a width animation (matching
+ * the editor's timeline notes panel).
+ */
+@Composable
+private fun TipsPanel(viewModel: AppViewModel) {
+    val width by animateDpAsState(if (viewModel.tipsPanelExpanded) 340.dp else 0.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(width)
+            .clipToBounds()
+    ) {
+        // Keep the content at its full width and anchored to the right edge so it slides in from
+        // the side rather than squashing while the panel width animates.
+        if (width > 0.dp) {
+            TipsPanelContent(
+                viewModel,
+                Modifier.width(340.dp).fillMaxHeight().align(Alignment.CenterEnd)
+            )
+        }
+    }
+}
+
+/** The actual tips panel content (header, search, create, and the tip list). */
+@Composable
+private fun TipsPanelContent(viewModel: AppViewModel, modifier: Modifier) {
+    var showCreateForm by remember { mutableStateOf(false) }
+    var editTarget by remember { mutableStateOf<Tip?>(null) }
+
+    // While a search is active the "New Tip" affordance is hidden so it doesn't distract.
+    val searching = viewModel.tipsSearchQuery.isNotBlank()
+
+    Column(
+        modifier = modifier
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("💡", fontSize = 20.sp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Tips",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+            RoundIconButton("✕", contentDescription = "Close tips", size = 32.dp) {
+                viewModel.tipsPanelExpanded = false
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // Search across tip titles and content.
+        StudioTextField(
+            value = viewModel.tipsSearchQuery,
+            onValueChange = { viewModel.searchTips(it) },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = "Search tips",
+            singleLine = true,
+            autoFocus = false,
+            aiGenerate = null
+        )
+        Spacer(Modifier.height(12.dp))
+
+        // Create a new tip inline. Hidden while searching.
+        if (!searching) {
+            if (showCreateForm) {
+                TipCreateForm(
+                    onCancel = { showCreateForm = false },
+                    onCreate = { title, content ->
+                        viewModel.createTip(title, content)
+                        showCreateForm = false
+                    }
+                )
+            } else {
+                PillButton("＋ New Tip", modifier = Modifier.fillMaxWidth()) { showCreateForm = true }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Spacer(Modifier.height(12.dp))
+
+        // All tips, newest first.
+        when {
+            viewModel.tipsError != null -> {
+                ErrorRetryBox(
+                    message = viewModel.tipsError ?: "Failed to load tips",
+                    modifier = Modifier.fillMaxWidth(),
+                    onRetry = { viewModel.refreshTips() }
+                )
+            }
+            viewModel.tips.isEmpty() -> {
+                Text(
+                    if (viewModel.tipsSearchQuery.isBlank()) "No tips yet. Add your first tip."
+                    else "No tips match your search.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    lazyItems(viewModel.tips, key = { it.id }) { tip ->
+                        TipCard(
+                            tip = tip,
+                            onToggleRead = { viewModel.toggleTipRead(tip) },
+                            onEdit = { editTarget = tip }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Long-pressing a tip opens the edit dialog (which can also delete the tip).
+    editTarget?.let { tip ->
+        TipEditDialog(
+            tip = tip,
+            onSave = { title, content ->
+                viewModel.updateTip(tip, title, content)
+                editTarget = null
+            },
+            onDelete = {
+                viewModel.deleteTip(tip.id)
+                editTarget = null
+            },
+            onDismiss = { editTarget = null }
+        )
+    }
+}
+
+/** Inline create-a-tip form used inside [TipsPanel]. */
+@Composable
+private fun TipCreateForm(onCancel: () -> Unit, onCreate: (String, String) -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var content by remember { mutableStateOf("") }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(12.dp)
+    ) {
+        StudioTextField(
+            value = title,
+            onValueChange = { title = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Title",
+            placeholder = "Tip title",
+            singleLine = true,
+            autoFocus = true
+        )
+        Spacer(Modifier.height(8.dp))
+        StudioTextField(
+            value = content,
+            onValueChange = { content = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Details",
+            placeholder = "What's the tip?",
+            minLines = 3
+        )
+        Spacer(Modifier.height(10.dp))
+        Row {
+            GhostPillButton("Cancel", modifier = Modifier.weight(1f)) { onCancel() }
+            Spacer(Modifier.width(8.dp))
+            PillButton("Save", modifier = Modifier.weight(1f), enabled = title.isNotBlank()) {
+                onCreate(title.trim(), content.trim())
+            }
+        }
+    }
+}
+
+/**
+ * A single tip in the tips panel list. Tapping toggles read/unread; long-pressing opens the edit
+ * dialog. Read tips are visually dimmed and show a check mark.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun TipCard(tip: Tip, onToggleRead: () -> Unit, onEdit: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp)) // clip BEFORE clickable so hover has rounded corners
+            .background(
+                if (tip.read) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                else MaterialTheme.colorScheme.surfaceVariant
+            )
+            .combinedClickable(onClick = onToggleRead, onLongClick = onEdit)
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("💡", fontSize = 16.sp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                tip.title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = if (tip.read) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+            if (tip.read) {
+                Text(
+                    "✓ Read",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+        if (tip.content.isNotBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                tip.content,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * Edit dialog opened by long-pressing a tip: change its title/content, or delete it outright.
+ */
+@Composable
+private fun TipEditDialog(
+    tip: Tip,
+    onSave: (String, String) -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var title by remember { mutableStateOf(tip.title) }
+    var content by remember { mutableStateOf(tip.content) }
+    StudioDialog(title = "Edit Tip", onDismiss = onDismiss, width = 440.dp) {
+        StudioTextField(
+            value = title,
+            onValueChange = { title = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Title",
+            placeholder = "Tip title",
+            singleLine = true,
+            autoFocus = true
+        )
+        Spacer(Modifier.height(12.dp))
+        StudioTextField(
+            value = content,
+            onValueChange = { content = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Details",
+            placeholder = "What's the tip?",
+            minLines = 3
+        )
+        DialogActions {
+            PillButton(
+                "🗑 Delete",
+                container = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError
+            ) { onDelete() }
+            Spacer(Modifier.weight(1f))
+            GhostPillButton("Cancel") { onDismiss() }
+            ActionSpacer()
+            PillButton("Save", enabled = title.isNotBlank()) { onSave(title.trim(), content.trim()) }
         }
     }
 }

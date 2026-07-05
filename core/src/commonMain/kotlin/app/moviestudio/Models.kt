@@ -308,6 +308,19 @@ data class TimelineNote(
 )
 
 /**
+ * A studio-wide tip: a short piece of reusable advice the user jots down (e.g. workflow tricks,
+ * reminders). Tips are global — not tied to any movie — searchable, and shown newest first.
+ */
+@Serializable
+data class Tip(
+    val id: String,
+    val title: String,
+    val content: String = "",
+    val read: Boolean = false,
+    val createdAt: Long = 0
+)
+
+/**
  * The Qwen TTS preset voices available out of the box. Cloned voices from the user's voice
  * library are offered alongside these.
  */

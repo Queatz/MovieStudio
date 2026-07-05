@@ -8,6 +8,7 @@ import app.moviestudio.routing.generationRoutes
 import app.moviestudio.routing.jobRoutes
 import app.moviestudio.routing.libraryRoutes
 import app.moviestudio.routing.speechRoutes
+import app.moviestudio.routing.tipRoutes
 import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.service.AIGenerationService
 import app.moviestudio.service.QwenAIService
@@ -109,5 +110,6 @@ fun Application.module() {
         generationRoutes()
         libraryRoutes()
         speechRoutes()
+        tipRoutes()
     }
 }
