@@ -725,7 +725,7 @@ object QwenAIService : AIGenerationService {
         }
     }
 
-    private suspend fun postJson(url: String, body: JsonObject, async: Boolean, timeoutSeconds: Long = 60): JsonObject {
+    private suspend fun postJson(url: String, body: JsonObject, async: Boolean, timeoutSeconds: Long = 240): JsonObject {
         val response = httpClient.post(url) {
             header("Authorization", "Bearer ${QwenConfig.apiKey}")
             if (async) header("X-DashScope-Async", "enable")
@@ -739,7 +739,7 @@ object QwenAIService : AIGenerationService {
     private suspend fun getJson(url: String): JsonObject {
         val response = httpClient.get(url) {
             header("Authorization", "Bearer ${QwenConfig.apiKey}")
-            timeout { requestTimeoutMillis = 60_000 }
+            timeout { requestTimeoutMillis = 240_000 }
         }
         return parseJsonResponse(response)
     }

@@ -39,28 +39,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isCtrlPressed
-import androidx.compose.ui.input.key.isMetaPressed
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
 import app.moviestudio.MovieDocument
 import app.moviestudio.updateAudioPlayback
-import com.mohamedrejeb.richeditor.model.RichTextState
-import com.mohamedrejeb.richeditor.ui.material3.RichTextEditor
 import kotlinx.coroutines.delay
 
 /** A document with its nesting depth, as laid out in the flattened tree list. */
@@ -94,9 +82,14 @@ private fun flattenDocumentTree(documents: List<MovieDocument>): List<DocumentRo
     return result
 }
 
-/** A short plain-text excerpt of rich [html] content, for history rows and previews. */
-private fun htmlExcerpt(html: String, maxLength: Int = 90): String {
-    val text = html.replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ").trim()
+/** A short plain-text excerpt of a document's rich [content], for history rows and previews. */
+private fun htmlExcerpt(content: String, maxLength: Int = 90): String {
+    val text = content
+        .replace(Regex("<[^>]*>"), " ")                       // legacy/underline HTML tags
+        .replace(Regex("(?m)^\\s*(?:[-*+]|\\d+\\.)\\s"), " ")   // list markers
+        .replace(Regex("[*_~`#>]+"), " ")                     // inline emphasis / heading markers
+        .replace(Regex("\\s+"), " ")
+        .trim()
     return if (text.length <= maxLength) text else text.take(maxLength) + "…"
 }
 
@@ -449,7 +442,7 @@ private fun DocumentsEmptyState(viewModel: AppViewModel) {
  */
 @Composable
 private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieDocument) {
-    val state = remember(document.id) { RichTextState().apply { setHtml(document.content) } }
+    val state = remember(document.id) { MarkdownEditorState(document.content) }
     var editingTitle by remember(document.id) { mutableStateOf(false) }
     var titleDraft by remember(document.id) { mutableStateOf(document.title) }
     var showHistory by remember(document.id) { mutableStateOf(false) }
@@ -462,7 +455,7 @@ private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieD
         var lastSaved = document.content
         while (true) {
             delay(1000)
-            val html = state.toHtml()
+            val html = state.markdown
             if (html != lastSaved) {
                 lastSaved = html
                 viewModel.updateDocument(freshDocument().copy(content = html))
@@ -472,7 +465,7 @@ private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieD
     // Save any trailing edits when the editor closes or switches documents.
     DisposableEffect(document.id) {
         onDispose {
-            val html = state.toHtml()
+            val html = state.markdown
             val fresh = viewModel.documents.firstOrNull { it.id == document.id }
             if (fresh != null && html != fresh.content) {
                 viewModel.updateDocument(fresh.copy(content = html))
@@ -528,69 +521,33 @@ private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieD
     Spacer(Modifier.height(8.dp))
 
     // ---------------------------------------------------------------------- formatting toolbar
-    // Shared by the toolbar buttons and the Ctrl/Cmd+B/I/U shortcuts on the editor.
-    fun toggleBold() = state.toggleSpanStyle(SpanStyle(fontWeight = FontWeight.Bold))
-    fun toggleItalic() = state.toggleSpanStyle(SpanStyle(fontStyle = FontStyle.Italic))
-    fun toggleUnderline() = state.toggleSpanStyle(SpanStyle(textDecoration = TextDecoration.Underline))
-
     Row(
         Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        FormatToggle("B", active = state.currentSpanStyle.fontWeight == FontWeight.Bold) { toggleBold() }
-        FormatToggle("I", active = state.currentSpanStyle.fontStyle == FontStyle.Italic) { toggleItalic() }
-        FormatToggle(
-            "U",
-            active = state.currentSpanStyle.textDecoration?.contains(TextDecoration.Underline) == true
-        ) {
-            toggleUnderline()
-        }
-        FormatToggle(
-            "S̶",
-            active = state.currentSpanStyle.textDecoration?.contains(TextDecoration.LineThrough) == true
-        ) {
-            state.toggleSpanStyle(SpanStyle(textDecoration = TextDecoration.LineThrough))
-        }
-        FormatToggle("H", active = state.currentSpanStyle.fontSize == 24.sp) {
-            state.toggleSpanStyle(SpanStyle(fontSize = 24.sp))
-        }
-        FormatToggle("• List", active = state.isUnorderedList) { state.toggleUnorderedList() }
-        FormatToggle("1. List", active = state.isOrderedList) { state.toggleOrderedList() }
+        FormatToggle("B", active = state.isBold) { state.toggleBold() }
+        FormatToggle("I", active = state.isItalic) { state.toggleItalic() }
+        FormatToggle("U", active = state.isUnderline) { state.toggleUnderline() }
+        FormatToggle("S̶", active = state.isStrikethrough) { state.toggleStrikethrough() }
+        FormatToggle("H", active = state.isHeading) { state.toggleHeading() }
+        FormatToggle("• List", active = state.isBulletList) { state.toggleBulletList() }
+        FormatToggle("1. List", active = state.isNumberedList) { state.toggleNumberedList() }
     }
     Spacer(Modifier.height(8.dp))
 
     // ------------------------------------------------------------------------------- the editor
-    RichTextEditor(
+    MarkdownRichTextEditor(
         state = state,
-        modifier = Modifier
-            .fillMaxWidth()
-            .weight(1f)
-            // Standard formatting shortcuts: Ctrl+B/I/U (Cmd on macOS) toggle the style of the
-            // selection, or of what gets typed next when the cursor is collapsed.
-            .onPreviewKeyEvent { event ->
-                val shortcut = event.isCtrlPressed || event.isMetaPressed
-                if (event.type != KeyEventType.KeyDown || !shortcut) return@onPreviewKeyEvent false
-                when (event.key) {
-                    Key.B -> { toggleBold(); true }
-                    Key.I -> { toggleItalic(); true }
-                    Key.U -> { toggleUnderline(); true }
-                    else -> false
-                }
-            },
-        placeholder = {
-            Text(
-                "Write the script, notes, research…",
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+        modifier = Modifier.fillMaxWidth().weight(1f),
+        placeholder = "Write the script, notes, research…"
     )
 
     if (showHistory) {
         DocumentHistoryDialog(
             document = document,
             onRestore = { version ->
-                state.setHtml(version.content)
+                state.setMarkdown(version.content)
                 viewModel.restoreDocumentVersion(freshDocument(), version)
                 showHistory = false
             },

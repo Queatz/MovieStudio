@@ -3,16 +3,14 @@ package app.moviestudio
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -30,6 +28,7 @@ import coil3.network.ktor3.KtorNetworkFetcherFactory
 import app.moviestudio.ui.DashboardScreen
 import app.moviestudio.ui.EditorScreen
 import app.moviestudio.ui.KeyModifierState
+import app.moviestudio.ui.StudioToast
 import app.moviestudio.ui.TextInputFocusTracker
 import kotlinx.coroutines.delay
 
@@ -124,19 +123,13 @@ private fun androidx.compose.foundation.layout.BoxScope.ErrorToast(viewModel: Ap
         delay(5000)
         if (viewModel.errorMessage == message) viewModel.errorMessage = null
     }
-    Surface(
-        modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .padding(24.dp),
+    StudioToast(
+        message = message,
+        modifier = Modifier.padding(24.dp),
+        containerColor = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.errorContainer,
-        tonalElevation = 6.dp
-    ) {
-        Text(
-            message,
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
-            color = MaterialTheme.colorScheme.onErrorContainer,
-            style = MaterialTheme.typography.bodyMedium
-        )
-    }
+        textStyle = MaterialTheme.typography.bodyMedium,
+        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp)
+    )
 }

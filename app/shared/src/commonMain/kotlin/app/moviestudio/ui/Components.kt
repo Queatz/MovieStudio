@@ -9,6 +9,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,6 +52,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -706,6 +709,43 @@ fun UploadProgressBar(state: UploadState, modifier: Modifier = Modifier) {
         LinearProgressIndicator(
             progress = { animated },
             modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
+        )
+    }
+}
+
+/**
+ * A transient "toast" pill — a rounded [Surface] with a single line of text — overlaid inside a
+ * [Box] (hence the [BoxScope] receiver) so it floats above the content without shifting any layout.
+ * Every visual aspect ([alignment], [containerColor]/[contentColor], [shape], [textStyle],
+ * [contentPadding]) is customizable so the same component serves confirmations
+ * ("Copied to clipboard"), errors, and whatever comes next. Callers own the show/hide timing and
+ * can gate rendering with [visible]; outer positioning/margins are supplied via [modifier]
+ * (e.g. `Modifier.padding(24.dp)`).
+ */
+@Composable
+fun BoxScope.StudioToast(
+    message: String,
+    modifier: Modifier = Modifier,
+    visible: Boolean = true,
+    alignment: Alignment = Alignment.BottomCenter,
+    containerColor: Color = MaterialTheme.colorScheme.inverseSurface,
+    contentColor: Color = MaterialTheme.colorScheme.inverseOnSurface,
+    shape: Shape = RoundedCornerShape(50),
+    textStyle: TextStyle = MaterialTheme.typography.labelMedium,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+) {
+    if (!visible) return
+    Surface(
+        modifier = Modifier.align(alignment).then(modifier),
+        shape = shape,
+        color = containerColor,
+        tonalElevation = 6.dp
+    ) {
+        Text(
+            message,
+            modifier = Modifier.padding(contentPadding),
+            color = contentColor,
+            style = textStyle
         )
     }
 }
