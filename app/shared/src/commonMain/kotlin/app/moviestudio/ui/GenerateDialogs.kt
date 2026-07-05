@@ -1362,6 +1362,103 @@ fun RecordVoiceDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
     }
 }
 
+/**
+ * Records a sound effect with the device microphone and uploads it into the library as sound-fx
+ * media, ready to drop on the timeline like any other sound.
+ */
+@Composable
+fun RecordSoundEffectDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var recording by remember { mutableStateOf(false) }
+    var recordSeconds by remember { mutableStateOf(0) }
+    var saving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    // Elapsed-time ticker while recording.
+    LaunchedEffect(recording) {
+        recordSeconds = 0
+        while (recording) {
+            delay(1000)
+            recordSeconds++
+        }
+    }
+    // Abandoning the dialog mid-recording discards the capture.
+    DisposableEffect(Unit) {
+        onDispose { cancelMicRecording() }
+    }
+
+    StudioDialog(title = "Record sound effect", onDismiss = onDismiss, width = 460.dp) {
+        Text(
+            "Record any sound effect with your microphone. The recording lands in the sound-fx " +
+                "library and can be placed on the timeline like any other sound.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        StudioTextField(
+            value = name,
+            onValueChange = { name = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Name (optional)",
+            placeholder = "Door slam take 1",
+            singleLine = true
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!recording) {
+                PillButton(if (saving) "Uploading..." else "🔴 Record", compact = true, enabled = !saving) {
+                    scope.launch {
+                        recording = startMicRecording()
+                        if (!recording) {
+                            viewModel.errorMessage = "Microphone unavailable or permission denied"
+                        }
+                    }
+                }
+            } else {
+                PillButton(
+                    "⏹ Stop & save",
+                    compact = true,
+                    enabled = !saving,
+                    container = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                ) {
+                    recording = false
+                    saving = true
+                    viewModel.stopRecordingAndUpload { uploaded ->
+                        if (uploaded == null) {
+                            saving = false
+                            viewModel.errorMessage = "Recording failed — nothing was captured"
+                        } else {
+                            viewModel.createSoundEffectRecordingAsset(name.trim(), uploaded) {
+                                saving = false
+                                onDismiss()
+                            }
+                        }
+                    }
+                }
+                GhostPillButton("Discard", compact = true) {
+                    recording = false
+                    cancelMicRecording()
+                }
+                Text(
+                    "● ${formatDuration(recordSeconds.toDouble())}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+        // Live progress while the finished recording uploads to storage.
+        viewModel.uploadState?.let { upload ->
+            Spacer(Modifier.height(10.dp))
+            UploadProgressBar(upload)
+        }
+        DialogActions {
+            GhostPillButton("Cancel") { onDismiss() }
+        }
+    }
+}
+
 /** Adds a description-only placeholder asset of any media type to the library. */
 @Composable
 fun DescribeAssetDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {

@@ -99,6 +99,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     var showSfx by remember { mutableStateOf(false) }
     var showTts by remember { mutableStateOf(false) }
     var showRecordVoice by remember { mutableStateOf(false) }
+    var showRecordSoundEffect by remember { mutableStateOf(false) }
     var showDescribe by remember { mutableStateOf(false) }
     var characterEditor by remember { mutableStateOf<Character?>(null) }
     var showNewCharacter by remember { mutableStateOf(false) }
@@ -154,6 +155,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 onSoundEffect = { showSfx = true },
                 onTts = { showTts = true },
                 onRecordVoice = { showRecordVoice = true },
+                onRecordSoundEffect = { showRecordSoundEffect = true },
                 onDescribe = { showDescribe = true },
                 onUpload = { type -> viewModel.uploadAsset(type) },
                 onNewCharacter = { showNewCharacter = true },
@@ -168,7 +170,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = "Search media by name, description or tag...",
+                placeholder = "Search media",
                 singleLine = true,
                 leadingIcon = { Text("🔍", fontSize = 14.sp) }
             )
@@ -332,6 +334,9 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     if (showRecordVoice) {
         RecordVoiceDialog(viewModel) { showRecordVoice = false }
     }
+    if (showRecordSoundEffect) {
+        RecordSoundEffectDialog(viewModel) { showRecordSoundEffect = false }
+    }
     if (showDescribe) {
         DescribeAssetDialog(viewModel) { showDescribe = false }
     }
@@ -358,6 +363,7 @@ private fun AddMenu(
     onSoundEffect: () -> Unit,
     onTts: () -> Unit,
     onRecordVoice: () -> Unit,
+    onRecordSoundEffect: () -> Unit,
     onDescribe: () -> Unit,
     onUpload: (AssetType) -> Unit,
     onNewCharacter: () -> Unit,
@@ -377,6 +383,7 @@ private fun AddMenu(
             item("💥 Generate sound effect...") { onSoundEffect() }
             item("🗣️ Text to speech...") { onTts() }
             item("🎙️ Record voice...") { onRecordVoice() }
+            item("💥 Record sound effect...") { onRecordSoundEffect() }
             item("📝 Placeholder...") { onDescribe() }
             item("📤 Upload video") { onUpload(AssetType.VIDEO) }
             item("📤 Upload image") { onUpload(AssetType.IMAGE) }

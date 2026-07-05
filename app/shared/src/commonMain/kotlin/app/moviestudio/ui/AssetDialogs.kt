@@ -499,7 +499,7 @@ fun ClipAudioDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () -> Unit
                     .offset { IntOffset((startX - handleWidthPx / 2f).roundToInt(), 0) }
                     .width(with(density) { handleWidthPx.toDp() })
                     .fillMaxHeight()
-                    .padding(vertical = 6.dp)
+                    .padding(vertical = 12.dp)
                     .clip(RoundedCornerShape(4.dp)) // clip BEFORE pointerInput
                     .background(Color.White)
                     .pointerInput(pxPerSecond, clipEnd) {
@@ -511,7 +511,7 @@ fun ClipAudioDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () -> Unit
                     },
                 contentAlignment = Alignment.Center
             ) {
-                Text("\u22EE", color = Color(0xFF17151C), fontSize = 12.sp)
+                Text("⋮", color = Color(0xFF17151C), fontSize = 12.sp)
             }
 
             // Right handle → drags the clip end (never past the start).
@@ -521,7 +521,7 @@ fun ClipAudioDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () -> Unit
                     .offset { IntOffset((endX - handleWidthPx / 2f).roundToInt(), 0) }
                     .width(with(density) { handleWidthPx.toDp() })
                     .fillMaxHeight()
-                    .padding(vertical = 6.dp)
+                    .padding(vertical = 12.dp)
                     .clip(RoundedCornerShape(4.dp)) // clip BEFORE pointerInput
                     .background(Color.White)
                     .pointerInput(pxPerSecond, clipStart) {
@@ -533,7 +533,7 @@ fun ClipAudioDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () -> Unit
                     },
                 contentAlignment = Alignment.Center
             ) {
-                Text("\u22EE", color = Color(0xFF17151C), fontSize = 12.sp)
+                Text("⋮", color = Color(0xFF17151C), fontSize = 12.sp)
             }
         }
         Spacer(Modifier.height(8.dp))

@@ -812,6 +812,33 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Saves a finished microphone recording as a sound-effect (AUDIO) asset in the global
+     * library, used by the "Record sound effect..." flow.
+     */
+    fun createSoundEffectRecordingAsset(name: String, recording: UploadedDeviceFile, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                val asset = Asset(
+                    id = generateId(),
+                    type = AssetType.AUDIO,
+                    ossUrl = recording.ossUrl,
+                    durationSeconds = recording.durationSeconds,
+                    movieId = null,
+                    tags = listOf("recorded"),
+                    aiPrompt = null,
+                    description = name.ifBlank { "Sound effect recording" }
+                )
+                NetworkService.createAsset(asset)
+                refreshLibrary()
+            } catch (e: Exception) {
+                errorMessage = "Failed to save recording: ${e.message}"
+            } finally {
+                onDone()
+            }
+        }
+    }
+
     fun updateAsset(asset: Asset, onDone: (Asset) -> Unit = {}) {
         viewModelScope.launch {
             try {
