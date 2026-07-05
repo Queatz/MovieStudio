@@ -109,6 +109,39 @@ class ModelsTest {
     }
 
     @Test
+    fun calculatedDurationCountsNotesPinnedPastTheLastClip() {
+        val movie = Film("m1", "T", 0.0, FilmStatus.DRAFT, 0)
+        val track = Track("t1", "m1", TrackType.VIDEO, 0)
+        val tracks = listOf(
+            TrackWithClips(track, listOf(Clip("c1", "t1", "a1", 0f, 0f, 5f, "{}"))) // ends at 5
+        )
+
+        // A note pinned past the last clip extends the timeline length to the note's position.
+        val withLateNote = FilmTimeline(
+            movie = movie,
+            tracks = tracks,
+            notes = listOf(TimelineNote("n1", "m1", atSeconds = 12.0, text = "climax"))
+        )
+        assertEquals(12.0, withLateNote.calculatedDuration(), 0.001)
+
+        // A note before the last clip does not shorten the timeline (clips still win).
+        val withEarlyNote = FilmTimeline(
+            movie = movie,
+            tracks = tracks,
+            notes = listOf(TimelineNote("n2", "m1", atSeconds = 2.0, text = "setup"))
+        )
+        assertEquals(5.0, withEarlyNote.calculatedDuration(), 0.001)
+
+        // Notes drive the length even when there are no clips at all.
+        val notesOnly = FilmTimeline(
+            movie = movie,
+            tracks = emptyList(),
+            notes = listOf(TimelineNote("n3", "m1", atSeconds = 8.0, text = "outline"))
+        )
+        assertEquals(8.0, notesOnly.calculatedDuration(), 0.001)
+    }
+
+    @Test
     fun aspectRatioParsingFallsBackTo16x9() {
         assertEquals(16f / 9f, aspectRatioToFloat("16:9"))
         assertEquals(1f, aspectRatioToFloat("1:1"))

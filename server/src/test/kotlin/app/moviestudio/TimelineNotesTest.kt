@@ -124,6 +124,10 @@ class TimelineNotesTest {
         assertEquals(note.id, created.id)
         assertTrue(created.createdAt > 0, "Server should stamp createdAt")
 
+        // Creating a note (past the last clip — here there are no clips) extends the movie's
+        // auto-calculated length to the note's position.
+        assertEquals(7.25, FilmRepository.getById(movieId)?.totalDuration ?: -1.0, 0.0001)
+
         // 2. Blank note text is rejected
         val blankResponse = client.post("/api/movies/$movieId/notes") {
             contentType(ContentType.Application.Json)
@@ -161,6 +165,9 @@ class TimelineNotesTest {
         val updated = json.decodeFromString(TimelineNote.serializer(), updateResponse.bodyAsText())
         assertEquals("Hero refuses the call", updated.text)
         assertEquals(9.0, updated.atSeconds, 0.0001)
+
+        // Re-pinning the furthest note updates the movie's length accordingly.
+        assertEquals(9.0, FilmRepository.getById(movieId)?.totalDuration ?: -1.0, 0.0001)
 
         // 5. Delete one note
         val deleteResponse = client.delete("/api/movies/$movieId/notes/${earlier.id}")

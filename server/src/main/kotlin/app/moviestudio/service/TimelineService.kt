@@ -5,12 +5,13 @@ import app.moviestudio.TrackWithClips
 import app.moviestudio.calculatedDuration
 import app.moviestudio.database.ClipRepository
 import app.moviestudio.database.FilmRepository
+import app.moviestudio.database.NoteRepository
 import app.moviestudio.database.TrackRepository
 
 /**
- * Assembles the full timeline (movie + tracks + clips) and keeps the movie's auto-calculated
- * duration in sync with the media placed on it. Shared by the REST routes, the render pipeline
- * and the skeleton planner.
+ * Assembles the full timeline (movie + tracks + clips + notes) and keeps the movie's
+ * auto-calculated duration in sync with what is placed on it. Shared by the REST routes, the
+ * render pipeline and the skeleton planner.
  */
 object TimelineService {
 
@@ -22,12 +23,13 @@ object TimelineService {
         val tracksWithClips = tracks.map { track ->
             TrackWithClips(track, clips.filter { it.trackId == track.id }.sortedBy { it.timelineStart })
         }
-        return FilmTimeline(movie, tracksWithClips)
+        val notes = NoteRepository.queryByMovieId(movieId).sortedBy { it.atSeconds }
+        return FilmTimeline(movie, tracksWithClips, notes)
     }
 
     /**
      * Recalculates and persists the movie's [app.moviestudio.Film.totalDuration] from its
-     * timeline. Movies have no pre-set length, so this runs whenever clips change.
+     * timeline. Movies have no pre-set length, so this runs whenever clips or notes change.
      */
     fun refreshMovieDuration(movieId: String) {
         val timeline = assemble(movieId) ?: return

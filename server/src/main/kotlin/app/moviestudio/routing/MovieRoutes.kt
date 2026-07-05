@@ -195,6 +195,7 @@ fun Route.movieRoutes() {
                     createdAt = if (note.createdAt == 0L) System.currentTimeMillis() else note.createdAt
                 )
                 val saved = NoteRepository.insert(stamped)
+                TimelineService.refreshMovieDuration(movieId)
                 call.respond(HttpStatusCode.Created, saved)
             } catch (e: IllegalArgumentException) {
                 call.respond(HttpStatusCode.BadRequest, e.message ?: "Validation failed")
@@ -209,6 +210,7 @@ fun Route.movieRoutes() {
                 val noteId = call.parameters["noteId"] ?: return@put call.respond(HttpStatusCode.BadRequest, "Missing noteId")
                 val note = call.receive<TimelineNote>()
                 val updated = NoteRepository.update(note.copy(id = noteId, movieId = movieId))
+                TimelineService.refreshMovieDuration(movieId)
                 call.respond(HttpStatusCode.OK, updated)
             } catch (e: IllegalArgumentException) {
                 call.respond(HttpStatusCode.BadRequest, e.message ?: "Validation failed")
@@ -219,8 +221,10 @@ fun Route.movieRoutes() {
 
         delete("/{movieId}/notes/{noteId}") {
             try {
+                val movieId = call.parameters["movieId"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing movieId")
                 val noteId = call.parameters["noteId"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing noteId")
                 NoteRepository.delete(noteId)
+                TimelineService.refreshMovieDuration(movieId)
                 call.respond(HttpStatusCode.OK, mapOf("deleted" to true))
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")

@@ -172,7 +172,10 @@ data class TrackWithClips(
 @Serializable
 data class FilmTimeline(
     val movie: Film,
-    val tracks: List<TrackWithClips>
+    val tracks: List<TrackWithClips>,
+    // Text-only plot-builder markers pinned to timeline positions. They carry no media but
+    // their pinned position still counts towards the movie's length (see [calculatedDuration]).
+    val notes: List<TimelineNote> = emptyList()
 )
 
 @Serializable
@@ -735,13 +738,17 @@ fun buildWordTimings(text: String, durationSeconds: Double): List<WordTiming> {
 }
 
 /**
- * Auto-calculates a movie's length from the media on its timeline. Movies have no pre-set
- * length: the duration is simply the furthest point any clip reaches on the timeline.
+ * Auto-calculates a movie's length from its timeline. Movies have no pre-set length: the
+ * duration is the furthest point anything reaches on the timeline — the furthest point any clip
+ * reaches or, when a note is pinned past the last clip, the furthest note marker. Notes have no
+ * length of their own, so they contribute only their pinned position.
  */
 fun FilmTimeline.calculatedDuration(): Double {
-    val end = tracks
+    val clipEnd = tracks
         .flatMap { it.clips }
         .maxOfOrNull { (it.timelineStart + (it.trimOut - it.trimIn)).toDouble() }
         ?: 0.0
+    val noteEnd = notes.maxOfOrNull { it.atSeconds } ?: 0.0
+    val end = maxOf(clipEnd, noteEnd)
     return if (end < 0.0) 0.0 else end
 }

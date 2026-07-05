@@ -450,6 +450,8 @@ class AppViewModel : ViewModel() {
                     effectsConfig = "{}"
                 )
                 NetworkService.createClip(movieId, clip)
+                // Auto-select the freshly added clip so its properties are immediately editable.
+                selectedClipId = clip.id
                 refreshTimeline()
             } catch (e: Exception) {
                 errorMessage = "Failed to add to timeline: ${e.message}"
@@ -530,11 +532,20 @@ class AppViewModel : ViewModel() {
 
     // ============================================================================ timeline notes
 
+    /**
+     * Updates the notes list and mirrors it into [timeline] so the timeline length calculation
+     * ([calculatedDuration]) counts notes pinned past the last clip, live in the editor.
+     */
+    private fun applyNotes(notes: List<TimelineNote>) {
+        timelineNotes = notes
+        timeline = timeline?.copy(notes = notes)
+    }
+
     fun refreshNotes() {
         val movieId = currentMovie?.id ?: return
         viewModelScope.launch {
             try {
-                timelineNotes = NetworkService.getNotes(movieId)
+                applyNotes(NetworkService.getNotes(movieId))
                 notesError = null
             } catch (e: Exception) {
                 notesError = "Failed to load notes: ${e.message}"
@@ -556,7 +567,7 @@ class AppViewModel : ViewModel() {
                     text = trimmed
                 )
                 val saved = NetworkService.createNote(movieId, note)
-                timelineNotes = (timelineNotes + saved).sortedBy { it.atSeconds }
+                applyNotes((timelineNotes + saved).sortedBy { it.atSeconds })
                 selectedNoteId = saved.id
             } catch (e: Exception) {
                 errorMessage = "Failed to add note: ${e.message}"
@@ -569,7 +580,7 @@ class AppViewModel : ViewModel() {
         val movieId = currentMovie?.id ?: return
         if (note.text.isBlank()) return
         // Optimistic local update so edits and re-pins feel instant.
-        timelineNotes = timelineNotes.map { if (it.id == note.id) note else it }.sortedBy { it.atSeconds }
+        applyNotes(timelineNotes.map { if (it.id == note.id) note else it }.sortedBy { it.atSeconds })
         viewModelScope.launch {
             try {
                 NetworkService.updateNote(movieId, note)
@@ -586,7 +597,7 @@ class AppViewModel : ViewModel() {
             try {
                 NetworkService.deleteNote(movieId, noteId)
                 if (selectedNoteId == noteId) selectedNoteId = null
-                timelineNotes = timelineNotes.filter { it.id != noteId }
+                applyNotes(timelineNotes.filter { it.id != noteId })
             } catch (e: Exception) {
                 errorMessage = "Failed to delete note: ${e.message}"
             }

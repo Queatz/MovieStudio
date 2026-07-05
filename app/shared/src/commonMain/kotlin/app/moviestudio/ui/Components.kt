@@ -620,36 +620,45 @@ fun ImageThumbnail(
 }
 
 /**
- * A lightweight inline video preview: renders the video with a tap-to-play/pause overlay button.
- * Used by dialogs that need to preview a video asset without the full editor transport controls.
+ * A lightweight inline video preview: renders the video at a bounded, aspect-correct size with a
+ * dedicated play/pause button placed BELOW it. Used by dialogs that need to preview a video asset
+ * without the full editor transport controls.
+ *
+ * The play/pause control is intentionally kept out of the video's own bounds: on web the player is
+ * a shared native `<video>` overlay drawn above the Compose canvas, so an overlaid button would be
+ * hidden and unclickable. Placing it beneath the frame keeps it visible and tappable everywhere.
  */
 @Composable
 fun VideoPreview(
     url: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    height: Dp = 180.dp
 ) {
     var playing by remember(url) { mutableStateOf(false) }
     var playhead by remember(url) { mutableStateOf(0f) }
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color.Black),
-        contentAlignment = Alignment.Center
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        VideoPlayer(
-            url = url,
-            isPlaying = playing,
-            playhead = playhead,
-            onTimeUpdate = { playhead = it },
-            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
-        )
-        RoundIconButton(
-            if (playing) "⏸" else "▶",
-            contentDescription = "Play / pause preview",
-            size = 44.dp,
-            background = Color.Black.copy(alpha = 0.45f),
-            tint = Color.White
-        ) { playing = !playing }
+        // Bounded, aspect-correct frame (16:9), centered within the available width.
+        Box(
+            modifier = Modifier
+                .height(height)
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            VideoPlayer(
+                url = url,
+                isPlaying = playing,
+                playhead = playhead,
+                onTimeUpdate = { playhead = it },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        GhostPillButton(if (playing) "⏸ Pause" else "▶ Play", compact = true) { playing = !playing }
     }
 }
 
