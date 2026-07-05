@@ -293,7 +293,7 @@ private fun TipsPanel(viewModel: AppViewModel) {
         if (width > 0.dp) {
             TipsPanelContent(
                 viewModel,
-                Modifier.requiredWidth(width.coerceAtLeast((340 / 2).dp)).fillMaxHeight().align(Alignment.CenterEnd)
+                Modifier.requiredWidth(width.coerceAtLeast((340 / 1.5f).dp)).fillMaxHeight().align(Alignment.CenterEnd)
             )
         }
     }
@@ -314,10 +314,8 @@ private fun TipsPanelContent(viewModel: AppViewModel, modifier: Modifier) {
             .padding(16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("💡", fontSize = 20.sp)
-            Spacer(Modifier.width(8.dp))
             Text(
-                "Tips",
+                text = "Tips",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,

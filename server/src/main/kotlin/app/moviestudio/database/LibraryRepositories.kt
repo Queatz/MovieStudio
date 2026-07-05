@@ -53,7 +53,7 @@ open class SimpleCrudRepository<T>(
     }
 
     fun listAll(): List<T> {
-        val query = "FOR d IN $collection SORT d.createdAt DESC RETURN d"
+        val query = "FOR d IN $collection SORT d.read DESC, d.createdAt DESC RETURN d"
         val cursor = ArangoDatabase.db.query(query, RawJson::class.java)
         val items = mutableListOf<T>()
         for (rawJson in cursor) {
@@ -94,7 +94,7 @@ object TipRepository : SimpleCrudRepository<Tip>("tips", Tip.serializer(), { it.
         val aql = """
             FOR d IN tips
                 FILTER LIKE(LOWER(d.title), @term, true) OR LIKE(LOWER(d.content), @term, true)
-                SORT d.createdAt DESC
+                SORT d.read DESC, d.createdAt DESC
                 RETURN d
         """.trimIndent()
         val bindVars = mapOf<String, Any>("term" to "%${term.lowercase()}%")

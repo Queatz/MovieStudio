@@ -68,7 +68,7 @@ fun TimelineNotesPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
         // panel reveals smoothly; the box clips whatever hasn't slid into view yet.
         Column(
             modifier = Modifier
-                .requiredWidth(if (expanded) width.coerceAtLeast((280 / 2).dp) else 44.dp)
+                .requiredWidth(if (expanded) width.coerceAtLeast((280 / 1.5f).dp) else 44.dp)
                 .then(if (expanded) Modifier.fillMaxHeight() else Modifier)
                 .align(Alignment.TopStart)
                 .clip(RoundedCornerShape(12.dp))
