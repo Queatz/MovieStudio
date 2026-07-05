@@ -43,7 +43,7 @@ object QwenConfig {
     val openAiBaseUrl: String = Env.get("QWEN_OPENAI_BASE_URL", "$apiHost/compatible-mode/v1")
     val dashScopeBaseUrl: String = Env.get("QWEN_DASHSCOPE_BASE_URL", "$apiHost/api/v1")
 
-    val chatModel: String = Env.get("QWEN_CHAT_MODEL", "qwen3.7-plus")
+    val chatModel: String = Env.get("QWEN_CHAT_MODEL", "qwen-plus")
 
     // WAN 2.7 video model family. The concrete model is chosen predictably from the generation
     // setup: text only -> T2V, first-frame image -> I2V, reference images/characters/scenes -> R2V.
