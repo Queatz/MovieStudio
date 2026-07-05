@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import app.moviestudio.AiChatMessage
+import app.moviestudio.NetworkService
 import app.moviestudio.UploadState
 import app.moviestudio.VideoPlayer
 import app.moviestudio.startRealtimeSpeechInput
@@ -109,11 +110,12 @@ val StudioFieldShape = RoundedCornerShape(18.dp)
  * browser Web Speech API when present and otherwise streams the mic to the server's realtime ASR
  * relay (so Firefox works too); on platforms with no speech support the long-press does nothing.
  *
- * When [aiGenerate] is supplied the field also gains an AI assist: pressing Alt+Enter opens the
- * reusable [AiPromptDialog], where the user can chat with the AI and, once happy, press "Insert"
- * to append the generated text into the field. This mirrors the "Generate theme" affordance in the
- * generate-music dialog — the actual AI call is injected by the caller so any field can plug in its
- * own endpoint.
+ * Every instance also supports an AI assist by default: pressing Alt+Enter opens the reusable
+ * [AiPromptDialog], where the user can chat with the AI and, once happy, press "Insert" to append
+ * the generated text at the end of the field. This mirrors the "Generate theme" affordance in the
+ * generate-music dialog. [aiGenerate] performs the actual AI call and defaults to the generic
+ * [NetworkService.generateText] endpoint, so every field works out of the box; callers may inject a
+ * specialized endpoint (lyrics, themes, ...) or pass `null` to disable the shortcut entirely.
  */
 @Composable
 fun StudioTextField(
@@ -132,13 +134,14 @@ fun StudioTextField(
     trailingIcon: @Composable (() -> Unit)? = null,
     onDismiss: () -> Unit = {},
     onSubmit: () -> Unit = {},
-    aiGenerate: (suspend (messages: List<AiChatMessage>) -> String)? = null,
+    aiGenerate: (suspend (messages: List<AiChatMessage>) -> String)? = { NetworkService.generateText(it) },
     aiPromptTitle: String = "✨ AI assist",
     aiPromptDescription: String? =
         "Describe what you want, chat to refine it, then insert the result into the field.",
 ) {
     val focus = remember { FocusRequester() }
-    // Alt+Enter opens the reusable AI prompt dialog (only when the caller wired [aiGenerate] in).
+    // Alt+Enter opens the reusable AI prompt dialog (enabled by default; disabled only when the
+    // caller passes a null [aiGenerate]).
     var showAiPrompt by remember { mutableStateOf(false) }
 
     // Autofocus the title input so the user can start typing right away.
@@ -175,7 +178,7 @@ fun StudioTextField(
             .onPreviewKeyEvent { keyEvent ->
                 when (keyEvent.type) {
                     // Alt+Enter opens the AI prompt dialog (chat with the AI, then insert its
-                    // result). Only handled when the caller enabled it via [aiGenerate].
+                    // result). Enabled by default; skipped only when [aiGenerate] is null.
                     KeyEventType.KeyDown if aiGenerate != null && keyEvent.isAltPressed && keyEvent.key == Key.Enter -> {
                         showAiPrompt = true
                         true
@@ -260,7 +263,7 @@ fun StudioTextField(
     )
 
     // AI prompt dialog (opened with Alt+Enter): chat with the AI and insert its result into the
-    // field. Only ever shown when the caller wired [aiGenerate] in.
+    // field. Shown unless the caller disabled the shortcut by passing a null [aiGenerate].
     if (showAiPrompt && aiGenerate != null) {
         AiPromptDialog(
             title = aiPromptTitle,

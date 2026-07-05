@@ -275,6 +275,14 @@ object NetworkService {
     suspend fun generateTheme(messages: List<AiChatMessage>, movieTitle: String): String =
         generateChatText("/api/generate/theme", messages, movieTitle)
 
+    /**
+     * Generic conversational text generation backing the app-wide AI assist (Alt+Enter in any
+     * [app.moviestudio.ui.StudioTextField]). Returns the AI's raw text so it can be inserted into
+     * the field.
+     */
+    suspend fun generateText(messages: List<AiChatMessage>, movieTitle: String = ""): String =
+        generateChatText("/api/generate/text", messages, movieTitle)
+
     /** Shared POST for the conversational text-generation endpoints (lyrics, theme, ...). */
     private suspend fun generateChatText(path: String, messages: List<AiChatMessage>, movieTitle: String): String {
         val body = buildJsonObject {

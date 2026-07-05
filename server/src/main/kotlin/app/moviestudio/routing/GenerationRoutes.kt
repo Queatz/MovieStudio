@@ -140,6 +140,23 @@ fun Route.generationRoutes() {
             }
         }
 
+        // Generic writing assistant backing the app-wide AI assist (Alt+Enter in any studio text
+        // field). Writes whatever text the user asked for so it can be inserted into the field.
+        post("/text") {
+            try {
+                val request = call.receive<GenerateTextRequest>()
+                val text = AIGenerationService.generateChat(
+                    system = "You are a helpful writing assistant embedded in a movie studio app. " +
+                        "Given the user's request, write the exact text they want inserted into a " +
+                        "text field. Respond with only that text, no commentary or surrounding quotes.",
+                    messages = request.chatMessages("Write text for the movie \"${request.movieTitle}\"")
+                )
+                call.respond(GeneratedTextResponse(text))
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+
         // Suggests a musical theme/style description (AI-generate icon button).
         post("/theme") {
             try {

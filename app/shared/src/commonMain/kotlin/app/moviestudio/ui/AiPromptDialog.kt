@@ -154,7 +154,10 @@ fun AiPromptDialog(
                         maxLines = 6,
                         enabled = !loading,
                         onSubmit = { send(prompt) { restored -> prompt = restored } },
-                        onDismiss = onDismiss
+                        onDismiss = onDismiss,
+                        // This field lives *inside* the AI dialog; disable its own Alt+Enter assist
+                        // so it can't recursively open another AI prompt dialog.
+                        aiGenerate = null
                     )
                 } else {
                     // Conversation stage: the transcript so far, newest message last. Bounded to a max
@@ -217,6 +220,8 @@ fun AiPromptDialog(
                             followUp = ""
                         },
                         onDismiss = onDismiss,
+                        // Inside the AI dialog already: no nested Alt+Enter assist.
+                        aiGenerate = null,
                         trailingIcon = {
                             RoundIconButton(
                                 "➤",
