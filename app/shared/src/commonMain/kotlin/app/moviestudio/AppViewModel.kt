@@ -39,11 +39,11 @@ class AppViewModel : ViewModel() {
     // ------------------------------------------------------------------------------ navigation
     var currentScreen by mutableStateOf(Screen.DASHBOARD)
         private set
-    var movies by mutableStateOf<List<Film>>(emptyList())
+    var movies by mutableStateOf<List<Movie>>(emptyList())
         private set
-    var currentMovie by mutableStateOf<Film?>(null)
+    var currentMovie by mutableStateOf<Movie?>(null)
         private set
-    var timeline by mutableStateOf<FilmTimeline?>(null)
+    var timeline by mutableStateOf<MovieTimeline?>(null)
         private set
     var isLoading by mutableStateOf(false)
         private set
@@ -158,11 +158,11 @@ class AppViewModel : ViewModel() {
         viewModelScope.launch {
             isLoading = true
             try {
-                val movie = Film(
+                val movie = Movie(
                     id = generateId(),
                     title = title.ifBlank { "Untitled Movie" },
                     totalDuration = 0.0,
-                    status = FilmStatus.DRAFT,
+                    status = MovieStatus.DRAFT,
                     createdAt = 0, // stamped by the server
                     aspectRatio = aspectRatio
                 )
@@ -183,7 +183,7 @@ class AppViewModel : ViewModel() {
         }
     }
 
-    fun deleteMovie(movie: Film) {
+    fun deleteMovie(movie: Movie) {
         viewModelScope.launch {
             try {
                 NetworkService.deleteMovie(movie.id)
@@ -194,7 +194,7 @@ class AppViewModel : ViewModel() {
         }
     }
 
-    fun openMovie(movie: Film) {
+    fun openMovie(movie: Movie) {
         currentMovie = movie
         currentScreen = Screen.EDITOR
         playhead = 0f
@@ -222,7 +222,7 @@ class AppViewModel : ViewModel() {
     }
 
     /** Persists movie metadata changes (title, status, aspect ratio). */
-    fun updateMovie(updated: Film) {
+    fun updateMovie(updated: Movie) {
         viewModelScope.launch {
             try {
                 val saved = NetworkService.updateMovie(updated)

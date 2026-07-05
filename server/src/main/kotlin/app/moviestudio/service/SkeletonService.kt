@@ -3,7 +3,7 @@ package app.moviestudio.service
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.Clip
-import app.moviestudio.FilmTimeline
+import app.moviestudio.MovieTimeline
 import app.moviestudio.Job
 import app.moviestudio.JobStatus
 import app.moviestudio.Track
@@ -131,7 +131,7 @@ object SkeletonService {
         logger.info("Skeleton job ${job.id} completed with $created items")
     }
 
-    private fun buildUserPrompt(payload: SkeletonPayload, timeline: FilmTimeline): String {
+    private fun buildUserPrompt(payload: SkeletonPayload, timeline: MovieTimeline): String {
         val sb = StringBuilder()
         sb.appendLine("Movie: \"${timeline.movie.title}\" (aspect ${timeline.movie.aspectRatio}).")
         sb.appendLine("Current movie duration: ${timeline.movie.totalDuration} seconds.")

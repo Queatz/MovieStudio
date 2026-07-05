@@ -1,7 +1,6 @@
 package app.moviestudio
 
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.encodeToString
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -22,17 +21,17 @@ class SharedCommonTest {
     }
 
     @Test
-    fun testFilmSerialization() {
-        val film = Film(
-            id = "film-123",
+    fun testMovieSerialization() {
+        val movie = Movie(
+            id = "movie-123",
             title = "Awesome Movie",
             totalDuration = 120.5,
-            status = FilmStatus.DRAFT,
+            status = MovieStatus.DRAFT,
             createdAt = 1625292000000L
         )
-        val json = Json.encodeToString(film)
-        val decoded = Json.decodeFromString<Film>(json)
-        assertEquals(film, decoded)
+        val json = Json.encodeToString(movie)
+        val decoded = Json.decodeFromString<Movie>(json)
+        assertEquals(movie, decoded)
     }
 
     @Test

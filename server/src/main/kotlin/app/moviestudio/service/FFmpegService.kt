@@ -3,7 +3,7 @@ package app.moviestudio.service
 import app.moviestudio.*
 import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.ClipRepository
-import app.moviestudio.database.FilmRepository
+import app.moviestudio.database.MovieRepository
 import app.moviestudio.database.JobRepository
 import app.moviestudio.database.RenderRepository
 import app.moviestudio.database.TrackRepository
@@ -46,7 +46,7 @@ object FFmpegService {
         logger.info("Created temporary scratch directory: ${tempDir.absolutePath}")
 
         try {
-            val film = FilmRepository.getById(job.movieId) ?: throw Exception("Movie not found: ${job.movieId}")
+            val movie = MovieRepository.getById(job.movieId) ?: throw Exception("Movie not found: ${job.movieId}")
             val tracks = TrackRepository.queryByMovieId(job.movieId)
             val trackIds = tracks.map { it.id }
             val clips = if (trackIds.isNotEmpty()) ClipRepository.queryByTrackIds(trackIds) else emptyList()
@@ -80,10 +80,10 @@ object FFmpegService {
             onProgress(20, "Compiling timeline and filters...")
 
             var totalDuration = clips.maxOfOrNull { (it.timelineStart + (it.trimOut - it.trimIn)).toDouble() } ?: 0.0
-            if (totalDuration <= 0) totalDuration = film.totalDuration
+            if (totalDuration <= 0) totalDuration = movie.totalDuration
             if (totalDuration <= 0) totalDuration = 10.0
 
-            val (canvasWidth, canvasHeight) = resolutionForAspectRatio(film.aspectRatio)
+            val (canvasWidth, canvasHeight) = resolutionForAspectRatio(movie.aspectRatio)
 
             val args = mutableListOf<String>()
             args.add(MediaUtil.ffmpegBinary)
@@ -420,15 +420,15 @@ object FFmpegService {
                     movieId = job.movieId,
                     url = uploadedUrl,
                     durationSeconds = totalDuration,
-                    aspectRatio = film.aspectRatio,
+                    aspectRatio = movie.aspectRatio,
                     createdAt = System.currentTimeMillis()
                 )
             )
 
             // The movie leaves RENDERING once the render finishes.
-            FilmRepository.getById(job.movieId)?.let { current ->
-                if (current.status == FilmStatus.RENDERING) {
-                    FilmRepository.update(current.copy(status = FilmStatus.COMPLETED))
+            MovieRepository.getById(job.movieId)?.let { current ->
+                if (current.status == MovieStatus.RENDERING) {
+                    MovieRepository.update(current.copy(status = MovieStatus.COMPLETED))
                 }
             }
 

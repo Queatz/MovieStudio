@@ -7,7 +7,7 @@ import kotlinx.serialization.json.Json
  * Lifecycle status of a movie. Users can move a movie between these statuses at any time
  * (RENDERING is also set automatically while a final render job is running).
  */
-enum class FilmStatus {
+enum class MovieStatus {
     DRAFT,
     IN_PRODUCTION,
     RENDERING,
@@ -17,22 +17,22 @@ enum class FilmStatus {
 }
 
 /** Human-readable label for a movie status (user-facing copy always says "Movie"). */
-fun FilmStatus.displayName(): String = when (this) {
-    FilmStatus.DRAFT -> "Draft"
-    FilmStatus.IN_PRODUCTION -> "In production"
-    FilmStatus.RENDERING -> "Rendering"
-    FilmStatus.REVIEW -> "In review"
-    FilmStatus.COMPLETED -> "Completed"
-    FilmStatus.ARCHIVED -> "Archived"
+fun MovieStatus.displayName(): String = when (this) {
+    MovieStatus.DRAFT -> "Draft"
+    MovieStatus.IN_PRODUCTION -> "In production"
+    MovieStatus.RENDERING -> "Rendering"
+    MovieStatus.REVIEW -> "In review"
+    MovieStatus.COMPLETED -> "Completed"
+    MovieStatus.ARCHIVED -> "Archived"
 }
 
 @Serializable
-data class Film(
+data class Movie(
     val id: String,
     val title: String,
     // Auto-calculated from the media placed on the timeline; movies have no pre-set length.
     val totalDuration: Double,
-    val status: FilmStatus,
+    val status: MovieStatus,
     val createdAt: Long,
     // Aspect ratio of the movie (e.g. "16:9"). The player respects this and all media is center-crop fit.
     // Can be changed by the user at any time.
@@ -170,8 +170,8 @@ data class TrackWithClips(
 )
 
 @Serializable
-data class FilmTimeline(
-    val movie: Film,
+data class MovieTimeline(
+    val movie: Movie,
     val tracks: List<TrackWithClips>,
     // Text-only plot-builder markers pinned to timeline positions. They carry no media but
     // their pinned position still counts towards the movie's length (see [calculatedDuration]).
@@ -743,7 +743,7 @@ fun buildWordTimings(text: String, durationSeconds: Double): List<WordTiming> {
  * reaches or, when a note is pinned past the last clip, the furthest note marker. Notes have no
  * length of their own, so they contribute only their pinned position.
  */
-fun FilmTimeline.calculatedDuration(): Double {
+fun MovieTimeline.calculatedDuration(): Double {
     val clipEnd = tracks
         .flatMap { it.clips }
         .maxOfOrNull { (it.timelineStart + (it.trimOut - it.trimIn)).toDouble() }

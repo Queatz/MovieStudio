@@ -35,8 +35,16 @@ object ArangoDatabase {
             }
 
             val collections = listOf(
-                "movies", "assets", "tracks", "clips", "jobs",
-                "characters", "scenes", "voiceclones", "renders", "notes"
+                "movies",
+                "assets",
+                "tracks",
+                "clips",
+                "jobs",
+                "characters",
+                "scenes",
+                "voiceclones",
+                "renders",
+                "notes"
             )
             for (col in collections) {
                 val collection = db.collection(col)

@@ -2,7 +2,7 @@ package app.moviestudio
 
 import app.moviestudio.database.ArangoDatabase
 import app.moviestudio.database.AssetRepository
-import app.moviestudio.database.FilmRepository
+import app.moviestudio.database.MovieRepository
 import app.moviestudio.routing.UploadUrlRequest
 import app.moviestudio.routing.UploadUrlResponse
 import app.moviestudio.storage.OssService
@@ -71,44 +71,44 @@ class Phase2IntegrationTest {
     }
 
     @Test
-    fun testFilmRepository() {
+    fun testMovieRepository() {
         val movieId = UUID.randomUUID().toString()
-        val movie = Film(
+        val movie = Movie(
             id = movieId,
             title = "Test Movie Title",
             totalDuration = 180.0,
-            status = FilmStatus.DRAFT,
+            status = MovieStatus.DRAFT,
             createdAt = System.currentTimeMillis()
         )
 
         // Insert
-        val inserted = FilmRepository.insert(movie)
+        val inserted = MovieRepository.insert(movie)
         assertEquals(movie, inserted)
 
         // Get by ID
-        val retrieved = FilmRepository.getById(movieId)
+        val retrieved = MovieRepository.getById(movieId)
         assertNotNull(retrieved)
         assertEquals(movie.title, retrieved.title)
         assertEquals(movie.totalDuration, retrieved.totalDuration)
         assertEquals(movie.status, retrieved.status)
 
         // Update — movies can move between all the lifecycle statuses
-        val updatedMovie = movie.copy(title = "Updated Movie Title", status = FilmStatus.IN_PRODUCTION)
-        val updated = FilmRepository.update(updatedMovie)
+        val updatedMovie = movie.copy(title = "Updated Movie Title", status = MovieStatus.IN_PRODUCTION)
+        val updated = MovieRepository.update(updatedMovie)
         assertEquals("Updated Movie Title", updated.title)
 
-        val retrievedUpdated = FilmRepository.getById(movieId)
+        val retrievedUpdated = MovieRepository.getById(movieId)
         assertNotNull(retrievedUpdated)
         assertEquals("Updated Movie Title", retrievedUpdated.title)
-        assertEquals(FilmStatus.IN_PRODUCTION, retrievedUpdated.status)
+        assertEquals(MovieStatus.IN_PRODUCTION, retrievedUpdated.status)
 
         // List
-        val allMovies = FilmRepository.listAll()
+        val allMovies = MovieRepository.listAll()
         assertTrue(allMovies.any { it.id == movieId })
 
         // Delete
-        FilmRepository.delete(movieId)
-        assertNull(FilmRepository.getById(movieId))
+        MovieRepository.delete(movieId)
+        assertNull(MovieRepository.getById(movieId))
     }
 
     @Test
@@ -171,33 +171,33 @@ class Phase2IntegrationTest {
         }
 
         val movieId = UUID.randomUUID().toString()
-        val movie = Film(
+        val movie = Movie(
             id = movieId,
             title = "Ktor Test Movie",
             totalDuration = 240.0,
-            status = FilmStatus.DRAFT,
+            status = MovieStatus.DRAFT,
             createdAt = System.currentTimeMillis()
         )
 
         // 1. Create Movie
         val postResponse = client.post("/api/movies") {
             contentType(ContentType.Application.Json)
-            setBody(json.encodeToString(Film.serializer(), movie))
+            setBody(json.encodeToString(Movie.serializer(), movie))
         }
         assertEquals(HttpStatusCode.Created, postResponse.status)
-        val createdMovie = json.decodeFromString(Film.serializer(), postResponse.bodyAsText())
+        val createdMovie = json.decodeFromString(Movie.serializer(), postResponse.bodyAsText())
         assertEquals(movieId, createdMovie.id)
 
         // 2. Get Single Movie
         val getResponse = client.get("/api/movies/$movieId")
         assertEquals(HttpStatusCode.OK, getResponse.status)
-        val retrievedMovie = json.decodeFromString(Film.serializer(), getResponse.bodyAsText())
+        val retrievedMovie = json.decodeFromString(Movie.serializer(), getResponse.bodyAsText())
         assertEquals("Ktor Test Movie", retrievedMovie.title)
 
         // 3. List All Movies
         val listResponse = client.get("/api/movies")
         assertEquals(HttpStatusCode.OK, listResponse.status)
-        val moviesList = json.decodeFromString<List<Film>>(listResponse.bodyAsText())
+        val moviesList = json.decodeFromString<List<Movie>>(listResponse.bodyAsText())
         assertTrue(moviesList.any { it.id == movieId })
 
         // 4. Request Upload URL

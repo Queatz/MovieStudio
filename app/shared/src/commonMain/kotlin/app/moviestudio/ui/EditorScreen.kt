@@ -41,7 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 import app.moviestudio.AppViewModel
-import app.moviestudio.FilmStatus
+import app.moviestudio.MovieStatus
 import app.moviestudio.Job
 import app.moviestudio.JobStatus
 import app.moviestudio.JobType
@@ -243,7 +243,7 @@ private fun MovieStatusSelector(viewModel: AppViewModel) {
             StatusBadge(movie.status)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            FilmStatus.entries.forEach { status ->
+            MovieStatus.entries.forEach { status ->
                 DropdownMenuItem(
                     text = { Text(status.displayName()) },
                     onClick = {

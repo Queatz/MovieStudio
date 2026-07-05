@@ -47,30 +47,30 @@ object NetworkService {
 
     // ------------------------------------------------------------------------------- movies
 
-    suspend fun getMovies(): List<Film> {
+    suspend fun getMovies(): List<Movie> {
         val responseText = client.get(url("/api/movies"))
-        return json.decodeFromString(ListSerializer(Film.serializer()), responseText)
+        return json.decodeFromString(ListSerializer(Movie.serializer()), responseText)
     }
 
-    suspend fun createMovie(movie: Film): Film {
-        val body = json.encodeToString(Film.serializer(), movie)
+    suspend fun createMovie(movie: Movie): Movie {
+        val body = json.encodeToString(Movie.serializer(), movie)
         val responseText = client.post(url("/api/movies"), body)
-        return json.decodeFromString(Film.serializer(), responseText)
+        return json.decodeFromString(Movie.serializer(), responseText)
     }
 
-    suspend fun updateMovie(movie: Film): Film {
-        val body = json.encodeToString(Film.serializer(), movie)
+    suspend fun updateMovie(movie: Movie): Movie {
+        val body = json.encodeToString(Movie.serializer(), movie)
         val responseText = client.put(url("/api/movies/${movie.id}"), body)
-        return json.decodeFromString(Film.serializer(), responseText)
+        return json.decodeFromString(Movie.serializer(), responseText)
     }
 
     suspend fun deleteMovie(id: String) {
         client.delete(url("/api/movies/$id"))
     }
 
-    suspend fun getTimeline(movieId: String): FilmTimeline {
+    suspend fun getTimeline(movieId: String): MovieTimeline {
         val responseText = client.get(url("/api/movies/$movieId/timeline"))
-        return json.decodeFromString(FilmTimeline.serializer(), responseText)
+        return json.decodeFromString(MovieTimeline.serializer(), responseText)
     }
 
     suspend fun createTrack(movieId: String, track: Track): Track {

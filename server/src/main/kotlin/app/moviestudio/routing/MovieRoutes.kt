@@ -1,22 +1,21 @@
 package app.moviestudio.routing
 
 import app.moviestudio.Clip
-import app.moviestudio.Film
-import app.moviestudio.FilmStatus
+import app.moviestudio.Movie
+import app.moviestudio.MovieStatus
 import app.moviestudio.Job
 import app.moviestudio.JobStatus
 import app.moviestudio.JobType
 import app.moviestudio.TimelineNote
 import app.moviestudio.Track
 import app.moviestudio.database.ClipRepository
-import app.moviestudio.database.FilmRepository
+import app.moviestudio.database.MovieRepository
 import app.moviestudio.database.JobRepository
 import app.moviestudio.database.NoteRepository
 import app.moviestudio.database.RenderRepository
 import app.moviestudio.database.TrackRepository
 import app.moviestudio.service.TimelineService
 import io.ktor.http.*
-import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
@@ -30,7 +29,7 @@ fun Route.movieRoutes() {
     route("/api/movies") {
         get {
             try {
-                val movies = FilmRepository.listAll()
+                val movies = MovieRepository.listAll()
                 call.respond(movies)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
@@ -39,7 +38,7 @@ fun Route.movieRoutes() {
         get("/{id}") {
             try {
                 val id = call.parameters["id"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
-                val movie = FilmRepository.getById(id) ?: return@get call.respond(HttpStatusCode.NotFound, "Movie not found")
+                val movie = MovieRepository.getById(id) ?: return@get call.respond(HttpStatusCode.NotFound, "Movie not found")
                 call.respond(movie)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
@@ -47,9 +46,9 @@ fun Route.movieRoutes() {
         }
         post {
             try {
-                val movie = call.receive<Film>()
+                val movie = call.receive<Movie>()
                 val stamped = if (movie.createdAt == 0L) movie.copy(createdAt = System.currentTimeMillis()) else movie
-                val saved = FilmRepository.insert(stamped)
+                val saved = MovieRepository.insert(stamped)
                 call.respond(HttpStatusCode.Created, saved)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
@@ -58,9 +57,9 @@ fun Route.movieRoutes() {
         put("/{id}") {
             try {
                 val id = call.parameters["id"] ?: return@put call.respond(HttpStatusCode.BadRequest, "Missing id")
-                val movie = call.receive<Film>()
+                val movie = call.receive<Movie>()
                 val movieWithId = if (movie.id != id) movie.copy(id = id) else movie
-                val updated = FilmRepository.update(movieWithId)
+                val updated = MovieRepository.update(movieWithId)
                 call.respond(HttpStatusCode.OK, updated)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
@@ -75,7 +74,7 @@ fun Route.movieRoutes() {
                     TrackRepository.delete(track.id)
                 }
                 NoteRepository.deleteByMovieId(id)
-                FilmRepository.delete(id)
+                MovieRepository.delete(id)
                 call.respond(HttpStatusCode.OK, mapOf("deleted" to true))
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
@@ -236,7 +235,7 @@ fun Route.movieRoutes() {
         post("/{movieId}/skeleton") {
             try {
                 val movieId = call.parameters["movieId"] ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing movieId")
-                FilmRepository.getById(movieId) ?: return@post call.respond(HttpStatusCode.NotFound, "Movie not found")
+                MovieRepository.getById(movieId) ?: return@post call.respond(HttpStatusCode.NotFound, "Movie not found")
                 val request = call.receive<SkeletonRequest>()
                 if (request.prompt.isBlank()) {
                     return@post call.respond(HttpStatusCode.BadRequest, "Prompt must not be blank")
@@ -263,7 +262,7 @@ fun Route.movieRoutes() {
         post("/{movieId}/render") {
             try {
                 val movieId = call.parameters["movieId"] ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing movieId")
-                val movie = FilmRepository.getById(movieId) ?: return@post call.respond(HttpStatusCode.NotFound, "Movie not found")
+                val movie = MovieRepository.getById(movieId) ?: return@post call.respond(HttpStatusCode.NotFound, "Movie not found")
                 val timeline = TimelineService.assemble(movieId)
                 if (timeline == null || timeline.tracks.all { it.clips.isEmpty() }) {
                     return@post call.respond(HttpStatusCode.BadRequest, "The timeline is empty — add media before rendering")
@@ -279,7 +278,7 @@ fun Route.movieRoutes() {
                     createdAt = System.currentTimeMillis()
                 )
                 JobRepository.insert(job)
-                FilmRepository.update(movie.copy(status = FilmStatus.RENDERING))
+                MovieRepository.update(movie.copy(status = MovieStatus.RENDERING))
                 call.respond(HttpStatusCode.Accepted, job)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")

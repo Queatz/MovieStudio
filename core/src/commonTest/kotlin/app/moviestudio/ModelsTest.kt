@@ -90,9 +90,9 @@ class ModelsTest {
 
     @Test
     fun calculatedDurationIsFurthestClipEnd() {
-        val movie = Film("m1", "T", 0.0, FilmStatus.DRAFT, 0)
+        val movie = Movie("m1", "T", 0.0, MovieStatus.DRAFT, 0)
         val track = Track("t1", "m1", TrackType.VIDEO, 0)
-        val timeline = FilmTimeline(
+        val timeline = MovieTimeline(
             movie = movie,
             tracks = listOf(
                 TrackWithClips(
@@ -105,19 +105,19 @@ class ModelsTest {
             )
         )
         assertEquals(13.0, timeline.calculatedDuration(), 0.001)
-        assertEquals(0.0, FilmTimeline(movie, emptyList()).calculatedDuration())
+        assertEquals(0.0, MovieTimeline(movie, emptyList()).calculatedDuration())
     }
 
     @Test
     fun calculatedDurationCountsNotesPinnedPastTheLastClip() {
-        val movie = Film("m1", "T", 0.0, FilmStatus.DRAFT, 0)
+        val movie = Movie("m1", "T", 0.0, MovieStatus.DRAFT, 0)
         val track = Track("t1", "m1", TrackType.VIDEO, 0)
         val tracks = listOf(
             TrackWithClips(track, listOf(Clip("c1", "t1", "a1", 0f, 0f, 5f, "{}"))) // ends at 5
         )
 
         // A note pinned past the last clip extends the timeline length to the note's position.
-        val withLateNote = FilmTimeline(
+        val withLateNote = MovieTimeline(
             movie = movie,
             tracks = tracks,
             notes = listOf(TimelineNote("n1", "m1", atSeconds = 12.0, text = "climax"))
@@ -125,7 +125,7 @@ class ModelsTest {
         assertEquals(12.0, withLateNote.calculatedDuration(), 0.001)
 
         // A note before the last clip does not shorten the timeline (clips still win).
-        val withEarlyNote = FilmTimeline(
+        val withEarlyNote = MovieTimeline(
             movie = movie,
             tracks = tracks,
             notes = listOf(TimelineNote("n2", "m1", atSeconds = 2.0, text = "setup"))
@@ -133,7 +133,7 @@ class ModelsTest {
         assertEquals(5.0, withEarlyNote.calculatedDuration(), 0.001)
 
         // Notes drive the length even when there are no clips at all.
-        val notesOnly = FilmTimeline(
+        val notesOnly = MovieTimeline(
             movie = movie,
             tracks = emptyList(),
             notes = listOf(TimelineNote("n3", "m1", atSeconds = 8.0, text = "outline"))
@@ -180,8 +180,8 @@ class ModelsTest {
     @Test
     fun movieStatusesCoverTheProductionLifecycle() {
         // The user can move a movie from DRAFT into several other statuses.
-        val names = FilmStatus.entries.map { it.name }
+        val names = MovieStatus.entries.map { it.name }
         assertTrue(names.containsAll(listOf("DRAFT", "IN_PRODUCTION", "RENDERING", "REVIEW", "COMPLETED", "ARCHIVED")))
-        assertEquals("In production", FilmStatus.IN_PRODUCTION.displayName())
+        assertEquals("In production", MovieStatus.IN_PRODUCTION.displayName())
     }
 }

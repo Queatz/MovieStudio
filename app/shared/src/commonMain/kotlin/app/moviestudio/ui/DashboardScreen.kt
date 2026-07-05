@@ -22,7 +22,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,8 +29,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -39,8 +36,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import app.moviestudio.AppViewModel
-import app.moviestudio.Film
-import app.moviestudio.FilmStatus
+import app.moviestudio.Movie
+import app.moviestudio.MovieStatus
 import app.moviestudio.SUPPORTED_ASPECT_RATIOS
 import app.moviestudio.displayName
 
@@ -131,7 +128,7 @@ fun DashboardScreen(viewModel: AppViewModel) {
 }
 
 @Composable
-private fun MovieCard(movie: Film, onOpen: () -> Unit, onDelete: () -> Unit) {
+private fun MovieCard(movie: Movie, onOpen: () -> Unit, onDelete: () -> Unit) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier
@@ -199,14 +196,14 @@ private fun MovieCard(movie: Film, onOpen: () -> Unit, onDelete: () -> Unit) {
 }
 
 @Composable
-fun StatusBadge(status: FilmStatus, modifier: Modifier = Modifier) {
+fun StatusBadge(status: MovieStatus, modifier: Modifier = Modifier) {
     val (bg, fg) = when (status) {
-        FilmStatus.DRAFT -> Color(0xFF6B6B78) to Color.White
-        FilmStatus.IN_PRODUCTION -> Color(0xFF2E7BE9) to Color.White
-        FilmStatus.RENDERING -> Color(0xFFF2A33C) to Color(0xFF3A2A00)
-        FilmStatus.REVIEW -> Color(0xFF9C6ADE) to Color.White
-        FilmStatus.COMPLETED -> Color(0xFF34A853) to Color.White
-        FilmStatus.ARCHIVED -> Color(0xFF44414D) to Color(0xFFCBC7D4)
+        MovieStatus.DRAFT -> Color(0xFF6B6B78) to Color.White
+        MovieStatus.IN_PRODUCTION -> Color(0xFF2E7BE9) to Color.White
+        MovieStatus.RENDERING -> Color(0xFFF2A33C) to Color(0xFF3A2A00)
+        MovieStatus.REVIEW -> Color(0xFF9C6ADE) to Color.White
+        MovieStatus.COMPLETED -> Color(0xFF34A853) to Color.White
+        MovieStatus.ARCHIVED -> Color(0xFF44414D) to Color(0xFFCBC7D4)
     }
     Box(
         modifier = modifier

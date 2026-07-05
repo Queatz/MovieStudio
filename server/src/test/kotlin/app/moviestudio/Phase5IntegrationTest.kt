@@ -76,8 +76,8 @@ class Phase5IntegrationTest {
 
         // Movie with one existing empty video track.
         val movieId = UUID.randomUUID().toString()
-        FilmRepository.insert(
-            Film(movieId, "Skeleton Movie", 0.0, FilmStatus.DRAFT, System.currentTimeMillis())
+        MovieRepository.insert(
+            Movie(movieId, "Skeleton Movie", 0.0, MovieStatus.DRAFT, System.currentTimeMillis())
         )
         TrackRepository.insert(Track(UUID.randomUUID().toString(), movieId, TrackType.VIDEO, 0))
 
@@ -119,7 +119,7 @@ class Phase5IntegrationTest {
         assertTrue(clips.any { it.timelineStart >= 3.0f - 0.001f })
 
         // The movie's duration was refreshed from the new clips.
-        val movie = FilmRepository.getById(movieId)
+        val movie = MovieRepository.getById(movieId)
         assertNotNull(movie)
         assertTrue(movie.totalDuration > 0.0)
     }
@@ -337,8 +337,8 @@ class Phase5IntegrationTest {
         }
 
         val movieId = UUID.randomUUID().toString()
-        FilmRepository.insert(
-            Film(movieId, "Render History Movie", 3.0, FilmStatus.DRAFT, System.currentTimeMillis())
+        MovieRepository.insert(
+            Movie(movieId, "Render History Movie", 3.0, MovieStatus.DRAFT, System.currentTimeMillis())
         )
 
         // Rendering an empty timeline is rejected — nothing to produce.
@@ -383,7 +383,7 @@ class Phase5IntegrationTest {
         assertEquals(HttpStatusCode.Accepted, response.status)
         val job = json.decodeFromString(Job.serializer(), response.bodyAsText())
         assertEquals(JobType.FFMPEG_RENDER, job.type)
-        assertEquals(FilmStatus.RENDERING, FilmRepository.getById(movieId)?.status)
+        assertEquals(MovieStatus.RENDERING, MovieRepository.getById(movieId)?.status)
 
         clientWithWebSockets.webSocket("/api/jobs/ws?jobId=${job.id}") {
             for (frame in incoming) {
@@ -403,7 +403,7 @@ class Phase5IntegrationTest {
         assertTrue(renders[0].url.isNotBlank())
 
         // The movie left RENDERING when the render finished.
-        assertEquals(FilmStatus.COMPLETED, FilmRepository.getById(movieId)?.status)
+        assertEquals(MovieStatus.COMPLETED, MovieRepository.getById(movieId)?.status)
     }
 
     @Test

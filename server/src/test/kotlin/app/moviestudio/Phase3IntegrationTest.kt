@@ -198,18 +198,18 @@ class Phase3IntegrationTest {
         }
 
         val movieId = UUID.randomUUID().toString()
-        val movie = Film(
+        val movie = Movie(
             id = movieId,
             title = "Test Movie Phase 3",
             totalDuration = 120.0,
-            status = FilmStatus.DRAFT,
+            status = MovieStatus.DRAFT,
             createdAt = System.currentTimeMillis()
         )
 
         // Create movie
         val createMovieRes = client.post("/api/movies") {
             contentType(ContentType.Application.Json)
-            setBody(json.encodeToString(Film.serializer(), movie))
+            setBody(json.encodeToString(Movie.serializer(), movie))
         }
         assertEquals(HttpStatusCode.Created, createMovieRes.status)
 
@@ -251,7 +251,7 @@ class Phase3IntegrationTest {
         // GET Timeline
         val timelineRes = client.get("/api/movies/$movieId/timeline")
         assertEquals(HttpStatusCode.OK, timelineRes.status)
-        val timeline = json.decodeFromString(FilmTimeline.serializer(), timelineRes.bodyAsText())
+        val timeline = json.decodeFromString(MovieTimeline.serializer(), timelineRes.bodyAsText())
         assertEquals(movieId, timeline.movie.id)
         assertEquals(1, timeline.tracks.size)
         assertEquals(trackId, timeline.tracks[0].track.id)
@@ -259,7 +259,7 @@ class Phase3IntegrationTest {
         assertEquals(clipId, timeline.tracks[0].clips[0].id)
 
         // The movie's duration is auto-calculated from the clips on the timeline.
-        val movieAfterClip = json.decodeFromString(Film.serializer(), client.get("/api/movies/$movieId").bodyAsText())
+        val movieAfterClip = json.decodeFromString(Movie.serializer(), client.get("/api/movies/$movieId").bodyAsText())
         assertEquals(15.0, movieAfterClip.totalDuration, 0.001)
 
         // PUT/Update Clip
@@ -278,7 +278,7 @@ class Phase3IntegrationTest {
 
         // Verify timeline is empty of tracks
         val finalTimelineRes = client.get("/api/movies/$movieId/timeline")
-        val finalTimeline = json.decodeFromString(FilmTimeline.serializer(), finalTimelineRes.bodyAsText())
+        val finalTimeline = json.decodeFromString(MovieTimeline.serializer(), finalTimelineRes.bodyAsText())
         assertEquals(0, finalTimeline.tracks.size)
     }
 
@@ -323,14 +323,14 @@ class Phase3IntegrationTest {
         }
 
         val movieId = UUID.randomUUID().toString()
-        val movie = Film(
+        val movie = Movie(
             id = movieId,
             title = "Test Rendering Movie",
             totalDuration = 5.0,
-            status = FilmStatus.DRAFT,
+            status = MovieStatus.DRAFT,
             createdAt = System.currentTimeMillis()
         )
-        FilmRepository.insert(movie)
+        MovieRepository.insert(movie)
 
         val jobId = UUID.randomUUID().toString()
         val job = Job(

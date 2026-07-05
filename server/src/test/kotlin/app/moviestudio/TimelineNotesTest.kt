@@ -1,7 +1,7 @@
 package app.moviestudio
 
 import app.moviestudio.database.ArangoDatabase
-import app.moviestudio.database.FilmRepository
+import app.moviestudio.database.MovieRepository
 import app.moviestudio.database.NoteRepository
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -103,12 +103,12 @@ class TimelineNotesTest {
         }
 
         val movieId = UUID.randomUUID().toString()
-        FilmRepository.insert(
-            Film(
+        MovieRepository.insert(
+            Movie(
                 id = movieId,
                 title = "Notes Movie",
                 totalDuration = 0.0,
-                status = FilmStatus.DRAFT,
+                status = MovieStatus.DRAFT,
                 createdAt = System.currentTimeMillis()
             )
         )
@@ -126,7 +126,7 @@ class TimelineNotesTest {
 
         // Creating a note (past the last clip — here there are no clips) extends the movie's
         // auto-calculated length to the note's position.
-        assertEquals(7.25, FilmRepository.getById(movieId)?.totalDuration ?: -1.0, 0.0001)
+        assertEquals(7.25, MovieRepository.getById(movieId)?.totalDuration ?: -1.0, 0.0001)
 
         // 2. Blank note text is rejected
         val blankResponse = client.post("/api/movies/$movieId/notes") {
@@ -167,7 +167,7 @@ class TimelineNotesTest {
         assertEquals(9.0, updated.atSeconds, 0.0001)
 
         // Re-pinning the furthest note updates the movie's length accordingly.
-        assertEquals(9.0, FilmRepository.getById(movieId)?.totalDuration ?: -1.0, 0.0001)
+        assertEquals(9.0, MovieRepository.getById(movieId)?.totalDuration ?: -1.0, 0.0001)
 
         // 5. Delete one note
         val deleteResponse = client.delete("/api/movies/$movieId/notes/${earlier.id}")

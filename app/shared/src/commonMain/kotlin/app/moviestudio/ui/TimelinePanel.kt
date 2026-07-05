@@ -7,25 +7,20 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -61,7 +56,7 @@ import androidx.compose.ui.zIndex
 import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
 import app.moviestudio.Clip
-import app.moviestudio.FilmTimeline
+import app.moviestudio.MovieTimeline
 import app.moviestudio.TimelineNote
 import app.moviestudio.Track
 import app.moviestudio.TrackType
@@ -666,7 +661,7 @@ private fun drawRuler(
 private fun drawTracks(
     scope: DrawScope,
     textMeasurer: androidx.compose.ui.text.TextMeasurer,
-    timeline: FilmTimeline,
+    timeline: MovieTimeline,
     assets: List<Asset>,
     zoom: Float,
     scroll: Float,
