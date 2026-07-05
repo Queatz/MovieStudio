@@ -12,6 +12,9 @@ import androidx.compose.ui.Modifier
  * centered circular reveal mask, as a fraction of the distance from the center to a corner
  * (1 = fully revealed / no mask, 0 = nothing shown) — used by the circle transition. Defaults
  * render the video fully opaque, un-offset and fully revealed.
+ *
+ * [onEnded] fires once when playback reaches the end of the media, so callers can reset their own
+ * `isPlaying`/`playhead` state (e.g. to let a "Play" button restart the clip from the beginning).
  */
 @Composable
 expect fun VideoPlayer(
@@ -23,5 +26,6 @@ expect fun VideoPlayer(
     alpha: Float = 1f,
     offsetXFraction: Float = 0f,
     offsetYFraction: Float = 0f,
-    revealRadiusFraction: Float = 1f
+    revealRadiusFraction: Float = 1f,
+    onEnded: () -> Unit = {}
 )

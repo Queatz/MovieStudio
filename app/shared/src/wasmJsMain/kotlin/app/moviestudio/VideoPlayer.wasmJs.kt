@@ -11,7 +11,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 
 @JsFun("""
-(onTimeUpdate) => {
+(onTimeUpdate, onEnded) => {
     let video = document.getElementById('compose-video-preview');
     if (!video) {
         video = document.createElement('video');
@@ -35,9 +35,12 @@ import androidx.compose.ui.platform.LocalDensity
     video.ontimeupdate = () => {
         onTimeUpdate(video.currentTime);
     };
+    video.onended = () => {
+        onEnded();
+    };
 }
 """)
-private external fun jsSetupVideoCallback(onTimeUpdate: (Double) -> Unit)
+private external fun jsSetupVideoCallback(onTimeUpdate: (Double) -> Unit, onEnded: () -> Unit)
 
 @JsFun("""
 (url, isPlaying, playhead) => {
@@ -137,12 +140,14 @@ actual fun VideoPlayer(
     alpha: Float,
     offsetXFraction: Float,
     offsetYFraction: Float,
-    revealRadiusFraction: Float
+    revealRadiusFraction: Float,
+    onEnded: () -> Unit
 ) {
     LaunchedEffect(Unit) {
-        jsSetupVideoCallback { sec ->
-            onTimeUpdate(sec.toFloat())
-        }
+        jsSetupVideoCallback(
+            { sec -> onTimeUpdate(sec.toFloat()) },
+            { onEnded() }
+        )
     }
 
     // Update video state (src / play / pause / seek) when they change. This must NOT hide the

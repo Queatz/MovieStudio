@@ -20,7 +20,8 @@ actual fun VideoPlayer(
     alpha: Float,
     offsetXFraction: Float,
     offsetYFraction: Float,
-    revealRadiusFraction: Float
+    revealRadiusFraction: Float,
+    onEnded: () -> Unit
 ) {
     Box(
         modifier = modifier

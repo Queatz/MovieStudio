@@ -654,7 +654,13 @@ fun VideoPreview(
                 isPlaying = playing,
                 playhead = playhead,
                 onTimeUpdate = { playhead = it },
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                // Reset to the start on natural end so the button reads "Play" again and the next
+                // tap restarts the clip instead of trying to resume from (and re-triggering) the end.
+                onEnded = {
+                    playing = false
+                    playhead = 0f
+                }
             )
         }
         Spacer(Modifier.height(6.dp))

@@ -20,11 +20,12 @@ actual fun VideoPlayer(
     alpha: Float,
     offsetXFraction: Float,
     offsetYFraction: Float,
-    revealRadiusFraction: Float
+    revealRadiusFraction: Float,
+    onEnded: () -> Unit
 ) {
     LaunchedEffect(Unit) {
         val setupCallback = js("""
-            function(onTimeUpdate) {
+            function(onTimeUpdate, onEnded) {
                 let video = document.getElementById('compose-video-preview');
                 if (!video) {
                     video = document.createElement('video');
@@ -48,9 +49,12 @@ actual fun VideoPlayer(
                 video.ontimeupdate = function() {
                     onTimeUpdate(video.currentTime);
                 };
+                video.onended = function() {
+                    onEnded();
+                };
             }
         """)
-        setupCallback(onTimeUpdate)
+        setupCallback(onTimeUpdate, onEnded)
     }
 
     // Update video state (src / play / pause / seek) when they change. This must NOT hide the
