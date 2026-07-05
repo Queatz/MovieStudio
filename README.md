@@ -80,7 +80,7 @@ Recognized variables:
 | `QWEN_VIDEO_MODEL_T2V` | WAN text-to-video model (default `wan2.7-t2v`). |
 | `QWEN_VIDEO_MODEL_I2V` | WAN image-to-video model (default `wan2.7-i2v`). |
 | `QWEN_VIDEO_MODEL_R2V` | WAN reference-to-video model (default `wan2.7-r2v`). |
-| `QWEN_IMAGE_MODEL` | Text-to-image model (default `wanx2.1-t2i-turbo`). |
+| `QWEN_IMAGE_MODEL` | Text-to-image model (default `qwen-image-max`). |
 | `QWEN_MUSIC_MODEL` | Music generation model (default `fun-music-v1`). |
 | `QWEN_AUDIO_MODEL` | Sound-effect model (text-to-audio and video-driven, default `fun-audiogen-v1`). |
 | `QWEN_TTS_MODEL` | Text-to-speech model (default `qwen-tts`). |

@@ -479,6 +479,7 @@ private fun TipCard(tip: Tip, onToggleRead: () -> Unit, onEdit: () -> Unit) {
                 modifier = Modifier.weight(1f)
             )
             if (tip.read) {
+                Spacer(Modifier.width(8.dp))
                 Text(
                     "✓ Read",
                     style = MaterialTheme.typography.labelSmall,

@@ -2,6 +2,7 @@ package app.moviestudio.service
 
 import app.moviestudio.AiChatMessage
 import app.moviestudio.AiChatRole
+import app.moviestudio.AiLedgerEntry
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.GenerationSetup
@@ -83,10 +84,18 @@ object QwenAIService : AIGenerationService {
     override suspend fun generateText(system: String, user: String): String =
         generateChat(system, listOf(AiChatMessage(role = AiChatRole.USER, content = user)))
 
-    override suspend fun generateChat(system: String, messages: List<AiChatMessage>): String {
+    override suspend fun generateChat(system: String, messages: List<AiChatMessage>): String =
+        chatCompletion(system, messages).first
+
+    /**
+     * Runs a chat completion, returning the response text plus the raw response JSON so callers
+     * that bill the call to an asset's cost ledger can read its `usage` token counts. Offline mode
+     * returns a deterministic canned response with no usage (null).
+     */
+    private suspend fun chatCompletion(system: String, messages: List<AiChatMessage>): Pair<String, JsonObject?> {
         // Graceful degradation: without Model Studio credentials, answer offline with
         // deterministic canned responses so planning/lyrics/themes keep working in dev.
-        if (!QwenConfig.isConfigured) return offlineGenerateText(system, foldChatIntoPrompt(messages))
+        if (!QwenConfig.isConfigured) return offlineGenerateText(system, foldChatIntoPrompt(messages)) to null
         val body = buildJsonObject {
             put("model", QwenConfig.chatModel)
             put("messages", buildJsonArray {
@@ -110,21 +119,59 @@ object QwenAIService : AIGenerationService {
         if (content.isNullOrBlank()) {
             throw IllegalStateException("Qwen chat returned an empty response")
         }
-        return content.trim()
+        return content.trim() to response
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // AI-cost ledger: capturing token usage from Model Studio responses
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Total tokens reported in a Model Studio / OpenAI-compatible response's top-level `usage`
+     * block, accepting the `total_tokens` shortcut or the `input`/`output` (a.k.a.
+     * `prompt`/`completion`) split. Returns null when the response carries no token usage.
+     */
+    private fun parseUsageTokens(response: JsonObject): Long? {
+        val usage = response["usage"]?.jsonObject ?: return null
+        fun tokenCount(key: String): Long? =
+            usage[key]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()?.toLong()
+        tokenCount("total_tokens")?.let { return it }
+        val input = tokenCount("input_tokens") ?: tokenCount("prompt_tokens")
+        val output = tokenCount("output_tokens") ?: tokenCount("completion_tokens")
+        return if (input != null || output != null) (input ?: 0L) + (output ?: 0L) else null
+    }
+
+    /**
+     * Appends a ledger entry recording an AI [model] call to this per-job ledger, resolving the
+     * call's token usage from [response] and its per-token price from [QwenConfig]. Every AI call
+     * connected to an asset is recorded, even ones the API bills by other units (0 tokens).
+     */
+    private fun MutableList<AiLedgerEntry>.recordCall(description: String, model: String, response: JsonObject) {
+        add(
+            AiLedgerEntry(
+                description = description,
+                model = model,
+                tokens = parseUsageTokens(response) ?: 0L,
+                costPerToken = QwenConfig.usdPerToken(model),
+                createdAt = System.currentTimeMillis()
+            )
+        )
     }
 
     /**
      * Best-effort prompt enrichment via the OpenAI-compatible Qwen chat endpoint.
      * Returns the original prompt if the call fails so generation can still proceed.
      */
-    private suspend fun refinePrompt(prompt: String, mediaKind: String): String {
+    private suspend fun refinePrompt(prompt: String, mediaKind: String, ledger: MutableList<AiLedgerEntry>): String {
         if (prompt.isBlank()) return prompt
         return try {
-            generateText(
+            val (refined, response) = chatCompletion(
                 system = "You expand short prompts into a single vivid, concise $mediaKind generation prompt. " +
                     "Respond with only the improved prompt, no preamble.",
-                user = prompt
+                messages = listOf(AiChatMessage(role = AiChatRole.USER, content = prompt))
             )
+            response?.let { ledger.recordCall("Refined $mediaKind prompt", QwenConfig.chatModel, it) }
+            refined
         } catch (e: Exception) {
             logger.warn("Prompt refinement failed, using original prompt: ${e.message}")
             prompt
@@ -187,20 +234,22 @@ object QwenAIService : AIGenerationService {
         onProgress(8, "Parsing generation request...")
         val payload = GenerationCommon.parsePayload(job.payload)
         val setup = payload.setup
+        // Every AI call this job makes is recorded here and folded into the asset's cost ledger.
+        val ledger = mutableListOf<AiLedgerEntry>()
 
         when (setup.kind) {
-            "music" -> executeMusic(job, payload, onProgress)
-            "tts" -> executeTts(job, payload, onProgress)
-            "sfx" -> executeSoundEffect(job, payload, onProgress)
-            "extract-audio" -> executeExtractAudio(job, payload, onProgress)
-            "image" -> executeImage(job, payload, onProgress)
-            else -> executeVideo(job, payload, onProgress)
+            "music" -> executeMusic(job, payload, ledger, onProgress)
+            "tts" -> executeTts(job, payload, ledger, onProgress)
+            "sfx" -> executeSoundEffect(job, payload, ledger, onProgress)
+            "extract-audio" -> executeExtractAudio(job, payload, ledger, onProgress)
+            "image" -> executeImage(job, payload, ledger, onProgress)
+            else -> executeVideo(job, payload, ledger, onProgress)
         }
         onProgress(100, "Generation completed")
     }
 
     /** WAN 2.7 video generation: model picked predictably by the setup (T2V / I2V / R2V / video-edit). */
-    private suspend fun executeVideo(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+    private suspend fun executeVideo(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val modelKind = setup.resolveVideoModelKind()
         val model = when (modelKind) {
@@ -211,7 +260,7 @@ object QwenAIService : AIGenerationService {
         }
 
         onProgress(12, "Refining prompt with Qwen...")
-        val refinedPrompt = refinePrompt(setup.prompt, "video")
+        val refinedPrompt = refinePrompt(setup.prompt, "video", ledger)
 
         onProgress(20, "Submitting $modelKind task ($model)...")
         val requestBody = buildJsonObject {
@@ -248,11 +297,14 @@ object QwenAIService : AIGenerationService {
             submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/video-generation/video-synthesis",
             requestBody = requestBody,
             mediaUrlKeys = listOf("video_url", "url"),
+            ledger = ledger,
+            ledgerModel = model,
+            ledgerDescription = "Generated video ($model)",
         ) { pct -> onProgress((20 + pct * 0.6).toInt().coerceIn(20, 80), "Generating video... $pct%") }
 
         onProgress(85, "Uploading generated video to Alibaba OSS...")
         val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "video", "mp4", setup.durationSeconds.takeIf { it > 0 } ?: 5.0)
-        GenerationCommon.finalize(job, payload, ossUrl, duration)
+        GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
     }
 
     /**
@@ -260,9 +312,10 @@ object QwenAIService : AIGenerationService {
      * ([app.moviestudio.GenerationSetup.imageUrl]) the image-edit (image-to-image) model is used
      * instead, repainting the base image according to the prompt (repose, restyle, etc.).
      */
-    private suspend fun executeImage(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+    private suspend fun executeImage(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val baseImageUrl = setup.imageUrl?.takeIf { it.isNotBlank() }
+        val model = if (baseImageUrl != null) QwenConfig.imageEditModel else QwenConfig.imageModel
         val (submitUrl, requestBody) = if (baseImageUrl != null) {
             onProgress(15, "Submitting image edit task (${QwenConfig.imageEditModel})...")
             "${QwenConfig.dashScopeBaseUrl}/services/aigc/image2image/image-synthesis" to buildJsonObject {
@@ -295,12 +348,15 @@ object QwenAIService : AIGenerationService {
             submitUrl = submitUrl,
             requestBody = requestBody,
             mediaUrlKeys = listOf("url", "img_url"),
+            ledger = ledger,
+            ledgerModel = model,
+            ledgerDescription = "Generated image ($model)",
         ) { pct -> onProgress((20 + pct * 0.6).toInt().coerceIn(20, 80), "Generating image... $pct%") }
 
         onProgress(85, "Uploading generated image to Alibaba OSS...")
         val extension = mediaUrl.substringBefore('?').substringAfterLast('.', "png").take(4)
         val (ossUrl, _) = rehost(mediaUrl, job.movieId, "image", extension, 5.0)
-        GenerationCommon.finalize(job, payload, ossUrl, 5.0)
+        GenerationCommon.finalize(job, payload, ossUrl, 5.0, ledgerEntries = ledger)
     }
 
     /**
@@ -308,7 +364,7 @@ object QwenAIService : AIGenerationService {
      * prompt, optional full lyrics and an instrumental switch, returning a 24h OSS URL that we
      * immediately re-host on our own bucket.
      */
-    private suspend fun executeMusic(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+    private suspend fun executeMusic(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         onProgress(20, "Composing music with ${QwenConfig.musicModel}...")
         val requestBody = buildJsonObject {
@@ -329,10 +385,11 @@ object QwenAIService : AIGenerationService {
         val audio = response["output"]?.jsonObject?.get("audio")?.jsonObject
         val mediaUrl = audio?.get("url")?.jsonPrimitive?.contentOrNull
             ?: throw IllegalStateException("Fun-Music response missing output.audio.url: $response")
+        ledger.recordCall("Composed music (${QwenConfig.musicModel})", QwenConfig.musicModel, response)
 
         onProgress(80, "Uploading generated music to Alibaba OSS...")
         val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "music", "mp3", 30.0)
-        GenerationCommon.finalize(job, payload, ossUrl, duration)
+        GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
     }
 
     /**
@@ -341,7 +398,7 @@ object QwenAIService : AIGenerationService {
      * instruction-following model ([QwenConfig.ttsInstructModel]) is used and the instructions
      * ride along as the `instruct` input, steering how the line is delivered.
      */
-    private suspend fun executeTts(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+    private suspend fun executeTts(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val voice = setup.voice.ifBlank { "Cherry" }
         val instructions = setup.instructions.trim()
@@ -371,6 +428,7 @@ object QwenAIService : AIGenerationService {
         val mediaUrl = output?.get("audio")?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull
             ?: extractMediaUrl(output ?: buildJsonObject {}, listOf("audio_url", "url"))
             ?: throw IllegalStateException("Qwen TTS response missing audio url: $response")
+        ledger.recordCall("Synthesized speech ($model)", model, response)
 
         onProgress(75, "Uploading voiceover to Alibaba OSS...")
         val fallback = (setup.prompt.split(Regex("\\s+")).count { it.isNotBlank() } * 0.42).coerceAtLeast(2.0)
@@ -379,7 +437,7 @@ object QwenAIService : AIGenerationService {
         onProgress(88, "Building transcript timings...")
         val transcript = setup.prompt
         val timings = TranscriptUtil.buildWordTimings(transcript, duration)
-        GenerationCommon.finalize(job, payload, ossUrl, duration, transcript, timings)
+        GenerationCommon.finalize(job, payload, ossUrl, duration, transcript, timings, ledgerEntries = ledger)
     }
 
     /**
@@ -390,37 +448,40 @@ object QwenAIService : AIGenerationService {
      *   audio matching its visuals.
      * - anything else (default "wan"): the legacy WAN + ffmpeg extraction pipeline.
      */
-    private suspend fun executeSoundEffect(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+    private suspend fun executeSoundEffect(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         when (payload.setup.sfxModel) {
-            "fun-audiogen" -> executeSoundEffectAudioGen(job, payload, onProgress)
-            "fun-audiogen-vd" -> executeSoundEffectAudioGenVd(job, payload, onProgress)
-            else -> executeSoundEffectWan(job, payload, onProgress)
+            "fun-audiogen" -> executeSoundEffectAudioGen(job, payload, ledger, onProgress)
+            "fun-audiogen-vd" -> executeSoundEffectAudioGenVd(job, payload, ledger, onProgress)
+            else -> executeSoundEffectWan(job, payload, ledger, onProgress)
         }
     }
 
     /** Direct text-to-audio: synthesizes the sound effect straight from the text prompt. */
-    private suspend fun executeSoundEffectAudioGen(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+    private suspend fun executeSoundEffectAudioGen(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         onProgress(15, "Generating sound effect with ${QwenConfig.audioModel}...")
         val mediaUrl = runAsyncGenerationTask(
             submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/audio-generation/audio-synthesis",
             requestBody = audioGenRequestBody(QwenConfig.audioModel, setup, videoUrl = null),
             mediaUrlKeys = listOf("audio_url", "url"),
+            ledger = ledger,
+            ledgerModel = QwenConfig.audioModel,
+            ledgerDescription = "Generated sound effect (${QwenConfig.audioModel})",
         ) { pct -> onProgress((20 + pct * 0.6).toInt().coerceIn(20, 80), "Generating sound effect... $pct%") }
 
         onProgress(85, "Uploading sound effect to Alibaba OSS...")
         val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "sfx", "mp3", setup.durationSeconds.takeIf { it > 0 } ?: 5.0)
-        GenerationCommon.finalize(job, payload, ossUrl, duration)
+        GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
     }
 
     /**
      * Video-driven: generates a short WAN source video for the prompt, then has the audio model
      * score it with audio matching its visuals.
      */
-    private suspend fun executeSoundEffectAudioGenVd(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+    private suspend fun executeSoundEffectAudioGenVd(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         onProgress(12, "Generating source video for sound effect...")
-        val videoUrl = generateSfxSourceVideo(setup) { pct ->
+        val videoUrl = generateSfxSourceVideo(setup, ledger) { pct ->
             onProgress((15 + pct * 0.35).toInt().coerceIn(15, 50), "Generating sound source... $pct%")
         }
 
@@ -429,11 +490,14 @@ object QwenAIService : AIGenerationService {
             submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/audio-generation/audio-synthesis",
             requestBody = audioGenRequestBody(QwenConfig.audioModel, setup, videoUrl = videoUrl),
             mediaUrlKeys = listOf("audio_url", "url"),
+            ledger = ledger,
+            ledgerModel = QwenConfig.audioModel,
+            ledgerDescription = "Generated sound effect (${QwenConfig.audioModel})",
         ) { pct -> onProgress((55 + pct * 0.25).toInt().coerceIn(55, 80), "Generating sound effect... $pct%") }
 
         onProgress(85, "Uploading sound effect to Alibaba OSS...")
         val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "sfx", "mp3", setup.durationSeconds.takeIf { it > 0 } ?: 5.0)
-        GenerationCommon.finalize(job, payload, ossUrl, duration)
+        GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
     }
 
     /** The DashScope request body shared by the text-to-audio and video-driven sound-effect modes. */
@@ -450,7 +514,7 @@ object QwenAIService : AIGenerationService {
     }
 
     /** Generates the short WAN source video used by the sound-effect pipelines. */
-    private suspend fun generateSfxSourceVideo(setup: GenerationSetup, onPollProgress: suspend (Int) -> Unit): String {
+    private suspend fun generateSfxSourceVideo(setup: GenerationSetup, ledger: MutableList<AiLedgerEntry>, onPollProgress: suspend (Int) -> Unit): String {
         val requestBody = buildJsonObject {
             put("model", QwenConfig.videoModelT2V)
             putJsonObject("input") {
@@ -466,6 +530,9 @@ object QwenAIService : AIGenerationService {
             submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/video-generation/video-synthesis",
             requestBody = requestBody,
             mediaUrlKeys = listOf("video_url", "url"),
+            ledger = ledger,
+            ledgerModel = QwenConfig.videoModelT2V,
+            ledgerDescription = "Generated sound-effect source video (${QwenConfig.videoModelT2V})",
             onPollProgress = onPollProgress,
         )
     }
@@ -475,10 +542,10 @@ object QwenAIService : AIGenerationService {
      * its audio track with ffmpeg. Falls back to the raw video file when extraction is
      * unavailable (browsers and the renderer can both play the audio track of an mp4).
      */
-    private suspend fun executeSoundEffectWan(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+    private suspend fun executeSoundEffectWan(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         onProgress(12, "Generating source video for sound effect...")
-        val mediaUrl = generateSfxSourceVideo(setup) { pct ->
+        val mediaUrl = generateSfxSourceVideo(setup, ledger) { pct ->
             onProgress((15 + pct * 0.5).toInt().coerceIn(15, 65), "Generating sound source... $pct%")
         }
 
@@ -492,7 +559,7 @@ object QwenAIService : AIGenerationService {
             onProgress(85, "Uploading sound effect to Alibaba OSS...")
             val objectKey = "ai-generated/${job.movieId}/sfx-${UUID.randomUUID()}.$extension"
             val ossUrl = OssService.uploadFile(objectKey, uploadFile)
-            GenerationCommon.finalize(job, payload, ossUrl, duration)
+            GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
             runCatching { audioFile?.delete() }
         } finally {
             runCatching { videoFile.delete() }
@@ -500,7 +567,7 @@ object QwenAIService : AIGenerationService {
     }
 
     /** Extracts the audio track from an existing media URL into a new sound asset. */
-    private suspend fun executeExtractAudio(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
+    private suspend fun executeExtractAudio(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val sourceUrl = payload.sourceUrl
             ?: throw IllegalStateException("extract-audio job ${job.id} missing sourceUrl")
         onProgress(20, "Downloading source media...")
@@ -514,12 +581,12 @@ object QwenAIService : AIGenerationService {
                 onProgress(80, "Uploading extracted audio to Alibaba OSS...")
                 val objectKey = "ai-generated/${job.movieId}/audio-${UUID.randomUUID()}.mp3"
                 val ossUrl = OssService.uploadFile(objectKey, audioFile)
-                GenerationCommon.finalize(job, payload, ossUrl, duration)
+                GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
                 runCatching { audioFile.delete() }
             } else {
                 // No extraction available: reference the source directly (players read its audio track).
                 val duration = MediaUtil.probeDurationSeconds(sourceFile) ?: 5.0
-                GenerationCommon.finalize(job, payload, sourceUrl, duration)
+                GenerationCommon.finalize(job, payload, sourceUrl, duration, ledgerEntries = ledger)
             }
         } finally {
             runCatching { sourceFile.delete() }
@@ -531,8 +598,9 @@ object QwenAIService : AIGenerationService {
     // ------------------------------------------------------------------------------------------
 
     override suspend fun generateTranscript(asset: Asset): Asset {
+        val ledger = mutableListOf<AiLedgerEntry>()
         val (text, timings) = try {
-            transcribe(asset.ossUrl, asset.durationSeconds)
+            transcribe(asset.ossUrl, asset.durationSeconds, ledger)
         } catch (e: Exception) {
             logger.warn("Qwen transcription failed for asset ${asset.id}, falling back to prompt text: ${e.message}")
             val fallback = asset.transcript?.takeIf { it.isNotBlank() }
@@ -540,7 +608,7 @@ object QwenAIService : AIGenerationService {
                 ?: ""
             fallback to TranscriptUtil.buildWordTimings(fallback, asset.durationSeconds)
         }
-        val updated = asset.copy(transcript = text, wordTimings = timings)
+        val updated = asset.copy(transcript = text, wordTimings = timings, ledger = asset.ledger + ledger)
         AssetRepository.update(updated)
         logger.info("Generated transcript for asset ${asset.id} (${timings.size} words)")
         return updated
@@ -551,7 +619,7 @@ object QwenAIService : AIGenerationService {
      * transcript text and per-word timings extracted from the recognizer output. Any failure is
      * surfaced to the caller, which falls back to a prompt-derived transcript.
      */
-    private suspend fun transcribe(audioUrl: String, durationSeconds: Double): Pair<String, List<WordTiming>> {
+    private suspend fun transcribe(audioUrl: String, durationSeconds: Double, ledger: MutableList<AiLedgerEntry>): Pair<String, List<WordTiming>> {
         val transcriptionUrl = runAsyncGenerationTask(
             submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/audio/asr/transcription",
             requestBody = buildJsonObject {
@@ -561,6 +629,9 @@ object QwenAIService : AIGenerationService {
                 }
             },
             mediaUrlKeys = listOf("transcription_url", "url"),
+            ledger = ledger,
+            ledgerModel = QwenConfig.transcriptionModel,
+            ledgerDescription = "Auto-transcribed voiceover (${QwenConfig.transcriptionModel})",
         ) { /* no-op progress */ }
 
         // The transcription document lives on a plain (pre-signed) URL: no auth headers needed.
@@ -612,6 +683,10 @@ object QwenAIService : AIGenerationService {
         submitUrl: String,
         requestBody: JsonObject,
         mediaUrlKeys: List<String>,
+        // When supplied, the succeeded task's token usage is recorded to this per-job ledger.
+        ledger: MutableList<AiLedgerEntry>? = null,
+        ledgerModel: String? = null,
+        ledgerDescription: String? = null,
         onPollProgress: suspend (percent: Int) -> Unit,
     ): String {
         val submitResponse = postJson(submitUrl, requestBody, async = true)
@@ -635,6 +710,9 @@ object QwenAIService : AIGenerationService {
                 "SUCCEEDED" -> {
                     val url = extractMediaUrl(taskOutput, mediaUrlKeys)
                         ?: throw IllegalStateException("Succeeded task $taskId has no media URL: $taskResponse")
+                    if (ledger != null && ledgerModel != null) {
+                        ledger.recordCall(ledgerDescription ?: "AI generation", ledgerModel, taskResponse)
+                    }
                     onPollProgress(100)
                     return url
                 }

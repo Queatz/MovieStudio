@@ -321,8 +321,8 @@ private fun AiChatBubble(message: AiChatMessage, onCopy: () -> Unit) {
                 )
                 Spacer(Modifier.height(2.dp))
                 SelectionContainer {
-                    Text(
-                        message.content,
+                    MarkdownText(
+                        markdown = message.content,
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (fromUser) {
                             MaterialTheme.colorScheme.onPrimaryContainer

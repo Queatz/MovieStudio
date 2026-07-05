@@ -319,7 +319,7 @@ object NetworkService {
         generateChatText("/api/generate/theme", messages, movieTitle)
 
     /**
-     * Generic conversational text generation backing the app-wide AI assist (Alt+Enter in any
+     * Generic conversational text generation backing the app-wide AI chat (Alt+Enter in any
      * [app.moviestudio.ui.StudioTextField]). Returns the AI's raw text so it can be inserted into
      * the field.
      */

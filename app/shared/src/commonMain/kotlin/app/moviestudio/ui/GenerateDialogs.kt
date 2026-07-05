@@ -438,7 +438,7 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
     var theme by remember { mutableStateOf(initialSetup?.theme ?: initialAsset?.description ?: "") }
     var lyric by remember { mutableStateOf(initialSetup?.lyric ?: "") }
     var instrumental by remember { mutableStateOf(initialSetup?.instrumental ?: false) }
-    // Which AI assist dialog is open: "theme", "lyrics" or none. Both ✨ buttons open the
+    // Which AI chat dialog is open: "theme", "lyrics" or none. Both ✨ buttons open the
     // reusable [AiPromptDialog] so the prompt can be reviewed/edited and refined with follow-ups.
     var aiAssist by remember { mutableStateOf<String?>(null) }
     val movieTitle = viewModel.currentMovie?.title ?: ""
@@ -509,7 +509,7 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
         }
     }
 
-    // AI assist with prompt review + follow-up refinement (chat-style), on top of this dialog.
+    // AI chat with prompt review + follow-up refinement (chat-style), on top of this dialog.
     when (aiAssist) {
         "theme" -> AiPromptDialog(
             title = "Generate theme",

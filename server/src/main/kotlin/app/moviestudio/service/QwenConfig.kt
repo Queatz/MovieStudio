@@ -20,8 +20,8 @@ import org.slf4j.LoggerFactory
  * - QWEN_VIDEO_MODEL_I2V       WAN image-to-video model (default wan2.7-i2v).
  * - QWEN_VIDEO_MODEL_R2V       WAN reference-to-video model (default wan2.7-r2v).
  * - QWEN_VIDEO_MODEL_EDIT      WAN video-editing model (default wan2.7-videoedit).
- * - QWEN_IMAGE_MODEL           Text-to-image model (default wanx2.1-t2i-turbo).
- * - QWEN_IMAGE_EDIT_MODEL      Image-to-image editing model (default wanx2.1-imageedit).
+ * - QWEN_IMAGE_MODEL           Text-to-image model (default qwen-image-max).
+ * - QWEN_IMAGE_EDIT_MODEL      Image-to-image editing model (default qwen-image-edit-max-2026-01-16).
  * - QWEN_MUSIC_MODEL           Music generation model (default fun-music-v1).
  * - QWEN_TTS_MODEL             Text-to-speech model (default qwen-tts).
  * - QWEN_TTS_INSTRUCT_MODEL    Instruction-following TTS model used when voice instructions
@@ -54,8 +54,8 @@ object QwenConfig {
     // repaints/edits the source clip. Selected when a base video is attached to the setup.
     val videoModelEdit: String = Env.get("QWEN_VIDEO_MODEL_EDIT", "wan2.7-videoedit")
 
-    val imageModel: String = Env.get("QWEN_IMAGE_MODEL", "wanx2.1-t2i-turbo")
-    val imageEditModel: String = Env.get("QWEN_IMAGE_EDIT_MODEL", "wanx2.1-imageedit")
+    val imageModel: String = Env.get("QWEN_IMAGE_MODEL", "qwen-image-max")
+    val imageEditModel: String = Env.get("QWEN_IMAGE_EDIT_MODEL", "qwen-image-edit-max-2026-01-16")
     val musicModel: String = Env.get("QWEN_MUSIC_MODEL", "fun-music-v1")
     val ttsModel: String = Env.get("QWEN_TTS_MODEL", "qwen-tts")
     // Instruction-following TTS (Qwen instruct): selected when the generation setup carries voice
@@ -81,6 +81,29 @@ object QwenConfig {
 
     val pollIntervalMs: Long = Env.get("QWEN_POLL_INTERVAL_MS", "3000").toLongOrNull() ?: 3000L
     val pollTimeoutMs: Long = Env.get("QWEN_POLL_TIMEOUT_MS", "3000000").toLongOrNull() ?: 3_000_000L
+
+    // --- AI-cost ledger pricing ---------------------------------------------------------------
+    // USD price per one million tokens for each billed model family, overridable via env. The
+    // resolved per-token price is stored on every ledger entry, so the client never needs any
+    // pricing knowledge of its own.
+    private val chatUsdPerMillionTokens: Double = Env.get("QWEN_CHAT_USD_PER_MTOK", "0.40").toDoubleOrNull() ?: 0.40
+    private val ttsUsdPerMillionTokens: Double = Env.get("QWEN_TTS_USD_PER_MTOK", "8.40").toDoubleOrNull() ?: 8.40
+    private val defaultUsdPerMillionTokens: Double = Env.get("QWEN_DEFAULT_USD_PER_MTOK", "2.00").toDoubleOrNull() ?: 2.00
+
+    /**
+     * USD price charged per token for [model]. TTS / cloned-voice models bill at the TTS rate, the
+     * chat model at the chat rate, and everything else falls back to the default rate. All rates
+     * are overridable via env (see the `QWEN_*_USD_PER_MTOK` entries above).
+     */
+    fun usdPerToken(model: String): Double {
+        val perMillion = when {
+            model.equals(chatModel, ignoreCase = true) -> chatUsdPerMillionTokens
+            model.contains("tts", ignoreCase = true) ||
+                model.equals(voiceCloneTargetModel, ignoreCase = true) -> ttsUsdPerMillionTokens
+            else -> defaultUsdPerMillionTokens
+        }
+        return perMillion / 1_000_000.0
+    }
 
     /** True when a real API key has been supplied. */
     val isConfigured: Boolean

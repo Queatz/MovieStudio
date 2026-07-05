@@ -78,6 +78,34 @@ data class AssetVersion(
     val prompt: String? = null
 )
 
+/**
+ * One entry in an [Asset]'s AI-cost ledger: a single AI call made while generating (or
+ * regenerating) the asset's media. Every AI call connected to the asset is recorded here so the
+ * asset dialog can show the running total cost in both tokens and USD, alongside each call's own
+ * token usage, per-token price and resulting USD cost.
+ */
+@Serializable
+data class AiLedgerEntry(
+    // Human-readable details of the AI call, e.g. "Generated video (wan2.7-t2v)".
+    val description: String,
+    // The AI model the call used.
+    val model: String,
+    // Total tokens the call consumed.
+    val tokens: Long,
+    // USD price charged per token for this call's model.
+    val costPerToken: Double,
+    val createdAt: Long = 0
+) {
+    /** This call's cost in USD: [tokens] × [costPerToken]. */
+    val costUsd: Double get() = tokens * costPerToken
+}
+
+/** Total tokens across every AI call recorded in an [Asset]'s ledger. */
+fun List<AiLedgerEntry>.totalTokens(): Long = sumOf { it.tokens }
+
+/** Total USD cost across every AI call recorded in an [Asset]'s ledger. */
+fun List<AiLedgerEntry>.totalCostUsd(): Double = sumOf { it.costUsd }
+
 @Serializable
 data class Asset(
     val id: String,
@@ -102,6 +130,9 @@ data class Asset(
     val generationConfig: String? = null,
     // Previous generated versions of this asset's media, most recent first. Restorable.
     val history: List<AssetVersion> = emptyList(),
+    // AI-cost ledger: one entry per AI call made while generating/regenerating this asset's media.
+    // The asset dialog shows the running total (tokens and USD). Appended to on every generation.
+    val ledger: List<AiLedgerEntry> = emptyList(),
     // For VOICE assets: the preset or cloned voice used for TTS.
     val voice: String? = null,
     val createdAt: Long = 0

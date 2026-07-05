@@ -61,6 +61,8 @@ import app.moviestudio.AssetType
 import app.moviestudio.AudioPlayItem
 import app.moviestudio.WordTiming
 import app.moviestudio.loadAudioWaveform
+import app.moviestudio.totalCostUsd
+import app.moviestudio.totalTokens
 import app.moviestudio.updateAudioPlayback
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
@@ -172,6 +174,10 @@ fun AssetDetailsDialog(
             }
             GhostPillButton("🗑 Delete", compact = true) { showDeleteConfirm = true }
         }
+
+        // ------------------------------------------------------------------- AI cost ledger
+        // Every AI call connected to this asset, with its running total in tokens and USD.
+        AssetCostLedger(asset)
 
         // -------------------------------------------------------- audio playback with scrubber
         if (isAudioAsset && !asset.isDescriptionOnly && asset.ossUrl.isNotBlank()) {
@@ -1002,4 +1008,122 @@ private fun waveformBarHeight(peaks: FloatArray?, index: Int, count: Int): Float
     val envelope = 0.35f + 0.4f * abs(sin(t * 6.3f + 0.6f))
     val detail = abs(sin(t * 41f))
     return (0.12f + envelope * detail).coerceIn(0.04f, 1f)
+}
+
+/**
+ * The asset's AI-cost ledger: a running total (in tokens and USD) across every AI call connected
+ * to the asset, followed by one row per call showing its details, tokens used, per-token price and
+ * resulting USD cost. Renders nothing when no AI calls have been recorded yet.
+ */
+@Composable
+private fun AssetCostLedger(asset: Asset) {
+    if (asset.ledger.isEmpty()) return
+    val callCount = asset.ledger.size
+    val totalTokens = asset.ledger.totalTokens()
+    val totalCost = asset.ledger.totalCostUsd()
+
+    SectionLabel("AI cost ($callCount call${if (callCount == 1) "" else "s"})")
+
+    // Running total across every AI call connected to this asset.
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "Total",
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            "${formatTokens(totalTokens)} tokens",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            formatUsd(totalCost),
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+    }
+
+    // One row per AI call: its details, tokens used, per-token price and USD cost.
+    asset.ledger.forEach { entry ->
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 3.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    entry.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "${formatTokens(entry.tokens)} tokens · ${formatUsdPerToken(entry.costPerToken)}/token",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                formatUsd(entry.costUsd),
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+/** Formats a token count with thousands separators (e.g. 12345 -> "12,345"). Multiplatform-safe. */
+private fun formatTokens(tokens: Long): String {
+    val digits = abs(tokens).toString()
+    val grouped = buildString {
+        digits.forEachIndexed { index, c ->
+            if (index > 0 && (digits.length - index) % 3 == 0) append(',')
+            append(c)
+        }
+    }
+    return if (tokens < 0) "-$grouped" else grouped
+}
+
+/** Formats a USD amount, keeping sub-cent precision so tiny token costs stay visible. */
+private fun formatUsd(amount: Double): String = "$" + formatMoney(amount, minDecimals = 2, maxDecimals = 6)
+
+/** Formats a per-token USD price, which is tiny, keeping its significant fractional digits. */
+private fun formatUsdPerToken(amount: Double): String = "$" + formatMoney(amount, minDecimals = 2, maxDecimals = 9)
+
+/**
+ * Formats a non-negative money [amount] with between [minDecimals] and [maxDecimals] fraction
+ * digits (trailing zeros beyond [minDecimals] trimmed). Built with integer math so it works on
+ * every Kotlin Multiplatform target (no `java.util.Formatter`).
+ */
+private fun formatMoney(amount: Double, minDecimals: Int, maxDecimals: Int): String {
+    var factor = 1.0
+    repeat(maxDecimals) { factor *= 10.0 }
+    val scaled = kotlin.math.round(abs(amount) * factor).toLong()
+    val digits = scaled.toString().padStart(maxDecimals + 1, '0')
+    val intPart = digits.substring(0, digits.length - maxDecimals)
+    var fracPart = digits.substring(digits.length - maxDecimals)
+    while (fracPart.length > minDecimals && fracPart.endsWith("0")) {
+        fracPart = fracPart.dropLast(1)
+    }
+    val sign = if (amount < 0) "-" else ""
+    return "$sign$intPart.$fracPart"
 }

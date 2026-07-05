@@ -110,7 +110,7 @@ val StudioFieldShape = RoundedCornerShape(18.dp)
  * browser Web Speech API when present and otherwise streams the mic to the server's realtime ASR
  * relay (so Firefox works too); on platforms with no speech support the long-press does nothing.
  *
- * Every instance also supports an AI assist by default: pressing Alt+Enter opens the reusable
+ * Every instance also supports an AI chat by default: pressing Alt+Enter opens the reusable
  * [AiPromptDialog], where the user can chat with the AI and, once happy, press "Insert" to append
  * the generated text at the end of the field. This mirrors the "Generate theme" affordance in the
  * generate-music dialog. [aiGenerate] performs the actual AI call and defaults to the generic
@@ -135,7 +135,7 @@ fun StudioTextField(
     onDismiss: () -> Unit = {},
     onSubmit: () -> Unit = {},
     aiGenerate: (suspend (messages: List<AiChatMessage>) -> String)? = { NetworkService.generateText(it) },
-    aiPromptTitle: String = "✨ AI assist",
+    aiPromptTitle: String = "✨ AI chat",
     aiPromptDescription: String? =
         "Describe what you want, chat to refine it, then insert the result into the field.",
 ) {
@@ -581,7 +581,10 @@ fun ErrorRetryBox(
     onRetry: () -> Unit
 ) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.verticalScroll(rememberScrollState())
+        ) {
             Text("⚠️", fontSize = 30.sp)
             Spacer(Modifier.height(8.dp))
             Text(

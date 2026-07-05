@@ -1,5 +1,6 @@
 package app.moviestudio
 
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -183,5 +184,45 @@ class ModelsTest {
         val names = MovieStatus.entries.map { it.name }
         assertTrue(names.containsAll(listOf("DRAFT", "IN_PRODUCTION", "RENDERING", "REVIEW", "COMPLETED", "ARCHIVED")))
         assertEquals("In production", MovieStatus.IN_PRODUCTION.displayName())
+    }
+
+    @Test
+    fun aiLedgerComputesPerCallCostAndTotals() {
+        val ledger = listOf(
+            AiLedgerEntry(description = "Refined video prompt", model = "qwen-plus", tokens = 1000, costPerToken = 0.0000004),
+            AiLedgerEntry(description = "Generated video (wan2.7-t2v)", model = "wan2.7-t2v", tokens = 0, costPerToken = 0.000002)
+        )
+        // Each entry's USD cost is tokens × the per-token price (0 tokens -> free).
+        assertEquals(0.0004, ledger[0].costUsd, 1e-9)
+        assertEquals(0.0, ledger[1].costUsd, 1e-9)
+        // The ledger totals aggregate every AI call.
+        assertEquals(1000L, ledger.totalTokens())
+        assertEquals(0.0004, ledger.totalCostUsd(), 1e-9)
+        // A freshly created asset has an empty ledger.
+        val bare = Asset(
+            id = "a", type = AssetType.VIDEO, ossUrl = "", durationSeconds = 1.0,
+            movieId = null, tags = emptyList(), aiPrompt = null
+        )
+        assertTrue(bare.ledger.isEmpty())
+        assertEquals(0L, bare.ledger.totalTokens())
+        assertEquals(0.0, bare.ledger.totalCostUsd(), 1e-9)
+    }
+
+    @Test
+    fun assetLedgerRoundTripsAndLegacyAssetsDecodeWithEmptyLedger() {
+        val json = Json { ignoreUnknownKeys = true }
+        val asset = Asset(
+            id = "a1", type = AssetType.VOICE, ossUrl = "https://oss/v.mp3", durationSeconds = 3.0,
+            movieId = "m1", tags = listOf("ai-generated"), aiPrompt = "hi",
+            ledger = listOf(AiLedgerEntry("Synthesized speech (qwen-tts)", "qwen-tts", 42, 0.0000084))
+        )
+        val decoded = json.decodeFromString(Asset.serializer(), json.encodeToString(Asset.serializer(), asset))
+        assertEquals(asset, decoded)
+        // Assets saved before the ledger existed decode with an empty ledger (no crash).
+        val legacy = json.decodeFromString(
+            Asset.serializer(),
+            """{"id":"a2","type":"IMAGE","ossUrl":"","durationSeconds":0.0,"movieId":null,"tags":[],"aiPrompt":null}"""
+        )
+        assertTrue(legacy.ledger.isEmpty())
     }
 }

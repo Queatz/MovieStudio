@@ -26,6 +26,8 @@ open class SimpleCrudRepository<T>(
         prettyPrint = false
     }
 
+    open val defaultSort = "d.createdAt DESC"
+
     private fun toDoc(entity: T): String {
         val element = json.encodeToJsonElement(serializer, entity) as JsonObject
         val map = element.toMutableMap()
@@ -53,7 +55,7 @@ open class SimpleCrudRepository<T>(
     }
 
     fun listAll(): List<T> {
-        val query = "FOR d IN $collection SORT d.read DESC, d.createdAt DESC RETURN d"
+        val query = "FOR d IN $collection SORT $defaultSort RETURN d"
         val cursor = ArangoDatabase.db.query(query, RawJson::class.java)
         val items = mutableListOf<T>()
         for (rawJson in cursor) {
@@ -63,7 +65,7 @@ open class SimpleCrudRepository<T>(
     }
 
     protected fun queryByField(field: String, value: String): List<T> {
-        val query = "FOR d IN $collection FILTER d.$field == @value SORT d.createdAt DESC RETURN d"
+        val query = "FOR d IN $collection FILTER d.$field == @value SORT $defaultSort RETURN d"
         val cursor = ArangoDatabase.db.query(query, RawJson::class.java, mapOf("value" to value))
         val items = mutableListOf<T>()
         for (rawJson in cursor) {
@@ -94,7 +96,7 @@ object TipRepository : SimpleCrudRepository<Tip>("tips", Tip.serializer(), { it.
         val aql = """
             FOR d IN tips
                 FILTER LIKE(LOWER(d.title), @term, true) OR LIKE(LOWER(d.content), @term, true)
-                SORT d.read DESC, d.createdAt DESC
+                SORT $defaultSort
                 RETURN d
         """.trimIndent()
         val bindVars = mapOf<String, Any>("term" to "%${term.lowercase()}%")
@@ -105,4 +107,6 @@ object TipRepository : SimpleCrudRepository<Tip>("tips", Tip.serializer(), { it.
         }
         return items
     }
+
+    override val defaultSort = "d.read ASC, d.createdAt DESC"
 }

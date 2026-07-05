@@ -2,6 +2,7 @@ package app.moviestudio.service
 
 import app.moviestudio.AiChatMessage
 import app.moviestudio.AiChatRole
+import app.moviestudio.AiLedgerEntry
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.AssetVersion
@@ -180,7 +181,9 @@ object GenerationCommon {
         durationSeconds: Double,
         transcript: String? = null,
         wordTimings: List<WordTiming> = emptyList(),
-        sourceOffsetSeconds: Double = 0.0
+        sourceOffsetSeconds: Double = 0.0,
+        // AI calls made while producing this media; appended to the asset's cost ledger.
+        ledgerEntries: List<AiLedgerEntry> = emptyList()
     ): Asset {
         val now = System.currentTimeMillis()
         val setupJson = json.encodeToString(GenerationSetup.serializer(), payload.setup)
@@ -206,6 +209,7 @@ object GenerationCommon {
                 aiPrompt = prompt.ifBlank { existing.aiPrompt },
                 generationConfig = setupJson,
                 history = history,
+                ledger = existing.ledger + ledgerEntries,
                 voice = payload.setup.voice.ifBlank { existing.voice },
                 transcript = transcript ?: existing.transcript,
                 wordTimings = wordTimings.ifEmpty { existing.wordTimings },
@@ -240,6 +244,7 @@ object GenerationCommon {
                 aiPrompt = prompt,
                 description = prompt,
                 generationConfig = setupJson,
+                ledger = ledgerEntries,
                 voice = payload.setup.voice.ifBlank { null },
                 transcript = transcript,
                 wordTimings = wordTimings,

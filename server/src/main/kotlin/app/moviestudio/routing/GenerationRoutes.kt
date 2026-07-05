@@ -140,7 +140,7 @@ fun Route.generationRoutes() {
             }
         }
 
-        // Generic writing assistant backing the app-wide AI assist (Alt+Enter in any studio text
+        // Generic writing assistant backing the app-wide AI chat (Alt+Enter in any studio text
         // field). Writes whatever text the user asked for so it can be inserted into the field.
         post("/text") {
             try {
