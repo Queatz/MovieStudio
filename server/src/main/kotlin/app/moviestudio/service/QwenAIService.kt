@@ -43,6 +43,7 @@ import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.util.UUID
+import kotlin.math.ceil
 
 /**
  * Production implementation of [AIGenerationService] backed by the Alibaba Model Studio
@@ -156,6 +157,53 @@ object QwenAIService : AIGenerationService {
                 createdAt = System.currentTimeMillis()
             )
         )
+    }
+
+    /**
+     * Builds the ledger entry for an image-generation/edit call. Unlike the chat/TTS models,
+     * Qwen-Image (`qwen-image-max` / `qwen-image-edit-max`) is billed per generated image at a
+     * flat price, so its response never carries an `input_tokens`/`output_tokens` usage block -
+     * feeding it through [recordCall] always logged 0 tokens and $0.00, which is the bug this
+     * works around. We still record a meaningful, non-zero token figure by converting the image's
+     * pixel dimensions into the same 28x28-patch vision-token count Qwen-VL models report, then
+     * back-derive the per-token price so the entry's total cost still equals the real flat
+     * per-image price ([QwenConfig.usdPerImage]). If a future/alternate image model ever does
+     * report real token usage, that's honored instead.
+     */
+    internal fun buildImageLedgerEntry(description: String, model: String, response: JsonObject, resolution: String): AiLedgerEntry {
+        parseUsageTokens(response)?.takeIf { it > 0 }?.let { tokens ->
+            return AiLedgerEntry(
+                description = description,
+                model = model,
+                tokens = tokens,
+                costPerToken = QwenConfig.usdPerToken(model),
+                createdAt = System.currentTimeMillis()
+            )
+        }
+        val (width, height) = parseImageDimensions(response, resolution)
+        val tokens = (ceil(width / 28.0) * ceil(height / 28.0)).toLong().coerceAtLeast(1L)
+        return AiLedgerEntry(
+            description = description,
+            model = model,
+            tokens = tokens,
+            costPerToken = QwenConfig.usdPerImage() / tokens,
+            createdAt = System.currentTimeMillis()
+        )
+    }
+
+    /**
+     * Pixel dimensions for an image call: prefers the response's own `usage.width`/`usage.height`
+     * (when the API reports them), falling back to the requested `WxH`/`W*H` [resolution] string.
+     */
+    internal fun parseImageDimensions(response: JsonObject, resolution: String): Pair<Double, Double> {
+        val usage = response["usage"]?.jsonObject
+        val usageWidth = usage?.get("width")?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
+        val usageHeight = usage?.get("height")?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
+        if (usageWidth != null && usageHeight != null) return usageWidth to usageHeight
+        val parts = resolution.split("x", "X", "*")
+        val width = parts.getOrNull(0)?.trim()?.toDoubleOrNull() ?: 1024.0
+        val height = parts.getOrNull(1)?.trim()?.toDoubleOrNull() ?: 1024.0
+        return width to height
     }
 
     /**
@@ -316,42 +364,51 @@ object QwenAIService : AIGenerationService {
         val setup = payload.setup
         val baseImageUrl = setup.imageUrl?.takeIf { it.isNotBlank() }
         val model = if (baseImageUrl != null) QwenConfig.imageEditModel else QwenConfig.imageModel
-        val (submitUrl, requestBody) = if (baseImageUrl != null) {
-            onProgress(15, "Submitting image edit task (${QwenConfig.imageEditModel})...")
-            "${QwenConfig.dashScopeBaseUrl}/services/aigc/image2image/image-synthesis" to buildJsonObject {
-                put("model", QwenConfig.imageEditModel)
-                putJsonObject("input") {
-                    put("function", "description_edit")
-                    put("prompt", setup.prompt)
-                    put("base_image_url", baseImageUrl)
-                    if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
-                }
-                putJsonObject("parameters") {
-                    put("n", 1)
-                }
+        onProgress(15, if (baseImageUrl != null) "Submitting image edit task ($model)..." else "Submitting image task ($model)...")
+        // The qwen-image family (both the plain and edit variants) is only exposed through the
+        // chat-style multimodal-generation/generation endpoint - the legacy Wanx
+        // aigc/text2image and aigc/image2image endpoints reject qwen-image-* model names with
+        // HTTP 400 "url error, please check url！" (model name / API endpoint mismatch).
+        val requestBody = buildJsonObject {
+            put("model", model)
+            putJsonObject("input") {
+                put("messages", buildJsonArray {
+                    add(buildJsonObject {
+                        put("role", "user")
+                        put("content", buildJsonArray {
+                            if (baseImageUrl != null) {
+                                add(buildJsonObject { put("image", baseImageUrl) })
+                            }
+                            add(buildJsonObject { put("text", setup.prompt) })
+                        })
+                    })
+                })
             }
-        } else {
-            onProgress(15, "Submitting image task (${QwenConfig.imageModel})...")
-            "${QwenConfig.dashScopeBaseUrl}/services/aigc/text2image/image-synthesis" to buildJsonObject {
-                put("model", QwenConfig.imageModel)
-                putJsonObject("input") {
-                    put("prompt", setup.prompt)
-                    if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
-                }
-                putJsonObject("parameters") {
-                    put("n", 1)
-                    put("size", setup.resolution.replace("x", "*").ifBlank { "1024*1024" })
-                }
+            putJsonObject("parameters") {
+                put("n", 1)
+                if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
+                put("size", setup.resolution.replace("x", "*").ifBlank { "1024*1024" })
             }
         }
-        val mediaUrl = runAsyncGenerationTask(
-            submitUrl = submitUrl,
-            requestBody = requestBody,
-            mediaUrlKeys = listOf("url", "img_url"),
-            ledger = ledger,
-            ledgerModel = model,
-            ledgerDescription = "Generated image ($model)",
-        ) { pct -> onProgress((20 + pct * 0.6).toInt().coerceIn(20, 80), "Generating image... $pct%") }
+        // Unlike the WAN video/audio models, the qwen-image family only supports synchronous
+        // invocation: submitting with the `X-DashScope-Async` header set (as the shared
+        // runAsyncGenerationTask helper does for every other media type) is rejected with
+        // HTTP 403 "current user api does not support asynchronous calls". The image is
+        // returned directly in this response, so no task polling is needed.
+        onProgress(40, "Generating image ($model)...")
+        val response = postJson(
+            "${QwenConfig.dashScopeBaseUrl}/services/aigc/multimodal-generation/generation",
+            requestBody,
+            async = false,
+            timeoutSeconds = 180
+        )
+        val mediaUrl = response["output"]?.jsonObject
+            ?.get("choices")?.jsonArray?.firstOrNull()?.jsonObject
+            ?.get("message")?.jsonObject
+            ?.get("content")?.jsonArray?.firstOrNull()?.jsonObject
+            ?.get("image")?.jsonPrimitive?.contentOrNull
+            ?: throw IllegalStateException("Model Studio image response has no media URL: $response")
+        ledger.add(buildImageLedgerEntry("Generated image ($model)", model, response, setup.resolution))
 
         onProgress(85, "Uploading generated image to Alibaba OSS...")
         val extension = mediaUrl.substringBefore('?').substringAfterLast('.', "png").take(4)

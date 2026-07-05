@@ -1022,7 +1022,7 @@ private fun AssetCostLedger(asset: Asset) {
     val totalTokens = asset.ledger.totalTokens()
     val totalCost = asset.ledger.totalCostUsd()
 
-    SectionLabel("AI cost ($callCount call${if (callCount == 1) "" else "s"})")
+    SectionLabel("Cost ($callCount call${if (callCount == 1) "" else "s"})")
 
     // Running total across every AI call connected to this asset.
     Row(

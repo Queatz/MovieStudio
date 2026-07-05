@@ -34,6 +34,8 @@ import org.slf4j.LoggerFactory
  *                              audio-generation/audio-synthesis endpoint.
  * - QWEN_POLL_INTERVAL_MS      Async task poll interval in ms (default 3000).
  * - QWEN_POLL_TIMEOUT_MS       Async task max wait in ms (default 300000).
+ * - QWEN_IMAGE_USD_PER_CALL    Flat USD price per generated/edited image, since Qwen-Image bills
+ *                              per image rather than per token (default 0.05).
  */
 object QwenConfig {
     private val logger = LoggerFactory.getLogger(QwenConfig::class.java)
@@ -104,6 +106,15 @@ object QwenConfig {
         }
         return perMillion / 1_000_000.0
     }
+
+    // Qwen-Image (`qwen-image-max` / `qwen-image-edit-max`) is billed per generated image at a
+    // flat price (Alibaba tiers it by resolution on their side), not per token, so its response
+    // carries no `input_tokens`/`output_tokens` usage block - unlike the ledger's other AI calls.
+    // Overridable via env.
+    private val imageUsdPerCall: Double = Env.get("QWEN_IMAGE_USD_PER_CALL", "0.05").toDoubleOrNull() ?: 0.05
+
+    /** Flat USD price for one generated/edited image call, regardless of resolution. */
+    fun usdPerImage(): Double = imageUsdPerCall
 
     /** True when a real API key has been supplied. */
     val isConfigured: Boolean

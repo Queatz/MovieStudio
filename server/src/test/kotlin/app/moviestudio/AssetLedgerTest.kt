@@ -5,7 +5,10 @@ import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.JobRepository
 import app.moviestudio.service.AiJobPayload
 import app.moviestudio.service.GenerationCommon
+import app.moviestudio.service.QwenAIService
 import app.moviestudio.service.QwenConfig
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import org.junit.After
 import org.junit.Assume
 import org.junit.Before
@@ -103,5 +106,57 @@ class AssetLedgerTest {
         assertNotNull(savedUpdated)
         assertEquals(2, savedUpdated.ledger.size)
         assertEquals(1500L, savedUpdated.ledger.totalTokens())
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Image ledger entries: qwen-image-max / qwen-image-edit-max bill per generated image (a flat
+    // price), so their DashScope response never carries an input_tokens/output_tokens usage block
+    // - reported as "images always show 0 tokens" in the ledger. Covers the fix in
+    // QwenAIService.buildImageLedgerEntry.
+    // ------------------------------------------------------------------------------------------
+
+    @Test
+    fun imagePricingIsPositive() {
+        assertTrue(QwenConfig.usdPerImage() > 0.0)
+    }
+
+    @Test
+    fun imageLedgerEntryDerivesNonZeroTokensFromUsageDimensionsWhenNoTokenUsageIsReported() {
+        // Real qwen-image-max response shape: usage carries pixel dimensions/count, not tokens.
+        val response = Json.parseToJsonElement(
+            """{"output":{"choices":[]},"usage":{"width":1328,"height":1328,"image_count":1}}"""
+        ).jsonObject
+
+        val entry = QwenAIService.buildImageLedgerEntry("Generated image (qwen-image-max)", "qwen-image-max", response, "1328*1328")
+
+        // Previously this was always 0 tokens / $0.00 - now it's a real, positive figure that adds
+        // up to the flat per-image price.
+        assertTrue(entry.tokens > 0L)
+        assertEquals(QwenConfig.usdPerImage(), entry.costUsd, 1e-9)
+    }
+
+    @Test
+    fun imageLedgerEntryFallsBackToRequestedResolutionWhenUsageHasNoDimensions() {
+        // Some responses may omit usage entirely, or omit width/height from it.
+        val response = Json.parseToJsonElement("""{"output":{"choices":[]}}""").jsonObject
+
+        val entry = QwenAIService.buildImageLedgerEntry("Generated image (qwen-image-max)", "qwen-image-max", response, "1024*1024")
+
+        assertTrue(entry.tokens > 0L)
+        assertEquals(QwenConfig.usdPerImage(), entry.costUsd, 1e-9)
+    }
+
+    @Test
+    fun imageLedgerEntryHonorsRealTokenUsageWhenAModelDoesReportIt() {
+        // If a future/alternate image model genuinely reports token usage, it should be used
+        // as-is (chat-style pricing) instead of the flat per-image fallback.
+        val response = Json.parseToJsonElement(
+            """{"output":{"choices":[]},"usage":{"input_tokens":100,"output_tokens":50}}"""
+        ).jsonObject
+
+        val entry = QwenAIService.buildImageLedgerEntry("Generated image (qwen-image-max)", "qwen-image-max", response, "1024*1024")
+
+        assertEquals(150L, entry.tokens)
+        assertEquals(QwenConfig.usdPerToken("qwen-image-max"), entry.costPerToken, 1e-12)
     }
 }
