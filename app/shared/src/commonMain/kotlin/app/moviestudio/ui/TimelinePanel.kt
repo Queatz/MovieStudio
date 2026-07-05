@@ -63,6 +63,7 @@ import app.moviestudio.TrackType
 import app.moviestudio.TransitionType
 import app.moviestudio.calculatedDuration
 import app.moviestudio.parseEffectsConfig
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -71,6 +72,10 @@ private const val RULER_HEIGHT = 26f
 private const val TRACK_HEIGHT = 52f
 private const val TRACK_GAP = 6f
 private const val EDGE_GRAB = 10f
+
+// Snapping: while dragging/resizing a clip, if its start or end comes within this many seconds of
+// another clip's start or end, it snaps onto that edge.
+private const val SNAP_THRESHOLD_SECONDS = 1f
 
 // Note markers: blue pills with the note's text, sitting in the lower band of the ruler.
 private const val NOTE_PILL_TOP = 13f
@@ -90,15 +95,93 @@ private fun notePillWidth(textMeasurer: androidx.compose.ui.text.TextMeasurer, l
 /** What a drag that started on the timeline is currently doing. */
 private sealed interface DragSession {
     data object Seek : DragSession
-    data class MoveClip(
+    class MoveClip(
         val clip: Clip,
         val sourceTrackType: TrackType,
+        val duration: Float,
+        val snapEdges: FloatArray,
         var newStart: Float,
         var snappedStart: Float,
         var newTrackId: String
     ) : DragSession
-    data class ResizeLeft(val clip: Clip, val maxTrim: Float, var newStart: Float, var newTrimIn: Float) : DragSession
-    data class ResizeRight(val clip: Clip, val maxTrimOut: Float, var newTrimOut: Float) : DragSession
+    class ResizeLeft(
+        val clip: Clip,
+        val maxTrim: Float,
+        val snapEdges: FloatArray,
+        var newStart: Float,
+        var newTrimIn: Float,
+        var snappedStart: Float,
+        var snappedTrimIn: Float
+    ) : DragSession
+    class ResizeRight(
+        val clip: Clip,
+        val maxTrimOut: Float,
+        val snapEdges: FloatArray,
+        var newTrimOut: Float,
+        var snappedTrimOut: Float
+    ) : DragSession
+}
+
+/**
+ * All snap-candidate times on the timeline: every other clip's start and end (excluding the clip
+ * being dragged). Collected once when a drag starts and reused for every pointer move, so we never
+ * re-walk the whole timeline mid-gesture. The returned array is sorted so [nearestSnap] can binary
+ * search it.
+ */
+private fun collectSnapEdges(timeline: MovieTimeline?, excludeClipId: String): FloatArray {
+    if (timeline == null) return FloatArray(0)
+    val edges = ArrayList<Float>()
+    timeline.tracks.forEach { trackWithClips ->
+        trackWithClips.clips.forEach { clip ->
+            if (clip.id != excludeClipId) {
+                edges.add(clip.timelineStart)
+                edges.add(clip.timelineStart + (clip.trimOut - clip.trimIn))
+            }
+        }
+    }
+    return edges.toFloatArray().also { it.sort() }
+}
+
+/**
+ * The candidate edge closest to [value], or null if none is within [SNAP_THRESHOLD_SECONDS].
+ * [edges] must be sorted ascending; the nearest edge is found with a binary search so this stays
+ * cheap even for long timelines.
+ */
+private fun nearestSnap(edges: FloatArray, value: Float): Float? {
+    if (edges.isEmpty()) return null
+    var lo = 0
+    var hi = edges.size
+    while (lo < hi) {
+        val mid = (lo + hi) ushr 1
+        if (edges[mid] < value) lo = mid + 1 else hi = mid
+    }
+    var best: Float? = null
+    var bestDist = SNAP_THRESHOLD_SECONDS
+    if (lo < edges.size) {
+        val d = abs(edges[lo] - value)
+        if (d <= bestDist) { bestDist = d; best = edges[lo] }
+    }
+    if (lo - 1 >= 0) {
+        val d = abs(edges[lo - 1] - value)
+        if (d <= bestDist) { bestDist = d; best = edges[lo - 1] }
+    }
+    return best
+}
+
+/**
+ * Snapped start for a clip being moved: snap whichever of its start or end edge is nearest to
+ * another clip's edge (within [SNAP_THRESHOLD_SECONDS]); otherwise keep [start] unchanged.
+ */
+private fun snapMovedStart(edges: FloatArray, start: Float, duration: Float): Float {
+    val startSnap = nearestSnap(edges, start)
+    val endSnap = nearestSnap(edges, start + duration)
+    val startDist = if (startSnap != null) abs(startSnap - start) else Float.MAX_VALUE
+    val endDist = if (endSnap != null) abs(endSnap - (start + duration)) else Float.MAX_VALUE
+    return when {
+        startSnap != null && startDist <= endDist -> max(0f, startSnap)
+        endSnap != null -> max(0f, endSnap - duration)
+        else -> start
+    }
 }
 
 /** The track row index at the given canvas [y] position (may be out of the tracks' range). */
@@ -555,14 +638,25 @@ private fun TimelineCanvas(
                                 val asset = assetsState.firstOrNull { it.id == clip.assetId }
                                 val mediaCap = mediaTrimCap(asset)
                                 val trackType = timelineState?.tracks?.getOrNull(trackIndex)?.track?.type
+                                // Gather the snap targets once up front so mid-drag moves stay cheap.
+                                val snapEdges = collectSnapEdges(timelineState, clip.id)
                                 when {
                                     offset.x - clipStartX <= EDGE_GRAB ->
-                                        DragSession.ResizeLeft(clip, mediaCap, clip.timelineStart, clip.trimIn)
+                                        DragSession.ResizeLeft(
+                                            clip, mediaCap, snapEdges,
+                                            clip.timelineStart, clip.trimIn,
+                                            clip.timelineStart, clip.trimIn
+                                        )
                                     clipEndX - offset.x <= EDGE_GRAB ->
-                                        DragSession.ResizeRight(clip, mediaCap, clip.trimOut)
+                                        DragSession.ResizeRight(
+                                            clip, mediaCap, snapEdges,
+                                            clip.trimOut, clip.trimOut
+                                        )
                                     else -> DragSession.MoveClip(
                                         clip,
                                         trackType ?: TrackType.VIDEO,
+                                        clip.trimOut - clip.trimIn,
+                                        snapEdges,
                                         clip.timelineStart,
                                         clip.timelineStart,
                                         clip.trackId
@@ -578,10 +672,14 @@ private fun TimelineCanvas(
                             is DragSession.Seek -> viewModel.seek(timeAt(change.position.x), allowPastEnd = true)
                             is DragSession.MoveClip -> {
                                 session.newStart = max(0f, session.newStart + dt)
-                                // Holding Ctrl snaps the clip's start to the nearest whole second.
-                                session.snappedStart =
-                                    if (KeyModifierState.ctrlDown) max(0f, session.newStart.roundToInt().toFloat())
-                                    else session.newStart
+                                // Holding Ctrl snaps the clip's start to the nearest whole second;
+                                // holding Alt disables snapping entirely; otherwise snap whichever
+                                // edge (start/end) is nearest a clip edge.
+                                session.snappedStart = when {
+                                    KeyModifierState.ctrlDown -> max(0f, session.newStart.roundToInt().toFloat())
+                                    KeyModifierState.altDown -> session.newStart
+                                    else -> snapMovedStart(session.snapEdges, session.newStart, session.duration)
+                                }
                                 // Dragging vertically re-homes the clip onto another track of
                                 // the same type.
                                 val targetIndex = trackIndexAt(change.position.y)
@@ -598,13 +696,28 @@ private fun TimelineCanvas(
                             }
                             is DragSession.ResizeLeft -> {
                                 val minTrim = 0f
-                                val proposedTrim = (session.newTrimIn + dt)
-                                    .coerceIn(minTrim, session.clip.trimOut - 0.25f)
+                                val maxTrim = session.clip.trimOut - 0.25f
+                                val proposedTrim = (session.newTrimIn + dt).coerceIn(minTrim, maxTrim)
                                 val delta = proposedTrim - session.newTrimIn
                                 session.newTrimIn = proposedTrim
                                 session.newStart = max(0f, session.newStart + delta)
+                                // Snap the moving left edge to a nearby clip edge (Ctrl or Alt disables it).
+                                var start = session.newStart
+                                var trimIn = session.newTrimIn
+                                if (!KeyModifierState.ctrlDown && !KeyModifierState.altDown) {
+                                    val snap = nearestSnap(session.snapEdges, start)
+                                    if (snap != null && snap >= 0f) {
+                                        val snapTrim = trimIn + (snap - start)
+                                        if (snapTrim in minTrim..maxTrim) {
+                                            start = snap
+                                            trimIn = snapTrim
+                                        }
+                                    }
+                                }
+                                session.snappedStart = start
+                                session.snappedTrimIn = trimIn
                                 viewModel.updateClipLocal(
-                                    session.clip.copy(timelineStart = session.newStart, trimIn = session.newTrimIn)
+                                    session.clip.copy(timelineStart = start, trimIn = trimIn)
                                 )
                             }
                             is DragSession.ResizeRight -> {
@@ -613,7 +726,21 @@ private fun TimelineCanvas(
                                 if (session.maxTrimOut > 0f) {
                                     session.newTrimOut = session.newTrimOut.coerceAtMost(session.maxTrimOut)
                                 }
-                                viewModel.updateClipLocal(session.clip.copy(trimOut = session.newTrimOut))
+                                // Snap the moving right edge to a nearby clip edge (Ctrl or Alt disables it).
+                                var trimOut = session.newTrimOut
+                                if (!KeyModifierState.ctrlDown && !KeyModifierState.altDown) {
+                                    val end = session.clip.timelineStart + (session.newTrimOut - session.clip.trimIn)
+                                    val snap = nearestSnap(session.snapEdges, end)
+                                    if (snap != null) {
+                                        val snapTrimOut = session.clip.trimIn + (snap - session.clip.timelineStart)
+                                        val maxOut = if (session.maxTrimOut > 0f) session.maxTrimOut else Float.MAX_VALUE
+                                        if (snapTrimOut >= session.clip.trimIn + 0.25f && snapTrimOut <= maxOut) {
+                                            trimOut = snapTrimOut
+                                        }
+                                    }
+                                }
+                                session.snappedTrimOut = trimOut
+                                viewModel.updateClipLocal(session.clip.copy(trimOut = trimOut))
                             }
                             null -> {}
                         }
@@ -672,9 +799,9 @@ private fun commitDrag(viewModel: AppViewModel, session: DragSession?) {
                 session.clip.copy(timelineStart = session.snappedStart, trackId = session.newTrackId)
             )
         is DragSession.ResizeLeft ->
-            viewModel.updateClip(session.clip.copy(timelineStart = session.newStart, trimIn = session.newTrimIn))
+            viewModel.updateClip(session.clip.copy(timelineStart = session.snappedStart, trimIn = session.snappedTrimIn))
         is DragSession.ResizeRight ->
-            viewModel.updateClip(session.clip.copy(trimOut = session.newTrimOut))
+            viewModel.updateClip(session.clip.copy(trimOut = session.snappedTrimOut))
         else -> {}
     }
 }

@@ -14,6 +14,9 @@ import app.moviestudio.Asset
 object KeyModifierState {
     /** True while a Ctrl key is held down. */
     var ctrlDown by mutableStateOf(false)
+
+    /** True while an Alt key is held down (holding Alt disables clip-to-clip snapping). */
+    var altDown by mutableStateOf(false)
 }
 
 /** A resolved timeline drop position: seconds on the ruler plus the track row under the pointer. */

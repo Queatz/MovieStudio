@@ -16,6 +16,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -69,8 +70,10 @@ fun App() {
                 .focusRequester(rootFocus)
                 .focusable()
                 .onPreviewKeyEvent { event ->
-                    // Pointer gestures (e.g. Ctrl-snap drags) read the live Ctrl state from here.
+                    // Pointer gestures (e.g. Ctrl-snap drags) read the live Ctrl state from here;
+                    // holding Alt disables clip-to-clip snapping.
                     KeyModifierState.ctrlDown = event.isCtrlPressed
+                    KeyModifierState.altDown = event.isAltPressed
                     val editingText = TextInputFocusTracker.anyFocused
                     val inEditor = viewModel.currentScreen == Screen.EDITOR
                     when {

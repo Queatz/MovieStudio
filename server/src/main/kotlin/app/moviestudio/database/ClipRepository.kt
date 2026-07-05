@@ -77,4 +77,16 @@ object ClipRepository {
         }
         return clips
     }
+
+    /** All clips that reference the given asset (used to keep clips in sync when its media changes). */
+    fun queryByAssetId(assetId: String): List<Clip> {
+        val query = "FOR c IN $COLLECTION FILTER c.assetId == @assetId RETURN c"
+        val bindVars = mapOf("assetId" to assetId)
+        val cursor = ArangoDatabase.db.query(query, RawJson::class.java, bindVars)
+        val clips = mutableListOf<Clip>()
+        for (rawJson in cursor) {
+            clips.add(json.decodeFromString(Clip.serializer(), rawJson.get()))
+        }
+        return clips
+    }
 }

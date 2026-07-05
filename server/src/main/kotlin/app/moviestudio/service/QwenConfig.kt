@@ -60,7 +60,7 @@ object QwenConfig {
     val ttsModel: String = Env.get("QWEN_TTS_MODEL", "qwen-tts")
     // Instruction-following TTS (Qwen instruct): selected when the generation setup carries voice
     // instructions describing how the line should be delivered (e.g. "happy", "sad", "excited").
-    val ttsInstructModel: String = Env.get("QWEN_TTS_INSTRUCT_MODEL", "qwen3-tts-instruct")
+    val ttsInstructModel: String = Env.get("QWEN_TTS_INSTRUCT_MODEL", "qwen3-tts-instruct-flash")
     val voiceEnrollModel: String = Env.get("QWEN_VOICE_ENROLL_MODEL", "voice-enrollment")
     val voiceCloneTargetModel: String = Env.get("QWEN_VOICE_CLONE_TARGET", "cosyvoice-v2")
 

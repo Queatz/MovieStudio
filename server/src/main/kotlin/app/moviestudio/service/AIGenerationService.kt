@@ -11,6 +11,7 @@ import app.moviestudio.JobStatus
 import app.moviestudio.VoiceClone
 import app.moviestudio.WordTiming
 import app.moviestudio.database.AssetRepository
+import app.moviestudio.database.ClipRepository
 import app.moviestudio.database.JobRepository
 import app.moviestudio.database.VoiceCloneRepository
 import kotlinx.serialization.Serializable
@@ -211,6 +212,22 @@ object GenerationCommon {
                 sourceOffsetSeconds = sourceOffsetSeconds
             )
             AssetRepository.update(updated)
+            // A (re)generation replaces the asset's media entirely, so any timeline clip that
+            // referenced it must follow the freshly generated media instead of the stale
+            // placeholder/previous length (e.g. a skeleton-planned VOICE clip kept at its planned
+            // duration while the generated voiceover is longer/shorter). Resize referencing clips
+            // to span the full new media, then refresh the movie's auto-calculated duration.
+            val fullTrimOut = durationSeconds.toFloat()
+            var clipsChanged = false
+            ClipRepository.queryByAssetId(existing.id).forEach { clip ->
+                if (clip.trimIn != 0f || clip.trimOut != fullTrimOut) {
+                    ClipRepository.update(clip.copy(trimIn = 0f, trimOut = fullTrimOut))
+                    clipsChanged = true
+                }
+            }
+            if (clipsChanged) {
+                job.movieId.takeIf { it.isNotBlank() }?.let { TimelineService.refreshMovieDuration(it) }
+            }
             updated
         } else {
             val created = Asset(

@@ -793,52 +793,72 @@ fun WordTimingEditorDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () 
         }
         Spacer(Modifier.height(10.dp))
 
-        // Word blocks with labels + drag handles, on the same time scale as the waveform above.
-        // Words are positioned absolutely (in pixels) so the left/right handles can resize them.
+        // Word blocks with labels + drag handles, wrapped into lines of up to 8 words each so
+        // long transcripts stay readable. Each line uses its own local time scale (spanning only
+        // that line's words) so a line never gets squeezed into unreadably thin blocks, while the
+        // left/right handles still resize the selected word by the correct number of seconds.
         val minWordGap = 0.02f
+        val wordsPerLine = 8
+        val lineGroups = timings.indices.chunked(wordsPerLine)
+        val lineHeight = 48.dp
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp)
+                .height(lineHeight * lineGroups.size.coerceAtLeast(1))
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF17151C))
         ) {
             val density = LocalDensity.current
             val stripWidthPx = with(density) { maxWidth.toPx() }
-            val pxPerSecond = stripWidthPx / duration
+            val lineHeightPx = with(density) { lineHeight.toPx() }
             val handleWidthPx = with(density) { 12.dp.toPx() }
             val minWordWidthPx = with(density) { 2.dp.toPx() }
 
-            timings.forEachIndexed { index, word ->
-                val startX = word.start.toFloat() * pxPerSecond
-                val endX = word.end.toFloat() * pxPerSecond
-                val wordWidthPx = (endX - startX).coerceAtLeast(minWordWidthPx)
-                val blockColor = when {
-                    index == activeIndex -> Color(0xFFC9BCFF) // currently playing
-                    index == selectedIndex -> Color(0xFF8F7BFF) // selected for editing
-                    else -> Color(0xFF37324A)
-                }
-                Box(
-                    modifier = Modifier
-                        .offset { IntOffset(startX.roundToInt(), 0) }
-                        .width(with(density) { wordWidthPx.toDp() })
-                        .fillMaxHeight()
-                        .padding(vertical = 8.dp, horizontal = 1.dp)
-                        .clip(RoundedCornerShape(6.dp)) // clip BEFORE clickable
-                        .background(blockColor)
-                        .clickable {
-                            selectedIndex = index
-                            position = word.start.toFloat()
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        word.word,
-                        color = Color.White,
-                        fontSize = 9.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+            // A line's pixel scale is local to that line's own time span, so a line whose words
+            // are packed close together in time still fills the row width readably.
+            fun linePxPerSecond(indices: List<Int>): Float {
+                val lineStart = timings[indices.first()].start.toFloat()
+                val lineEnd = timings[indices.last()].end.toFloat()
+                return stripWidthPx / (lineEnd - lineStart).coerceAtLeast(0.01f)
+            }
+
+            lineGroups.forEachIndexed { lineIndex, indices ->
+                val lineStart = timings[indices.first()].start.toFloat()
+                val linePxPerSecond = linePxPerSecond(indices)
+                val lineOffsetY = (lineIndex * lineHeightPx).roundToInt()
+
+                indices.forEach { index ->
+                    val word = timings[index]
+                    val startX = (word.start.toFloat() - lineStart) * linePxPerSecond
+                    val endX = (word.end.toFloat() - lineStart) * linePxPerSecond
+                    val wordWidthPx = (endX - startX).coerceAtLeast(minWordWidthPx)
+                    val blockColor = when {
+                        index == activeIndex -> Color(0xFFC9BCFF) // currently playing
+                        index == selectedIndex -> Color(0xFF8F7BFF) // selected for editing
+                        else -> Color(0xFF37324A)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .offset { IntOffset(startX.roundToInt(), lineOffsetY) }
+                            .width(with(density) { wordWidthPx.toDp() })
+                            .height(lineHeight)
+                            .padding(vertical = 8.dp, horizontal = 1.dp)
+                            .clip(RoundedCornerShape(6.dp)) // clip BEFORE clickable
+                            .background(blockColor)
+                            .clickable {
+                                selectedIndex = index
+                                position = word.start.toFloat()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            word.word,
+                            color = Color.White,
+                            fontSize = 9.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 
@@ -847,22 +867,26 @@ fun WordTimingEditorDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () 
             if (sel != null) {
                 val prevEnd = timings.getOrNull(selectedIndex - 1)?.end?.toFloat() ?: 0f
                 val nextStart = timings.getOrNull(selectedIndex + 1)?.start?.toFloat() ?: duration
-                val selStartX = sel.start.toFloat() * pxPerSecond
-                val selEndX = sel.end.toFloat() * pxPerSecond
+                val selLineIndices = lineGroups[selectedIndex / wordsPerLine]
+                val selLineStart = timings[selLineIndices.first()].start.toFloat()
+                val selLinePxPerSecond = linePxPerSecond(selLineIndices)
+                val selLineOffsetY = ((selectedIndex / wordsPerLine) * lineHeightPx).roundToInt()
+                val selStartX = (sel.start.toFloat() - selLineStart) * selLinePxPerSecond
+                val selEndX = (sel.end.toFloat() - selLineStart) * selLinePxPerSecond
 
                 // Left handle → drags the word start (never past the previous word).
                 Box(
                     modifier = Modifier
-                        .offset { IntOffset((selStartX - handleWidthPx / 2f).roundToInt(), 0) }
+                        .offset { IntOffset((selStartX - handleWidthPx / 2f).roundToInt(), selLineOffsetY) }
                         .width(with(density) { handleWidthPx.toDp() })
-                        .fillMaxHeight()
+                        .height(lineHeight)
                         .padding(vertical = 4.dp)
                         .clip(RoundedCornerShape(4.dp)) // clip BEFORE pointerInput
                         .background(Color.White)
-                        .pointerInput(selectedIndex, pxPerSecond, prevEnd) {
+                        .pointerInput(selectedIndex, selLinePxPerSecond, prevEnd) {
                             detectHorizontalDragGestures { change, dragAmount ->
                                 change.consume()
-                                val deltaS = dragAmount / pxPerSecond
+                                val deltaS = dragAmount / selLinePxPerSecond
                                 timings = timings.mapIndexed { i, w ->
                                     if (i == selectedIndex) {
                                         val maxStart = (w.end.toFloat() - minWordGap).coerceAtLeast(prevEnd)
@@ -882,16 +906,16 @@ fun WordTimingEditorDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () 
                 // Right handle → drags the word end (never past the next word).
                 Box(
                     modifier = Modifier
-                        .offset { IntOffset((selEndX - handleWidthPx / 2f).roundToInt(), 0) }
+                        .offset { IntOffset((selEndX - handleWidthPx / 2f).roundToInt(), selLineOffsetY) }
                         .width(with(density) { handleWidthPx.toDp() })
-                        .fillMaxHeight()
+                        .height(lineHeight)
                         .padding(vertical = 4.dp)
                         .clip(RoundedCornerShape(4.dp)) // clip BEFORE pointerInput
                         .background(Color.White)
-                        .pointerInput(selectedIndex, pxPerSecond, nextStart) {
+                        .pointerInput(selectedIndex, selLinePxPerSecond, nextStart) {
                             detectHorizontalDragGestures { change, dragAmount ->
                                 change.consume()
-                                val deltaS = dragAmount / pxPerSecond
+                                val deltaS = dragAmount / selLinePxPerSecond
                                 timings = timings.mapIndexed { i, w ->
                                     if (i == selectedIndex) {
                                         val minEnd = (w.start.toFloat() + minWordGap).coerceAtMost(nextStart)
