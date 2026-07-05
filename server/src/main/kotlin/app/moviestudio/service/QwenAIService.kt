@@ -192,11 +192,12 @@ object QwenAIService : AIGenerationService {
         onProgress(100, "Generation completed")
     }
 
-    /** WAN 2.7 video generation: model picked predictably by the setup (T2V / I2V / R2V). */
+    /** WAN 2.7 video generation: model picked predictably by the setup (T2V / I2V / R2V / video-edit). */
     private suspend fun executeVideo(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val modelKind = setup.resolveVideoModelKind()
         val model = when (modelKind) {
+            "videoedit" -> QwenConfig.videoModelEdit
             "i2v" -> QwenConfig.videoModelI2V
             "r2v" -> QwenConfig.videoModelR2V
             else -> QwenConfig.videoModelT2V
@@ -216,10 +217,22 @@ object QwenAIService : AIGenerationService {
                     "r2v" -> put("ref_images_url", buildJsonArray {
                         setup.referenceImages.take(4).forEach { add(JsonPrimitive(it)) }
                     })
+                    // Full wan2.7-videoedit support: the base video to edit, plus every optional
+                    // guidance input the model accepts — reference images and a guiding first frame.
+                    "videoedit" -> {
+                        put("video_url", setup.videoUrl ?: "")
+                        if (setup.referenceImages.isNotEmpty()) put("ref_images_url", buildJsonArray {
+                            setup.referenceImages.take(4).forEach { add(JsonPrimitive(it)) }
+                        })
+                        if (!setup.imageUrl.isNullOrBlank()) put("img_url", setup.imageUrl)
+                    }
                 }
             }
             putJsonObject("parameters") {
-                if (modelKind == "t2v") put("size", setup.resolution.ifBlank { "1280*720" })
+                // T2V and video-edit both accept an explicit output size; I2V/R2V infer it.
+                if (modelKind == "t2v" || modelKind == "videoedit") {
+                    put("size", setup.resolution.ifBlank { "1280*720" })
+                }
                 val dur = setup.durationSeconds.toInt()
                 if (dur in 1..15) put("duration", dur)
             }

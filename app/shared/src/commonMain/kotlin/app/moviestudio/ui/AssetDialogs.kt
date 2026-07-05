@@ -3,17 +3,22 @@ package app.moviestudio.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -32,12 +37,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
@@ -174,7 +188,7 @@ fun AssetDetailsDialog(
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PillButton(
-                    "💾 Save & re-time with AI",
+                    "💾 Save & re-time",
                     compact = true,
                     enabled = transcriptDraft.isNotBlank() && transcriptDraft != (asset.transcript ?: "")
                 ) {
@@ -446,10 +460,33 @@ fun WordTimingEditorDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () 
     fun wordIndexAt(t: Float): Int =
         timings.indexOfFirst { t >= it.start.toFloat() && t <= it.end.toFloat() }
 
+    // The word currently under the playhead while playing (for the "follow along" highlight).
+    val activeIndex = if (playing) wordIndexAt(position) else -1
+
+    // Space toggles play/pause; the dialog grabs focus so the shortcut works immediately.
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
     StudioDialog(title = "Word timings", onDismiss = onDismiss, width = 640.dp) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(focusRequester)
+                .focusable()
+                .onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown && event.key == Key.Spacebar && canPlay) {
+                        if (!playing && position >= duration - 0.05f) position = 0f
+                        playing = !playing
+                        true
+                    } else {
+                        false
+                    }
+                }
+        ) {
         Text(
-            "Play or scrub the waveform to find a moment, then pick a word and drag its start/end " +
-                "so the captions line up. Neighboring words never overlap.",
+            "Play or scrub the waveform (press Space to play/pause). The word playing is " +
+                "highlighted. Pick a word and drag its start/end sliders, or grab the white handles " +
+                "on the word blocks below to resize it. Neighboring words never overlap.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -555,45 +592,120 @@ fun WordTimingEditorDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () 
         }
         Spacer(Modifier.height(10.dp))
 
-        // Word blocks with labels, laid out on the same time scale as the waveform above.
-        Box(
+        // Word blocks with labels + drag handles, on the same time scale as the waveform above.
+        // Words are positioned absolutely (in pixels) so the left/right handles can resize them.
+        val minWordGap = 0.02f
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(40.dp)
+                .height(48.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF17151C))
         ) {
-            Row(Modifier.fillMaxWidth().padding(4.dp)) {
-                var prevEnd = 0f
-                timings.forEachIndexed { index, word ->
-                    val gapBefore = ((word.start.toFloat() - prevEnd) / duration).coerceAtLeast(0f)
-                    if (gapBefore > 0.001f) Spacer(Modifier.weight(gapBefore))
-                    val widthWeight = ((word.end - word.start).toFloat() / duration).coerceAtLeast(0.015f)
-                    Box(
-                        modifier = Modifier
-                            .weight(widthWeight)
-                            .height(32.dp)
-                            .padding(horizontal = 1.dp)
-                            .clip(RoundedCornerShape(6.dp)) // clip BEFORE clickable
-                            .background(if (index == selectedIndex) Color(0xFF8F7BFF) else Color(0xFF37324A))
-                            .clickable {
-                                selectedIndex = index
-                                position = word.start.toFloat()
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            word.word,
-                            color = Color.White,
-                            fontSize = 9.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    prevEnd = word.end.toFloat()
+            val density = LocalDensity.current
+            val stripWidthPx = with(density) { maxWidth.toPx() }
+            val pxPerSecond = stripWidthPx / duration
+            val handleWidthPx = with(density) { 12.dp.toPx() }
+            val minWordWidthPx = with(density) { 2.dp.toPx() }
+
+            timings.forEachIndexed { index, word ->
+                val startX = word.start.toFloat() * pxPerSecond
+                val endX = word.end.toFloat() * pxPerSecond
+                val wordWidthPx = (endX - startX).coerceAtLeast(minWordWidthPx)
+                val blockColor = when {
+                    index == activeIndex -> Color(0xFFC9BCFF) // currently playing
+                    index == selectedIndex -> Color(0xFF8F7BFF) // selected for editing
+                    else -> Color(0xFF37324A)
                 }
-                val tail = (1f - prevEnd / duration).coerceAtLeast(0.001f)
-                if (tail > 0.001f) Spacer(Modifier.weight(tail))
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset(startX.roundToInt(), 0) }
+                        .width(with(density) { wordWidthPx.toDp() })
+                        .fillMaxHeight()
+                        .padding(vertical = 8.dp, horizontal = 1.dp)
+                        .clip(RoundedCornerShape(6.dp)) // clip BEFORE clickable
+                        .background(blockColor)
+                        .clickable {
+                            selectedIndex = index
+                            position = word.start.toFloat()
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        word.word,
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Left/right drag handles for the selected word: grab and slide to resize it here.
+            val sel = timings.getOrNull(selectedIndex)
+            if (sel != null) {
+                val prevEnd = timings.getOrNull(selectedIndex - 1)?.end?.toFloat() ?: 0f
+                val nextStart = timings.getOrNull(selectedIndex + 1)?.start?.toFloat() ?: duration
+                val selStartX = sel.start.toFloat() * pxPerSecond
+                val selEndX = sel.end.toFloat() * pxPerSecond
+
+                // Left handle → drags the word start (never past the previous word).
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset((selStartX - handleWidthPx / 2f).roundToInt(), 0) }
+                        .width(with(density) { handleWidthPx.toDp() })
+                        .fillMaxHeight()
+                        .padding(vertical = 4.dp)
+                        .clip(RoundedCornerShape(4.dp)) // clip BEFORE pointerInput
+                        .background(Color.White)
+                        .pointerInput(selectedIndex, pxPerSecond, prevEnd) {
+                            detectHorizontalDragGestures { change, dragAmount ->
+                                change.consume()
+                                val deltaS = dragAmount / pxPerSecond
+                                timings = timings.mapIndexed { i, w ->
+                                    if (i == selectedIndex) {
+                                        val maxStart = (w.end.toFloat() - minWordGap).coerceAtLeast(prevEnd)
+                                        val newStart = (w.start.toFloat() + deltaS).coerceIn(prevEnd, maxStart)
+                                        w.copy(start = newStart.toDouble())
+                                    } else {
+                                        w
+                                    }
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("⋮", color = Color(0xFF17151C), fontSize = 11.sp)
+                }
+
+                // Right handle → drags the word end (never past the next word).
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset((selEndX - handleWidthPx / 2f).roundToInt(), 0) }
+                        .width(with(density) { handleWidthPx.toDp() })
+                        .fillMaxHeight()
+                        .padding(vertical = 4.dp)
+                        .clip(RoundedCornerShape(4.dp)) // clip BEFORE pointerInput
+                        .background(Color.White)
+                        .pointerInput(selectedIndex, pxPerSecond, nextStart) {
+                            detectHorizontalDragGestures { change, dragAmount ->
+                                change.consume()
+                                val deltaS = dragAmount / pxPerSecond
+                                timings = timings.mapIndexed { i, w ->
+                                    if (i == selectedIndex) {
+                                        val minEnd = (w.start.toFloat() + minWordGap).coerceAtMost(nextStart)
+                                        val newEnd = (w.end.toFloat() + deltaS).coerceIn(minEnd, nextStart)
+                                        w.copy(end = newEnd.toDouble())
+                                    } else {
+                                        w
+                                    }
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("⋮", color = Color(0xFF17151C), fontSize = 11.sp)
+                }
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -646,6 +758,7 @@ fun WordTimingEditorDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () 
                 viewModel.saveWordTimings(asset, timings)
                 onDismiss()
             }
+        }
         }
     }
 }

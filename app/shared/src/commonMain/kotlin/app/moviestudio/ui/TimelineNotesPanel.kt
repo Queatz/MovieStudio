@@ -74,7 +74,7 @@ fun TimelineNotesPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                GhostPillButton("＋ Note", compact = true) { showAdd = true }
+                GhostPillButton("＋", compact = true) { showAdd = true }
                 Spacer(Modifier.width(4.dp))
                 RoundIconButton("⏴", contentDescription = "Collapse the notes panel", size = 28.dp) {
                     viewModel.notesPanelExpanded = false

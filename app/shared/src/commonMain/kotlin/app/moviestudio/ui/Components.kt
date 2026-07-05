@@ -9,9 +9,11 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -56,6 +58,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -64,8 +67,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import app.moviestudio.UploadState
+import app.moviestudio.VideoPlayer
 import app.moviestudio.startRealtimeSpeechInput
 import app.moviestudio.stopRealtimeSpeechInput
+import coil3.compose.AsyncImage
 import kotlin.math.roundToInt
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -571,6 +576,80 @@ fun RemovableChip(
             color = MaterialTheme.colorScheme.onSecondaryContainer
         )
         RoundIconButton("✕", size = 22.dp, tint = MaterialTheme.colorScheme.onSecondaryContainer) { onRemove() }
+    }
+}
+
+/**
+ * A rounded image thumbnail (Coil [AsyncImage], center-cropped) used across the dialogs to preview
+ * a selected/attached image. When [onRemove] is provided a small ✕ badge overlays the top-right
+ * corner so the image can be detached.
+ */
+@Composable
+fun ImageThumbnail(
+    url: String,
+    modifier: Modifier = Modifier,
+    size: Dp = 72.dp,
+    onRemove: (() -> Unit)? = null
+) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        AsyncImage(
+            model = url,
+            contentDescription = "Image preview",
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+        if (onRemove != null) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(3.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .clickable { onRemove() }
+                    .padding(horizontal = 5.dp, vertical = 1.dp)
+            ) {
+                Text("✕", color = Color.White, fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+/**
+ * A lightweight inline video preview: renders the video with a tap-to-play/pause overlay button.
+ * Used by dialogs that need to preview a video asset without the full editor transport controls.
+ */
+@Composable
+fun VideoPreview(
+    url: String,
+    modifier: Modifier = Modifier
+) {
+    var playing by remember(url) { mutableStateOf(false) }
+    var playhead by remember(url) { mutableStateOf(0f) }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
+    ) {
+        VideoPlayer(
+            url = url,
+            isPlaying = playing,
+            playhead = playhead,
+            onTimeUpdate = { playhead = it },
+            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+        )
+        RoundIconButton(
+            if (playing) "⏸" else "▶",
+            contentDescription = "Play / pause preview",
+            size = 44.dp,
+            background = Color.Black.copy(alpha = 0.45f),
+            tint = Color.White
+        ) { playing = !playing }
     }
 }
 

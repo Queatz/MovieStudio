@@ -323,7 +323,7 @@ private fun AddMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        PillButton("＋ Add", compact = true) { expanded = true }
+        PillButton("＋", compact = true) { expanded = true }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             @Composable
             fun item(label: String, action: () -> Unit) {

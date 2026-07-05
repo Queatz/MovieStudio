@@ -1,13 +1,17 @@
 package app.moviestudio.ui
 
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,6 +20,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import app.moviestudio.AppViewModel
 import app.moviestudio.AssetType
@@ -42,14 +48,32 @@ private fun ReferenceImagePicker(
 
     SectionLabel("Reference images (${selected.size}/$max)")
     if (selected.isNotEmpty()) {
+        // Preview each attached reference image so the user sees exactly what is selected.
         Row(
             Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             selected.forEach { url ->
-                val label = imageAssets.firstOrNull { it.ossUrl == url }?.description?.take(18)
-                    ?: url.substringAfterLast('/').take(18)
-                RemovableChip("🖼 $label") { onChange(selected - url) }
+                ImageThumbnail(url, size = 76.dp) { onChange(selected - url) }
+            }
+        }
+    }
+    // Library images available to attach, shown as clickable thumbnail previews.
+    val available = imageAssets.filter { it.ossUrl !in selected }.take(14)
+    if (available.isNotEmpty()) {
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            available.forEach { image ->
+                val canAdd = selected.size < max
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(enabled = canAdd) { onChange((selected + image.ossUrl).take(max)) }
+                ) {
+                    ImageThumbnail(image.ossUrl, size = 60.dp)
+                }
             }
         }
     }
@@ -57,13 +81,6 @@ private fun ReferenceImagePicker(
         Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        imageAssets.filter { it.ossUrl !in selected }.take(14).forEach { image ->
-            GhostPillButton(
-                "🖼 " + (image.description ?: "image").take(16),
-                compact = true,
-                enabled = selected.size < max
-            ) { onChange((selected + image.ossUrl).take(max)) }
-        }
         GhostPillButton("📤 Upload image", compact = true) { viewModel.uploadAsset(AssetType.IMAGE) }
         GhostPillButton("✨ Generate with AI", compact = true, enabled = aiPrompt.isNotBlank()) {
             viewModel.generateMedia(GenerationSetup(kind = "image", prompt = aiPrompt))
@@ -122,11 +139,19 @@ private fun ReposeImageDialog(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             baseOptions.forEach { url ->
-                val label = "🖼 " + url.substringAfterLast('/').take(18)
-                if (baseUrl == url) {
-                    PillButton(label, compact = true) { }
-                } else {
-                    GhostPillButton(label, compact = true) { baseUrl = url }
+                val isSelected = baseUrl == url
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .border(
+                            width = if (isSelected) 2.dp else 0.dp,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                        .clickable { baseUrl = url }
+                        .padding(2.dp)
+                ) {
+                    ImageThumbnail(url, size = 64.dp)
                 }
             }
         }

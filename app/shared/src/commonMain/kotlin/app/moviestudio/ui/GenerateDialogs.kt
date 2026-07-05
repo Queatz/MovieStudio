@@ -85,10 +85,30 @@ fun GenerateMediaDialog(
         } ?: GenerationSetup(kind = "video", prompt = initialAsset?.description ?: "")
     }
 
-    var kind by remember { mutableStateOf(if (initialSetup.kind == "image") "image" else "video") }
+    // When editing an existing media asset, start in the mode matching its type (image edits start
+    // on "Image", video edits on "Video") and pre-select that very asset as the base media, so the
+    // edit repaints the thing the user opened.
+    val editingImage = initialAsset?.type == AssetType.IMAGE && initialAsset.ossUrl.isNotBlank()
+    val editingVideo = initialAsset?.type == AssetType.VIDEO && initialAsset.ossUrl.isNotBlank()
+
+    var kind by remember {
+        mutableStateOf(
+            when {
+                editingImage -> "image"
+                editingVideo -> "video"
+                initialSetup.kind == "image" -> "image"
+                else -> "video"
+            }
+        )
+    }
     var prompt by remember { mutableStateOf(initialSetup.prompt) }
     var negativePrompt by remember { mutableStateOf(initialSetup.negativePrompt) }
-    var imageUrl by remember { mutableStateOf(initialSetup.imageUrl) }
+    var imageUrl by remember {
+        mutableStateOf(if (editingImage) initialAsset!!.ossUrl else initialSetup.imageUrl)
+    }
+    var videoUrl by remember {
+        mutableStateOf(if (editingVideo) initialAsset!!.ossUrl else initialSetup.videoUrl)
+    }
     var characterIds by remember { mutableStateOf(initialSetup.characterIds) }
     var sceneIds by remember { mutableStateOf(initialSetup.sceneIds) }
     var referenceImages by remember { mutableStateOf(initialSetup.referenceImages) }
@@ -112,6 +132,8 @@ fun GenerateMediaDialog(
         prompt = prompt,
         negativePrompt = negativePrompt,
         imageUrl = imageUrl,
+        // The base video only applies to video generation (switches to the video-edit model).
+        videoUrl = if (kind == "video") videoUrl else null,
         referenceImages = referenceImages,
         characterIds = characterIds,
         sceneIds = sceneIds,
@@ -122,6 +144,7 @@ fun GenerateMediaDialog(
     val modelLabel = when {
         kind == "image" && !imageUrl.isNullOrBlank() -> "Image edit (image-to-image)"
         kind == "image" -> "Text-to-image"
+        modelKind == "videoedit" -> "WAN 2.7 Video edit"
         modelKind == "i2v" -> "WAN 2.7 I2V (image-to-video)"
         modelKind == "r2v" -> "WAN 2.7 R2V (reference-to-video)"
         else -> "WAN 2.7 T2V (text-to-video)"

@@ -617,10 +617,11 @@ fun sequencerRowFrequency(pitch: Int): Double {
  * (see [Asset.generationConfig]) so generations can be retried or tweaked and re-run.
  *
  * The model is selected predictably from the attached inputs:
+ * - video + a base video -> video edit (wan2.7-videoedit)
  * - video + reference images / characters / scenes -> R2V
  * - video + a start image -> I2V
  * - video + prompt only -> T2V
- * - image -> text-to-image
+ * - image -> text-to-image (or image edit when a base image is attached)
  */
 @Serializable
 data class GenerationSetup(
@@ -628,6 +629,8 @@ data class GenerationSetup(
     val prompt: String = "",
     val negativePrompt: String = "",
     val imageUrl: String? = null,
+    // A base video to edit (switches video generation to the wan2.7-videoedit model).
+    val videoUrl: String? = null,
     val referenceImages: List<String> = emptyList(),
     val characterIds: List<String> = emptyList(),
     val sceneIds: List<String> = emptyList(),
@@ -646,6 +649,7 @@ data class GenerationSetup(
     /** The WAN model family this setup resolves to (for video/image kinds). */
     fun resolveVideoModelKind(): String = when {
         kind != "video" -> kind
+        videoUrl != null -> "videoedit"
         referenceImages.isNotEmpty() || characterIds.isNotEmpty() || sceneIds.isNotEmpty() -> "r2v"
         imageUrl != null -> "i2v"
         else -> "t2v"

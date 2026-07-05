@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory
  * - QWEN_VIDEO_MODEL_T2V       WAN text-to-video model (default wan2.7-t2v).
  * - QWEN_VIDEO_MODEL_I2V       WAN image-to-video model (default wan2.7-i2v).
  * - QWEN_VIDEO_MODEL_R2V       WAN reference-to-video model (default wan2.7-r2v).
+ * - QWEN_VIDEO_MODEL_EDIT      WAN video-editing model (default wan2.7-videoedit).
  * - QWEN_IMAGE_MODEL           Text-to-image model (default wanx2.1-t2i-turbo).
  * - QWEN_IMAGE_EDIT_MODEL      Image-to-image editing model (default wanx2.1-imageedit).
  * - QWEN_MUSIC_MODEL           Music generation model (default fun-music-preview).
@@ -46,6 +47,9 @@ object QwenConfig {
     val videoModelT2V: String = Env.get("QWEN_VIDEO_MODEL_T2V", Env.get("QWEN_VIDEO_MODEL", "wan2.7-t2v"))
     val videoModelI2V: String = Env.get("QWEN_VIDEO_MODEL_I2V", "wan2.7-i2v")
     val videoModelR2V: String = Env.get("QWEN_VIDEO_MODEL_R2V", "wan2.7-r2v")
+    // Video-editing model: takes a base video plus a prompt (and optional reference images) and
+    // repaints/edits the source clip. Selected when a base video is attached to the setup.
+    val videoModelEdit: String = Env.get("QWEN_VIDEO_MODEL_EDIT", "wan2.7-videoedit")
 
     val imageModel: String = Env.get("QWEN_IMAGE_MODEL", "wanx2.1-t2i-turbo")
     val imageEditModel: String = Env.get("QWEN_IMAGE_EDIT_MODEL", "wanx2.1-imageedit")
