@@ -3,6 +3,7 @@ package app.moviestudio
 import app.moviestudio.database.ArangoDatabase
 import app.moviestudio.routing.movieRoutes
 import app.moviestudio.routing.assetRoutes
+import app.moviestudio.routing.documentRoutes
 import app.moviestudio.routing.generationRoutes
 import app.moviestudio.routing.jobRoutes
 import app.moviestudio.routing.libraryRoutes
@@ -103,6 +104,7 @@ fun Application.module() {
         }
         movieRoutes()
         assetRoutes()
+        documentRoutes()
         jobRoutes()
         generationRoutes()
         libraryRoutes()

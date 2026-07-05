@@ -81,8 +81,8 @@ Recognized variables:
 | `QWEN_VIDEO_MODEL_I2V` | WAN image-to-video model (default `wan2.7-i2v`). |
 | `QWEN_VIDEO_MODEL_R2V` | WAN reference-to-video model (default `wan2.7-r2v`). |
 | `QWEN_IMAGE_MODEL` | Text-to-image model (default `wanx2.1-t2i-turbo`). |
-| `QWEN_MUSIC_MODEL` | Music generation model (default `fun-music-preview`). |
-| `QWEN_AUDIO_MODEL` | Sound-effect model (text-to-audio and video-driven, default `audio-generation-v1`). |
+| `QWEN_MUSIC_MODEL` | Music generation model (default `fun-music-v1`). |
+| `QWEN_AUDIO_MODEL` | Sound-effect model (text-to-audio and video-driven, default `fun-audiogen-v1`). |
 | `QWEN_TTS_MODEL` | Text-to-speech model (default `qwen-tts`). |
 | `QWEN_VOICE_ENROLL_MODEL` | Voice cloning enrollment model (default `voice-enrollment`). |
 | `QWEN_VOICE_CLONE_TARGET` | TTS model cloned voices target (default `cosyvoice-v2`). |

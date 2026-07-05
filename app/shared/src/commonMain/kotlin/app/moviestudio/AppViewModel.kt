@@ -59,6 +59,8 @@ class AppViewModel : ViewModel() {
         private set
     var notesError by mutableStateOf<String?>(null)
         private set
+    var documentsError by mutableStateOf<String?>(null)
+        private set
 
     // --------------------------------------------------------------------------------- library
     var libraryAssets by mutableStateOf<List<Asset>>(emptyList())
@@ -83,6 +85,17 @@ class AppViewModel : ViewModel() {
 
     /** The note highlighted in the panel (also set by clicking a marker on the timeline). */
     var selectedNoteId by mutableStateOf<String?>(null)
+
+    // ------------------------------------------------------------------------------- documents
+    /** Rich-text documents of the open movie (script, research...), forming a tree. */
+    var documents by mutableStateOf<List<MovieDocument>>(emptyList())
+        private set
+
+    /** True while the movie documents panel is open (the preview area becomes the editor). */
+    var documentsPanelExpanded by mutableStateOf(false)
+
+    /** The document open in the editor, or null for the documents empty state. */
+    var selectedDocumentId by mutableStateOf<String?>(null)
 
     // -------------------------------------------------------------------------------- playback
     var playhead by mutableStateOf(0f)
@@ -202,8 +215,12 @@ class AppViewModel : ViewModel() {
         selectedClipId = null
         selectedNoteId = null
         timelineNotes = emptyList()
+        documentsPanelExpanded = false
+        selectedDocumentId = null
+        documents = emptyList()
         refreshTimeline()
         refreshNotes()
+        refreshDocuments()
         refreshLibrary()
         refreshCharactersAndScenes()
         refreshVoices()
@@ -218,6 +235,8 @@ class AppViewModel : ViewModel() {
         timeline = null
         selectedClipId = null
         selectedNoteId = null
+        selectedDocumentId = null
+        documentsPanelExpanded = false
         loadMovies()
     }
 
@@ -513,6 +532,54 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /** The smallest piece (in seconds) a split may leave on either side of the playhead. */
+    private val minSplitSliver = 0.05f
+
+    /**
+     * Whether the currently selected clip can be split at the current playhead: a clip must be
+     * selected and the playhead must fall strictly inside it (leaving a sliver on each side).
+     */
+    fun canSplitSelectedClip(): Boolean {
+        val clip = findClip(selectedClipId)?.first ?: return false
+        val offset = playhead - clip.timelineStart
+        val length = clip.trimOut - clip.trimIn
+        return offset > minSplitSliver && offset < length - minSplitSliver
+    }
+
+    /**
+     * Splits the selected clip into two at the current playhead: the existing clip is trimmed to
+     * end at the playhead, and a new clip covers the remainder. No-op when the playhead is not
+     * strictly inside the selected clip (see [canSplitSelectedClip]).
+     */
+    fun splitSelectedClip() {
+        val movieId = currentMovie?.id ?: return
+        val clip = findClip(selectedClipId)?.first ?: return
+        val offset = playhead - clip.timelineStart
+        val length = clip.trimOut - clip.trimIn
+        if (offset <= minSplitSliver || offset >= length - minSplitSliver) return
+
+        val left = clip.copy(trimOut = clip.trimIn + offset)
+        val right = clip.copy(
+            id = generateId(),
+            timelineStart = clip.timelineStart + offset,
+            trimIn = clip.trimIn + offset
+        )
+        // Optimistically update local state so the split appears instantly.
+        applyClipLocally(left)
+        applyClipLocally(right)
+        viewModelScope.launch {
+            try {
+                NetworkService.updateClip(movieId, left)
+                NetworkService.createClip(movieId, right)
+                selectedClipId = right.id
+                refreshTimeline()
+            } catch (e: Exception) {
+                errorMessage = "Failed to split clip: ${e.message}"
+                refreshTimeline()
+            }
+        }
+    }
+
     /** Updates a clip's parsed effects configuration (transition, captions, volume). */
     fun updateClipEffects(clip: Clip, effects: EffectsConfig) {
         updateClip(clip.copy(effectsConfig = encodeEffectsConfig(effects)))
@@ -611,6 +678,137 @@ class AppViewModel : ViewModel() {
         seek(note.atSeconds.toFloat())
     }
 
+    // ================================================================================= documents
+
+    fun refreshDocuments() {
+        val movieId = currentMovie?.id ?: return
+        viewModelScope.launch {
+            try {
+                documents = NetworkService.getDocuments(movieId)
+                documentsError = null
+            } catch (e: Exception) {
+                documentsError = "Failed to load documents: ${e.message}"
+            }
+        }
+    }
+
+    /** Creates a new document (optionally nested under [parentId]) and opens it in the editor. */
+    fun addDocument(parentId: String? = null, title: String = "Untitled document") {
+        val movieId = currentMovie?.id ?: return
+        viewModelScope.launch {
+            try {
+                val siblings = documents.filter { it.parentId == parentId }
+                val document = MovieDocument(
+                    id = generateId(),
+                    movieId = movieId,
+                    title = title,
+                    parentId = parentId,
+                    sortIndex = (siblings.maxOfOrNull { it.sortIndex } ?: -1) + 1
+                )
+                val saved = NetworkService.createDocument(movieId, document)
+                documents = documents + saved
+                selectedDocumentId = saved.id
+            } catch (e: Exception) {
+                errorMessage = "Failed to create document: ${e.message}"
+            }
+        }
+    }
+
+    /**
+     * Persists a document (rename, content auto-save or move). Optimistic so typing feels
+     * instant; the server maintains the restorable content history on every content change.
+     */
+    fun updateDocument(document: MovieDocument) {
+        val movieId = currentMovie?.id ?: return
+        if (document.title.isBlank()) return
+        documents = documents.map { if (it.id == document.id) document else it }
+        viewModelScope.launch {
+            try {
+                val saved = NetworkService.updateDocument(movieId, document)
+                // Adopt the server copy (it carries the history checkpoints) unless the user
+                // typed further while the save was in flight.
+                documents = documents.map {
+                    if (it.id == saved.id && it.content == document.content && it.title == document.title) saved
+                    else it
+                }
+            } catch (e: Exception) {
+                errorMessage = "Failed to save document: ${e.message}"
+                refreshDocuments()
+            }
+        }
+    }
+
+    /** Deletes [documentId] together with its whole subtree of child documents. */
+    fun deleteDocument(documentId: String) {
+        val movieId = currentMovie?.id ?: return
+        viewModelScope.launch {
+            try {
+                val removed = documentSubtreeIds(documentId)
+                NetworkService.deleteDocument(movieId, documentId)
+                documents = documents.filter { it.id !in removed }
+                if (selectedDocumentId in removed) selectedDocumentId = null
+            } catch (e: Exception) {
+                errorMessage = "Failed to delete document: ${e.message}"
+            }
+        }
+    }
+
+    /** [documentId] plus every descendant document id (children, grandchildren...). */
+    fun documentSubtreeIds(documentId: String): Set<String> {
+        val ids = mutableSetOf(documentId)
+        var changed = true
+        while (changed) {
+            changed = false
+            documents.forEach { doc ->
+                val parent = doc.parentId
+                if (parent != null && parent in ids && ids.add(doc.id)) changed = true
+            }
+        }
+        return ids
+    }
+
+    /**
+     * Moves a document in the tree (drag and drop): re-parents it under [newParentId] and places
+     * it among those siblings at [targetIndex]. Dropping a document into its own subtree is
+     * ignored (it would orphan the branch). Every sibling whose position changed is persisted.
+     */
+    fun moveDocument(documentId: String, newParentId: String?, targetIndex: Int) {
+        val movieId = currentMovie?.id ?: return
+        val moved = documents.firstOrNull { it.id == documentId } ?: return
+        if (newParentId != null && newParentId in documentSubtreeIds(documentId)) return
+
+        val siblings = documents
+            .filter { it.parentId == newParentId && it.id != documentId }
+            .sortedBy { it.sortIndex }
+            .toMutableList()
+        siblings.add(targetIndex.coerceIn(0, siblings.size), moved.copy(parentId = newParentId))
+
+        val renumbered = siblings.mapIndexed { index, doc -> doc.copy(sortIndex = index) }
+        val changed = renumbered.filter { doc ->
+            val before = documents.firstOrNull { it.id == doc.id }
+            before == null || before.parentId != doc.parentId || before.sortIndex != doc.sortIndex
+        }
+        if (changed.isEmpty()) return
+        // Optimistic local re-order so the drop lands instantly.
+        documents = documents.map { doc -> renumbered.firstOrNull { it.id == doc.id } ?: doc }
+        viewModelScope.launch {
+            try {
+                changed.forEach { NetworkService.updateDocument(movieId, it) }
+            } catch (e: Exception) {
+                errorMessage = "Failed to move document: ${e.message}"
+                refreshDocuments()
+            }
+        }
+    }
+
+    /**
+     * Restores a previous version of the document's content from its history. The content it
+     * replaces is checkpointed into the history server-side, so nothing is lost.
+     */
+    fun restoreDocumentVersion(document: MovieDocument, version: DocumentVersion) {
+        updateDocument(document.copy(content = version.content))
+    }
+
     // =================================================================================== library
 
     fun refreshLibrary() {
@@ -662,7 +860,7 @@ class AppViewModel : ViewModel() {
                         type = AssetType.IMAGE,
                         ossUrl = uploaded.ossUrl,
                         durationSeconds = 5.0,
-                        movieId = null,
+                        movieId = currentMovie?.id,
                         tags = listOf("uploaded", "reference"),
                         aiPrompt = null,
                         description = uploaded.fileName
@@ -686,7 +884,7 @@ class AppViewModel : ViewModel() {
                     type = type,
                     ossUrl = "",
                     durationSeconds = 5.0,
-                    movieId = null,
+                    movieId = currentMovie?.id,
                     tags = listOf("description-only"),
                     aiPrompt = description,
                     description = description
@@ -724,7 +922,7 @@ class AppViewModel : ViewModel() {
                                         type = AssetType.VOICE,
                                         ossUrl = "",
                                         durationSeconds = 5.0,
-                                        movieId = null,
+                                        movieId = currentMovie?.id,
                                         tags = listOf("description-only"),
                                         aiPrompt = text,
                                         description = text
@@ -744,7 +942,7 @@ class AppViewModel : ViewModel() {
                                 type = type,
                                 ossUrl = uploaded.ossUrl,
                                 durationSeconds = uploaded.durationSeconds,
-                                movieId = null,
+                                movieId = currentMovie?.id,
                                 tags = listOf("uploaded"),
                                 aiPrompt = null,
                                 description = uploaded.fileName
@@ -777,7 +975,7 @@ class AppViewModel : ViewModel() {
                     type = type,
                     ossUrl = uploaded.ossUrl,
                     durationSeconds = uploaded.durationSeconds,
-                    movieId = null,
+                    movieId = currentMovie?.id,
                     tags = listOf("uploaded"),
                     aiPrompt = null,
                     description = description.ifBlank { uploaded.fileName }
@@ -806,7 +1004,7 @@ class AppViewModel : ViewModel() {
                     type = AssetType.VOICE,
                     ossUrl = recording.ossUrl,
                     durationSeconds = recording.durationSeconds,
-                    movieId = null,
+                    movieId = currentMovie?.id,
                     tags = listOf("recorded"),
                     aiPrompt = null,
                     description = name.ifBlank { "Voice recording" }
@@ -835,7 +1033,7 @@ class AppViewModel : ViewModel() {
                     type = AssetType.AUDIO,
                     ossUrl = recording.ossUrl,
                     durationSeconds = recording.durationSeconds,
-                    movieId = null,
+                    movieId = currentMovie?.id,
                     tags = listOf("recorded"),
                     aiPrompt = null,
                     description = name.ifBlank { "Sound effect recording" }
@@ -869,18 +1067,6 @@ class AppViewModel : ViewModel() {
                 refreshLibrary()
             } catch (e: Exception) {
                 errorMessage = "Failed to delete asset: ${e.message}"
-            }
-        }
-    }
-
-    /** Queues async generation (or regeneration) of an asset's media from its description. */
-    fun generateAssetMedia(asset: Asset) {
-        viewModelScope.launch {
-            try {
-                NetworkService.generateAssetMedia(asset.id)
-                refreshActiveJobs()
-            } catch (e: Exception) {
-                errorMessage = "Failed to start generation: ${e.message}"
             }
         }
     }
@@ -981,7 +1167,7 @@ class AppViewModel : ViewModel() {
                         type = AssetType.IMAGE,
                         ossUrl = upload.downloadUrl,
                         durationSeconds = 5.0,
-                        movieId = null,
+                        movieId = currentMovie?.id,
                         tags = listOf("frame-capture"),
                         aiPrompt = null,
                         description = text.ifBlank { "Captured frame" }

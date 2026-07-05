@@ -48,7 +48,7 @@ import java.util.UUID
  * Supported generation tasks (all executed asynchronously through the job queue):
  * - video: WAN 2.7 family — T2V (prompt only), I2V (first-frame image), R2V (reference images).
  * - image: text-to-image, or image-to-image editing when a base image is attached.
- * - music: Fun-Music (`fun-music-preview`) with lyrics/theme/instrumental options.
+ * - music: Fun-Music (`fun-music-v1`) with lyrics/theme/instrumental options.
  * - tts:   Qwen TTS with preset or cloned voices; transcripts + word timings are stored.
  * - sfx:   sound effects via the mode picked in the setup — direct text-to-audio, video-driven
  *          (scoring a WAN source video) both backed by [QwenConfig.audioModel], or the legacy
@@ -297,7 +297,7 @@ object QwenAIService : AIGenerationService {
     }
 
     /**
-     * Music generation via Fun-Music (`fun-music-preview`): a synchronous API accepting a theme
+     * Music generation via Fun-Music (`fun-music-v1`): a synchronous API accepting a theme
      * prompt, optional full lyrics and an instrumental switch, returning a 24h OSS URL that we
      * immediately re-host on our own bucket.
      */
@@ -328,12 +328,22 @@ object QwenAIService : AIGenerationService {
         GenerationCommon.finalize(job, payload, ossUrl, duration)
     }
 
-    /** Qwen TTS with a preset or cloned voice. The input text becomes the stored transcript. */
+    /**
+     * Qwen TTS with a preset or cloned voice. The input text becomes the stored transcript.
+     * When the setup carries voice instructions ("happy", "sad", "excited"...), the
+     * instruction-following model ([QwenConfig.ttsInstructModel]) is used and the instructions
+     * ride along as the `instruct` input, steering how the line is delivered.
+     */
     private suspend fun executeTts(job: Job, payload: AiJobPayload, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val voice = setup.voice.ifBlank { "Cherry" }
+        val instructions = setup.instructions.trim()
         val isClonedVoice = VoiceCloneRepository.listAll().any { it.qwenVoiceId == voice }
-        val model = if (isClonedVoice) QwenConfig.voiceCloneTargetModel else QwenConfig.ttsModel
+        val model = when {
+            isClonedVoice -> QwenConfig.voiceCloneTargetModel
+            instructions.isNotBlank() -> QwenConfig.ttsInstructModel
+            else -> QwenConfig.ttsModel
+        }
         onProgress(20, "Synthesizing speech with $model (voice: $voice)...")
 
         val requestBody = buildJsonObject {
@@ -341,6 +351,7 @@ object QwenAIService : AIGenerationService {
             putJsonObject("input") {
                 put("text", setup.prompt)
                 put("voice", voice)
+                if (instructions.isNotBlank()) put("instruct", instructions)
             }
         }
         val response = postJson(
@@ -366,7 +377,7 @@ object QwenAIService : AIGenerationService {
 
     /**
      * Sound-effect generation. The mode is picked by [GenerationSetup.sfxModel], both DashScope
-     * modes backed by the same verified [QwenConfig.audioModel] (`audio-generation-v1`):
+     * modes backed by the same verified [QwenConfig.audioModel] (`fun-audiogen-v1`):
      * - "fun-audiogen": synthesizes the audio directly from the text prompt.
      * - "fun-audiogen-vd": video-driven, scores a freshly generated WAN source video with
      *   audio matching its visuals.

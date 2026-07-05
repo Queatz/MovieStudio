@@ -253,6 +253,46 @@ data class RenderRecord(
 )
 
 /**
+ * Quick-pick voice instruction presets offered by the TTS dialog (Qwen instruct). The user can
+ * also type any free-form instruction instead.
+ */
+val VOICE_INSTRUCTION_PRESETS: List<String> = listOf(
+    "Happy", "Sad", "Excited", "Calm", "Angry", "Whispering", "Dramatic"
+)
+
+/**
+ * A previously saved version of a movie document's content. Auto-save checkpoints the previous
+ * content into the document's [MovieDocument.history] so any past version can be restored.
+ */
+@Serializable
+data class DocumentVersion(
+    val content: String,
+    val savedAt: Long
+)
+
+/**
+ * A rich-text document attached to a movie: the full script, research, character bios or any
+ * other long-form text that is not part of the final movie itself. Documents auto-save, keep a
+ * restorable [history], and can nest under a [parentId] to form a tree (children are ordered by
+ * [sortIndex]). The content is stored as HTML — the rich editor's interchange format.
+ */
+@Serializable
+data class MovieDocument(
+    val id: String,
+    val movieId: String,
+    val title: String,
+    val content: String = "",
+    // Parent document id, letting documents nest; null = top level.
+    val parentId: String? = null,
+    // Position among siblings (lower sorts first).
+    val sortIndex: Int = 0,
+    // Previous saved versions of the content, most recent first. Restorable.
+    val history: List<DocumentVersion> = emptyList(),
+    val createdAt: Long = 0,
+    val updatedAt: Long = 0
+)
+
+/**
  * A text-only note pinned to a position on a movie's timeline — the plot-builder track. Notes
  * carry no media: they are planning/writing aids shown on the timeline as blue markers with
  * their text, and are managed from the editor's expandable notes side panel.
@@ -645,6 +685,9 @@ data class GenerationSetup(
     val instrumental: Boolean = false,
     // Voice-specific options.
     val voice: String = "",
+    // Optional voice instructions for TTS (Qwen instruct): how the line should be delivered,
+    // e.g. "happy", "sad", "excited", "whispering, slightly out of breath".
+    val instructions: String = "",
     // Sound-effect-specific options: which generation mode produces the audio (see
     // [SUPPORTED_SFX_MODELS]).
     val sfxModel: String = "wan"

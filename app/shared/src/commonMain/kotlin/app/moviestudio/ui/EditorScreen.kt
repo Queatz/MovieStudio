@@ -96,14 +96,29 @@ fun EditorScreen(viewModel: AppViewModel) {
                     .padding(top = 12.dp)
                     .padding(horizontal = 12.dp)
             ) {
-                TimelineNotesPanel(viewModel, Modifier.fillMaxHeight())
+                // Left rail: the timeline notes panel with the movie documents panel docked
+                // under it (its 📄 button sits below the notes panel).
+                Column(Modifier.fillMaxHeight()) {
+                    TimelineNotesPanel(viewModel, Modifier.weight(1f))
+                    Spacer(Modifier.height(12.dp))
+                    DocumentsPanel(
+                        viewModel,
+                        if (viewModel.documentsPanelExpanded) Modifier.weight(2f) else Modifier
+                    )
+                }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    PreviewPanel(viewModel, Modifier.weight(1f).fillMaxWidth())
-                    val selection = viewModel.findClip(viewModel.selectedClipId)
-                    if (selection != null) {
-                        Spacer(Modifier.height(8.dp))
-                        ClipInspector(viewModel, selection.first, selection.second)
+                    if (viewModel.documentsPanelExpanded) {
+                        // Documents mode: the preview area becomes the document editor (or the
+                        // documents empty state until one is selected).
+                        DocumentEditorPanel(viewModel, Modifier.weight(1f).fillMaxWidth())
+                    } else {
+                        PreviewPanel(viewModel, Modifier.weight(1f).fillMaxWidth())
+                        val selection = viewModel.findClip(viewModel.selectedClipId)
+                        if (selection != null) {
+                            Spacer(Modifier.height(8.dp))
+                            ClipInspector(viewModel, selection.first, selection.second)
+                        }
                     }
                 }
                 Spacer(Modifier.width(12.dp))

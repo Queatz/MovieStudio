@@ -125,6 +125,8 @@ kotlin {
                 // Coil 3: standard Compose image component (AsyncImage) with a Ktor network fetcher.
                 implementation(libs.coil.compose)
                 implementation(libs.coil.network.ktor3)
+                // Compose rich text editor (KMP) powering the movie documents editor.
+                implementation(libs.richeditor.compose)
             }
         }
         commonTest.dependencies {

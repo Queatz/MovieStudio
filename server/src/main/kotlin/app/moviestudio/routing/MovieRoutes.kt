@@ -9,6 +9,7 @@ import app.moviestudio.JobType
 import app.moviestudio.TimelineNote
 import app.moviestudio.Track
 import app.moviestudio.database.ClipRepository
+import app.moviestudio.database.DocumentRepository
 import app.moviestudio.database.MovieRepository
 import app.moviestudio.database.JobRepository
 import app.moviestudio.database.NoteRepository
@@ -68,12 +69,13 @@ fun Route.movieRoutes() {
         delete("/{id}") {
             try {
                 val id = call.parameters["id"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing id")
-                // Remove the movie's tracks, clips and timeline notes along with it.
+                // Remove the movie's tracks, clips, timeline notes and documents along with it.
                 TrackRepository.queryByMovieId(id).forEach { track ->
                     ClipRepository.deleteByTrackId(track.id)
                     TrackRepository.delete(track.id)
                 }
                 NoteRepository.deleteByMovieId(id)
+                DocumentRepository.deleteByMovieId(id)
                 MovieRepository.delete(id)
                 call.respond(HttpStatusCode.OK, mapOf("deleted" to true))
             } catch (e: Exception) {

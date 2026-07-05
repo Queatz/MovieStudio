@@ -44,7 +44,8 @@ object ArangoDatabase {
                 "scenes",
                 "voiceclones",
                 "renders",
-                "notes"
+                "notes",
+                "documents"
             )
             for (col in collections) {
                 val collection = db.collection(col)

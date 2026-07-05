@@ -53,6 +53,7 @@ import app.moviestudio.SUPPORTED_SFX_MODELS
 import app.moviestudio.SUPPORTED_VIDEO_SIZES
 import app.moviestudio.SequencerNote
 import app.moviestudio.UploadedDeviceFile
+import app.moviestudio.VOICE_INSTRUCTION_PRESETS
 import app.moviestudio.VoiceClone
 import app.moviestudio.cancelMicRecording
 import app.moviestudio.closestSizeForAspect
@@ -420,19 +421,30 @@ fun GenerateMediaDialog(
 
 /**
  * AI music generation via Fun-Music: a complete lyric editor (with its own AI-generate button),
- * a theme field (with its own AI-generate button) and an instrumental switch.
+ * a theme field (with its own AI-generate button) and an instrumental switch. With an
+ * [initialAsset], the dialog opens pre-filled from that asset's stored generation setup and
+ * regenerates it in place (pushing the old media onto its history).
  */
 @Composable
-fun GenerateMusicDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
-    var theme by remember { mutableStateOf("") }
-    var lyric by remember { mutableStateOf("") }
-    var instrumental by remember { mutableStateOf(false) }
+fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: () -> Unit) {
+    val initialSetup = remember(initialAsset) {
+        initialAsset?.generationConfig?.let {
+            runCatching { setupJson.decodeFromString(GenerationSetup.serializer(), it) }.getOrNull()
+        }
+    }
+    var theme by remember { mutableStateOf(initialSetup?.theme ?: initialAsset?.description ?: "") }
+    var lyric by remember { mutableStateOf(initialSetup?.lyric ?: "") }
+    var instrumental by remember { mutableStateOf(initialSetup?.instrumental ?: false) }
     var loadingTheme by remember { mutableStateOf(false) }
     var loadingLyrics by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val movieTitle = viewModel.currentMovie?.title ?: ""
 
-    StudioDialog(title = "Generate music", onDismiss = onDismiss, width = 560.dp) {
+    StudioDialog(
+        title = if (initialAsset != null) "Regenerate music" else "Generate music",
+        onDismiss = onDismiss,
+        width = 560.dp
+    ) {
         StudioTextField(
             value = theme,
             onValueChange = { theme = it },
@@ -504,9 +516,13 @@ fun GenerateMusicDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
-            PillButton("🎵 Generate music", enabled = theme.isNotBlank() || lyric.isNotBlank()) {
+            PillButton(
+                if (initialAsset != null) "🔄 Regenerate music" else "🎵 Generate music",
+                enabled = theme.isNotBlank() || lyric.isNotBlank()
+            ) {
                 viewModel.generateMedia(
-                    GenerationSetup(kind = "music", theme = theme, lyric = lyric, instrumental = instrumental)
+                    GenerationSetup(kind = "music", theme = theme, lyric = lyric, instrumental = instrumental),
+                    assetId = initialAsset?.id
                 )
                 onDismiss()
             }
@@ -958,15 +974,28 @@ private fun sfxModelLabel(model: String): String = when (model) {
 /**
  * Sound-effect generation with a selectable mode: direct synthesizes audio straight from the
  * prompt, video-driven scores a generated WAN source video, and the classic WAN 2.7 pipeline
- * renders a short video whose audio track the server extracts into the library.
+ * renders a short video whose audio track the server extracts into the library. With an
+ * [initialAsset], the dialog opens pre-filled from that asset's stored generation setup and
+ * regenerates it in place (pushing the old media onto its history).
  */
 @Composable
-fun SoundEffectDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
-    var prompt by remember { mutableStateOf("") }
-    var duration by remember { mutableStateOf(5.0) }
-    var sfxModel by remember { mutableStateOf(SUPPORTED_SFX_MODELS.first()) }
+fun SoundEffectDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: () -> Unit) {
+    val initialSetup = remember(initialAsset) {
+        initialAsset?.generationConfig?.let {
+            runCatching { setupJson.decodeFromString(GenerationSetup.serializer(), it) }.getOrNull()
+        }
+    }
+    var prompt by remember { mutableStateOf(initialSetup?.prompt ?: initialAsset?.description ?: "") }
+    var duration by remember { mutableStateOf(initialSetup?.durationSeconds?.coerceIn(2.0, 12.0) ?: 5.0) }
+    var sfxModel by remember {
+        mutableStateOf(initialSetup?.sfxModel?.takeIf { it in SUPPORTED_SFX_MODELS } ?: SUPPORTED_SFX_MODELS.first())
+    }
 
-    StudioDialog(title = "Generate sound effect", onDismiss = onDismiss, width = 500.dp) {
+    StudioDialog(
+        title = if (initialAsset != null) "Regenerate sound effect" else "Generate sound effect",
+        onDismiss = onDismiss,
+        width = 500.dp
+    ) {
         Text(
             when (sfxModel) {
                 "fun-audiogen" ->
@@ -1010,9 +1039,13 @@ fun SoundEffectDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
-            PillButton("💥 Generate", enabled = prompt.isNotBlank()) {
+            PillButton(
+                if (initialAsset != null) "🔄 Regenerate" else "💥 Generate",
+                enabled = prompt.isNotBlank()
+            ) {
                 viewModel.generateMedia(
-                    GenerationSetup(kind = "sfx", prompt = prompt, durationSeconds = duration, sfxModel = sfxModel)
+                    GenerationSetup(kind = "sfx", prompt = prompt, durationSeconds = duration, sfxModel = sfxModel),
+                    assetId = initialAsset?.id
                 )
                 onDismiss()
             }
@@ -1021,20 +1054,46 @@ fun SoundEffectDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
 }
 
 /**
- * Text-to-speech: voice selector offering every Qwen preset plus the user's cloned voices, and a
- * "Create voice" button for Qwen voice cloning (China mainland).
+ * Text-to-speech: voice selector offering every Qwen preset plus the user's cloned voices, a
+ * "Create voice" button for Qwen voice cloning (China mainland), and optional voice instructions
+ * (Qwen instruct) steering the delivery — happy, sad, excited... With an [initialAsset], the
+ * dialog opens pre-filled from that asset's stored generation setup and regenerates it in place
+ * (pushing the old media onto its history).
  */
 @Composable
-fun TtsDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
-    var text by remember { mutableStateOf("") }
-    var voice by remember { mutableStateOf(viewModel.voiceOptions.presets.firstOrNull() ?: "Cherry") }
+fun TtsDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: () -> Unit) {
+    val initialSetup = remember(initialAsset) {
+        initialAsset?.generationConfig?.let {
+            runCatching { setupJson.decodeFromString(GenerationSetup.serializer(), it) }.getOrNull()
+        }
+    }
+    var text by remember {
+        mutableStateOf(
+            initialSetup?.prompt?.ifBlank { null }
+                ?: initialAsset?.transcript
+                ?: initialAsset?.description
+                ?: ""
+        )
+    }
+    var voice by remember {
+        mutableStateOf(
+            initialSetup?.voice?.ifBlank { null }
+                ?: initialAsset?.voice
+                ?: viewModel.voiceOptions.presets.firstOrNull() ?: "Cherry"
+        )
+    }
+    var instructions by remember { mutableStateOf(initialSetup?.instructions ?: "") }
     var showCreateVoice by remember { mutableStateOf(false) }
 
     val voiceEntries: List<Pair<String, String>> =
         viewModel.voiceOptions.presets.map { it to "🔊 $it" } +
             viewModel.voiceOptions.clones.map { it.qwenVoiceId to "🧬 ${it.name} (cloned)" }
 
-    StudioDialog(title = "Text to speech", onDismiss = onDismiss, width = 540.dp) {
+    StudioDialog(
+        title = if (initialAsset != null) "Regenerate speech" else "Text to speech",
+        onDismiss = onDismiss,
+        width = 540.dp
+    ) {
         StudioTextField(
             value = text,
             onValueChange = { text = it },
@@ -1056,12 +1115,44 @@ fun TtsDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
             Spacer(Modifier.width(8.dp))
             GhostPillButton("➕ Create voice", compact = true) { showCreateVoice = true }
         }
+        Spacer(Modifier.height(10.dp))
+
+        // Voice instructions (Qwen instruct): how the line should be delivered.
+        StudioTextField(
+            value = instructions,
+            onValueChange = { instructions = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Voice instructions (optional)",
+            placeholder = "How to deliver it: happy, sad, excited, whispering...",
+            singleLine = true
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            VOICE_INSTRUCTION_PRESETS.forEach { preset ->
+                val selected = instructions.equals(preset, ignoreCase = true)
+                if (selected) {
+                    // Tapping the active mood again clears the instructions.
+                    PillButton(preset, compact = true) { instructions = "" }
+                } else {
+                    GhostPillButton(preset, compact = true) { instructions = preset }
+                }
+            }
+        }
 
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
-            PillButton("🗣️ Generate voiceover", enabled = text.isNotBlank()) {
-                viewModel.generateMedia(GenerationSetup(kind = "tts", prompt = text, voice = voice))
+            PillButton(
+                if (initialAsset != null) "🔄 Regenerate voiceover" else "🗣️ Generate voiceover",
+                enabled = text.isNotBlank()
+            ) {
+                viewModel.generateMedia(
+                    GenerationSetup(kind = "tts", prompt = text, voice = voice, instructions = instructions.trim()),
+                    assetId = initialAsset?.id
+                )
                 onDismiss()
             }
         }

@@ -111,6 +111,9 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     var searchOpen by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
 
+    // Pre-checked "This movie" filter: narrows the media to assets created for the open movie.
+    var onlyThisMovie by remember { mutableStateOf(true) }
+
     // Dropping files from the OS (file manager, browser...) onto the panel uploads them straight
     // into the global library; the type of each asset is inferred from the file's extension.
     var dragOver by remember { mutableStateOf(false) }
@@ -182,6 +185,25 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
             Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            // "This movie" toggle: assets remember which movie they were created for.
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50)) // clip BEFORE clickable: pill hover
+                    .background(
+                        if (onlyThisMovie) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surfaceVariant
+                    )
+                    .clickable { onlyThisMovie = !onlyThisMovie }
+                    .padding(horizontal = 12.dp, vertical = 5.dp)
+            ) {
+                Text(
+                    if (onlyThisMovie) "✓ This movie" else "This movie",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (onlyThisMovie) MaterialTheme.colorScheme.onPrimary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             val tabs = listOf(
                 LibTab.All,
                 LibTab.OfType(AssetType.VIDEO),
@@ -233,7 +255,12 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                     is LibTab.OfType -> viewModel.libraryAssets.filter { it.type == current.type }
                     else -> emptyList()
                 }
-                val assets = if (query.isBlank()) typed else typed.filter { assetMatchesQuery(it, query) }
+                val scoped = if (onlyThisMovie) {
+                    typed.filter { it.movieId == viewModel.currentMovie?.id }
+                } else {
+                    typed
+                }
+                val assets = if (query.isBlank()) scoped else scoped.filter { assetMatchesQuery(it, query) }
                 if (viewModel.libraryAssets.isEmpty() && viewModel.libraryError != null) {
                     // The library failed to load: error + retry instead of an empty list.
                     ErrorRetryBox(
@@ -244,8 +271,12 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 } else if (assets.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
-                            if (query.isNotBlank()) "No media matches “$query”."
-                            else "Nothing here yet.\nUse ＋ Add or drop files here to create or upload media.",
+                            when {
+                                query.isNotBlank() -> "No media matches “$query”."
+                                onlyThisMovie && typed.isNotEmpty() ->
+                                    "No media created for this movie yet.\nUncheck “This movie” to browse the whole library."
+                                else -> "Nothing here yet.\nUse ＋ Add or drop files here to create or upload media."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

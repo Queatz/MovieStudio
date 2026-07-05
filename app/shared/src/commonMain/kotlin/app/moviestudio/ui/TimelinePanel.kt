@@ -116,6 +116,11 @@ private fun trackIndexAt(y: Float): Int = ((y - RULER_HEIGHT - TRACK_GAP) / (TRA
 fun TimelinePanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     val timeline = viewModel.timeline
 
+    // Double-clicking a clip opens its asset in the same details dialog the library uses.
+    var detailAsset by remember { mutableStateOf<Asset?>(null) }
+    var sequencerAsset by remember { mutableStateOf<Asset?>(null) }
+    var showSequencer by remember { mutableStateOf(false) }
+
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
@@ -153,16 +158,27 @@ fun TimelinePanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 ) {
                     TrackHeaderColumn(viewModel)
                     Spacer(Modifier.width(6.dp))
-                    TimelineCanvas(viewModel, Modifier.weight(1f).fillMaxHeight())
+                    TimelineCanvas(
+                        viewModel,
+                        onOpenAsset = { detailAsset = it },
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
                 }
             }
         }
 
         Spacer(Modifier.height(6.dp))
 
-        // Scroll + zoom controls side by side.
+        // Scroll + zoom controls side by side, preceded by the split action.
         val duration = max((timeline?.calculatedDuration() ?: 0.0).toFloat(), 10f)
         Row(verticalAlignment = Alignment.CenterVertically) {
+            // Split the selected clip into two at the current playhead position.
+            GhostPillButton(
+                "✂ Split",
+                compact = true,
+                enabled = viewModel.canSplitSelectedClip()
+            ) { viewModel.splitSelectedClip() }
+            Spacer(Modifier.width(10.dp))
             Text("↔", color = Color(0xFF8D89A0), fontSize = 13.sp)
             Slider(
                 value = viewModel.scrollOffset,
@@ -178,6 +194,25 @@ fun TimelinePanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 modifier = Modifier.width(170.dp).padding(horizontal = 8.dp)
             )
         }
+    }
+
+    // Double-clicking a clip opens the asset details dialog (same as the library panel).
+    detailAsset?.let { asset ->
+        // Always render the freshest copy of the asset from the library.
+        val fresh = viewModel.libraryAssets.firstOrNull { it.id == asset.id } ?: asset
+        AssetDetailsDialog(
+            viewModel = viewModel,
+            asset = fresh,
+            onDismiss = { detailAsset = null },
+            onEditSequence = { seqAsset ->
+                detailAsset = null
+                sequencerAsset = seqAsset
+                showSequencer = true
+            }
+        )
+    }
+    if (showSequencer) {
+        SequencerDialog(viewModel, sequencerAsset) { showSequencer = false }
     }
 }
 
@@ -369,7 +404,11 @@ private fun RenameTrackDialog(track: Track, onRename: (String) -> Unit, onDismis
 }
 
 @Composable
-private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifier) {
+private fun TimelineCanvas(
+    viewModel: AppViewModel,
+    onOpenAsset: (Asset) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val textMeasurer = rememberTextMeasurer()
 
     // Latest state, readable from inside the long-lived pointerInput(Unit) handlers.
@@ -462,26 +501,39 @@ private fun TimelineCanvas(viewModel: AppViewModel, modifier: Modifier = Modifie
                 }
             }
             // Tap: focus a note marker or seek from the ruler, select/deselect clips below it.
+            // Double-tap: open the clip's asset in the details dialog (like the library panel).
             .pointerInput(Unit) {
-                detectTapGestures { offset ->
-                    if (offset.y <= RULER_HEIGHT) {
-                        val note = noteHit(offset)
-                        if (note != null) {
-                            // Clicking the already-selected note un-selects it and closes the panel.
-                            if (viewModel.selectedNoteId == note.id) {
-                                viewModel.selectedNoteId = null
-                                viewModel.notesPanelExpanded = false
+                detectTapGestures(
+                    onDoubleTap = { offset ->
+                        if (offset.y > RULER_HEIGHT) {
+                            val hit = clipHit(offset)
+                            val clip = hit?.first
+                            if (clip != null) {
+                                viewModel.selectedClipId = clip.id
+                                assetsState.firstOrNull { it.id == clip.assetId }?.let(onOpenAsset)
+                            }
+                        }
+                    },
+                    onPress = { offset ->
+                        if (offset.y <= RULER_HEIGHT) {
+                            val note = noteHit(offset)
+                            if (note != null) {
+                                // Clicking the already-selected note un-selects it and closes the panel.
+                                if (viewModel.selectedNoteId == note.id) {
+                                    viewModel.selectedNoteId = null
+                                    viewModel.notesPanelExpanded = false
+                                } else {
+                                    viewModel.focusNote(note)
+                                }
                             } else {
-                                viewModel.focusNote(note)
+                                viewModel.seek(timeAt(offset.x), allowPastEnd = true)
                             }
                         } else {
-                            viewModel.seek(timeAt(offset.x), allowPastEnd = true)
+                            val hit = clipHit(offset)
+                            viewModel.selectedClipId = hit?.first?.id
                         }
-                    } else {
-                        val hit = clipHit(offset)
-                        viewModel.selectedClipId = hit?.first?.id
                     }
-                }
+                )
             }
             // Drag: seek scrubbing, clip move and edge resize. Installed once (pointerInput(Unit))
             // so state changes mid-drag can never cancel the gesture.

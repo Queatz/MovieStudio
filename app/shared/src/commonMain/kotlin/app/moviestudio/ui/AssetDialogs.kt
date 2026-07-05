@@ -69,8 +69,9 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
- * Full asset details: description editing, one-click generate/regenerate from the description,
- * a restorable version history, voice transcript tooling, sound clipping and library actions.
+ * Full asset details: description editing, generate/regenerate via the full per-type generation
+ * dialog, a restorable version history, voice transcript tooling, sound clipping and library
+ * actions.
  */
 @Composable
 fun AssetDetailsDialog(
@@ -80,6 +81,7 @@ fun AssetDetailsDialog(
     onEditSequence: (Asset) -> Unit
 ) {
     var description by remember(asset.id) { mutableStateOf(asset.description ?: "") }
+    var showGenerate by remember { mutableStateOf(false) }
     var showTweak by remember { mutableStateOf(false) }
     var showClipAudio by remember { mutableStateOf(false) }
     var showTimings by remember { mutableStateOf(false) }
@@ -137,14 +139,12 @@ fun AssetDetailsDialog(
             Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // Opens the full generation dialog for the asset's type (same as creating anew),
+            // pre-filled from the asset's stored setup.
             PillButton(
-                if (asset.isDescriptionOnly) "✨ Generate media" else "🔄 Regenerate",
-                compact = true,
-                enabled = !(asset.description ?: asset.aiPrompt).isNullOrBlank()
-            ) {
-                viewModel.generateAssetMedia(asset)
-                onDismiss()
-            }
+                if (asset.isDescriptionOnly) "✨ Generate media..." else "🔄 Regenerate...",
+                compact = true
+            ) { showGenerate = true }
             if (asset.type == AssetType.VIDEO || asset.type == AssetType.IMAGE) {
                 GhostPillButton("✏ Edit", compact = true) { showTweak = true }
             }
@@ -245,6 +245,16 @@ fun AssetDetailsDialog(
         }
     }
 
+    if (showGenerate) {
+        // The full per-type generation dialog, pre-filled from the asset's stored setup —
+        // regenerating pushes the previous media onto the asset's restorable history.
+        when (asset.type) {
+            AssetType.MUSIC -> GenerateMusicDialog(viewModel, initialAsset = asset) { showGenerate = false }
+            AssetType.AUDIO -> SoundEffectDialog(viewModel, initialAsset = asset) { showGenerate = false }
+            AssetType.VOICE -> TtsDialog(viewModel, initialAsset = asset) { showGenerate = false }
+            else -> GenerateMediaDialog(viewModel, initialAsset = asset) { showGenerate = false }
+        }
+    }
     if (showTweak) {
         GenerateMediaDialog(viewModel, initialAsset = asset) { showTweak = false }
     }

@@ -127,6 +127,28 @@ object NetworkService {
         client.delete(url("/api/movies/$movieId/notes/$noteId"))
     }
 
+    /** All rich-text documents of the movie (script, research...), sorted by tree position. */
+    suspend fun getDocuments(movieId: String): List<MovieDocument> {
+        val responseText = client.get(url("/api/movies/$movieId/documents"))
+        return json.decodeFromString(ListSerializer(MovieDocument.serializer()), responseText)
+    }
+
+    suspend fun createDocument(movieId: String, document: MovieDocument): MovieDocument {
+        val body = json.encodeToString(MovieDocument.serializer(), document)
+        val responseText = client.post(url("/api/movies/$movieId/documents"), body)
+        return json.decodeFromString(MovieDocument.serializer(), responseText)
+    }
+
+    suspend fun updateDocument(movieId: String, document: MovieDocument): MovieDocument {
+        val body = json.encodeToString(MovieDocument.serializer(), document)
+        val responseText = client.put(url("/api/movies/$movieId/documents/${document.id}"), body)
+        return json.decodeFromString(MovieDocument.serializer(), responseText)
+    }
+
+    suspend fun deleteDocument(movieId: String, documentId: String) {
+        client.delete(url("/api/movies/$movieId/documents/$documentId"))
+    }
+
     /** Queues server-side skeleton generation (Qwen plans placeholder items on the timeline). */
     suspend fun generateSkeleton(movieId: String, prompt: String, atSeconds: Double): Job {
         val body = buildJsonObject {
@@ -200,12 +222,6 @@ object NetworkService {
     suspend fun generateTranscript(assetId: String): Asset {
         val responseText = client.post(url("/api/assets/$assetId/transcript"))
         return json.decodeFromString(Asset.serializer(), responseText)
-    }
-
-    /** Generates (or regenerates) an asset's media from its description, as an async job. */
-    suspend fun generateAssetMedia(assetId: String): Job {
-        val responseText = client.post(url("/api/assets/$assetId/generate"))
-        return json.decodeFromString(Job.serializer(), responseText)
     }
 
     /** Restores a previous version from the asset's history. */
