@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -69,6 +70,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import app.moviestudio.AiChatMessage
 import app.moviestudio.UploadState
 import app.moviestudio.VideoPlayer
 import app.moviestudio.startRealtimeSpeechInput
@@ -106,6 +108,12 @@ val StudioFieldShape = RoundedCornerShape(18.dp)
  * the error color and the placeholder switches to "Start speaking...". On the web this uses the
  * browser Web Speech API when present and otherwise streams the mic to the server's realtime ASR
  * relay (so Firefox works too); on platforms with no speech support the long-press does nothing.
+ *
+ * When [aiGenerate] is supplied the field also gains an AI assist: pressing Alt+Enter opens the
+ * reusable [AiPromptDialog], where the user can chat with the AI and, once happy, press "Insert"
+ * to append the generated text into the field. This mirrors the "Generate theme" affordance in the
+ * generate-music dialog — the actual AI call is injected by the caller so any field can plug in its
+ * own endpoint.
  */
 @Composable
 fun StudioTextField(
@@ -124,8 +132,14 @@ fun StudioTextField(
     trailingIcon: @Composable (() -> Unit)? = null,
     onDismiss: () -> Unit = {},
     onSubmit: () -> Unit = {},
+    aiGenerate: (suspend (messages: List<AiChatMessage>) -> String)? = null,
+    aiPromptTitle: String = "✨ AI assist",
+    aiPromptDescription: String? =
+        "Describe what you want, chat to refine it, then insert the result into the field.",
 ) {
     val focus = remember { FocusRequester() }
+    // Alt+Enter opens the reusable AI prompt dialog (only when the caller wired [aiGenerate] in).
+    var showAiPrompt by remember { mutableStateOf(false) }
 
     // Autofocus the title input so the user can start typing right away.
     LaunchedEffect(autoFocus) {
@@ -160,6 +174,12 @@ fun StudioTextField(
             // newline via the normal Enter key.
             .onPreviewKeyEvent { keyEvent ->
                 when (keyEvent.type) {
+                    // Alt+Enter opens the AI prompt dialog (chat with the AI, then insert its
+                    // result). Only handled when the caller enabled it via [aiGenerate].
+                    KeyEventType.KeyDown if aiGenerate != null && keyEvent.isAltPressed && keyEvent.key == Key.Enter -> {
+                        showAiPrompt = true
+                        true
+                    }
                     KeyEventType.KeyDown if keyEvent.isCtrlPressed && keyEvent.key == Key.Enter -> {
                         latestOnSubmit()
                         true
@@ -238,6 +258,28 @@ fun StudioTextField(
             }
         )
     )
+
+    // AI prompt dialog (opened with Alt+Enter): chat with the AI and insert its result into the
+    // field. Only ever shown when the caller wired [aiGenerate] in.
+    if (showAiPrompt && aiGenerate != null) {
+        AiPromptDialog(
+            title = aiPromptTitle,
+            description = aiPromptDescription,
+            initialPrompt = latestValue,
+            generate = aiGenerate,
+            generateLabel = "✨ Generate",
+            acceptLabel = "Insert",
+            onAccept = { generated ->
+                // Insert the accepted text into the field. Append to whatever is already there so
+                // nothing the user typed is lost, mirroring hold-to-dictate's spacing.
+                val base = latestValue
+                val prefix = if (base.isBlank()) "" else base.trimEnd() + " "
+                latestOnValueChange(prefix + generated)
+                showAiPrompt = false
+            },
+            onDismiss = { showAiPrompt = false }
+        )
+    }
 }
 
 /**

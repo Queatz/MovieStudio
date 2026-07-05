@@ -95,3 +95,20 @@ expect fun stopRealtimeSpeechInput()
  * so callers can fall back to a synthetic placeholder waveform.
  */
 expect suspend fun loadAudioWaveform(url: String, buckets: Int): FloatArray?
+
+/** Handle returned by [installMarkdownShortcutGuard]; removes the underlying browser listener. */
+interface KeyGuardHandle {
+    fun dispose()
+}
+
+/**
+ * On web targets, installs a capture-phase browser `keydown` listener that calls
+ * `preventDefault()` for Ctrl/Cmd+B, Ctrl/Cmd+I and Ctrl/Cmd+U while [isActive] returns true.
+ * Compose's `Modifier.onPreviewKeyEvent` returning `true` only stops the event from reaching
+ * other Compose handlers — it does NOT stop the browser from running its own default action for
+ * these combos (e.g. toggling the bookmarks bar, or "view source"), so the DOM event has to be
+ * prevented directly. [isActive] is polled on every keydown so the guard only fires while the
+ * markdown editor that installed it actually has focus. No-op (with a no-op handle) on platforms
+ * without a browser, where these shortcuts have no default browser action to suppress.
+ */
+expect fun installMarkdownShortcutGuard(isActive: () -> Boolean): KeyGuardHandle

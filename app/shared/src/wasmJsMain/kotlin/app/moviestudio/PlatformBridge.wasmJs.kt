@@ -453,3 +453,39 @@ actual suspend fun loadAudioWaveform(url: String, buckets: Int): FloatArray? {
         null
     }
 }
+
+// --------------------------------------------------------------------- key default suppression
+
+// A capture-phase document listener stops the browser's own bold/italic/"view source" action for
+// Ctrl/Cmd+B/I/U while `isActive()` (typically "this field currently has focus") is true. Compose's
+// onPreviewKeyEvent returning true only short-circuits other Compose handlers — it never reaches
+// the DOM event, so the browser default still runs unless we call preventDefault() here ourselves.
+@JsFun("""
+(isActive) => {
+    const handler = (e) => {
+        try {
+            if ((e.ctrlKey || e.metaKey) &&
+                (e.code === 'KeyB' || e.code === 'KeyI' || e.code === 'KeyU') && isActive()) {
+                e.preventDefault();
+            }
+        } catch (err) {}
+    };
+    document.addEventListener('keydown', handler, true);
+    return handler;
+}
+""")
+private external fun jsInstallMarkdownShortcutGuard(isActive: () -> Boolean): JsAny
+
+@JsFun("""
+(handler) => { document.removeEventListener('keydown', handler, true); }
+""")
+private external fun jsRemoveKeydownListener(handler: JsAny)
+
+actual fun installMarkdownShortcutGuard(isActive: () -> Boolean): KeyGuardHandle {
+    val handler = jsInstallMarkdownShortcutGuard(isActive)
+    return object : KeyGuardHandle {
+        override fun dispose() {
+            jsRemoveKeydownListener(handler)
+        }
+    }
+}

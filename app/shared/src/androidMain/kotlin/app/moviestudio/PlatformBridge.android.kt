@@ -42,3 +42,9 @@ actual fun stopRealtimeSpeechInput() {
 
 // Waveform decoding is a browser (WebAudio) feature; Android callers use a synthetic fallback.
 actual suspend fun loadAudioWaveform(url: String, buckets: Int): FloatArray? = null
+
+// No browser default action to suppress on Android.
+actual fun installMarkdownShortcutGuard(isActive: () -> Boolean): KeyGuardHandle =
+    object : KeyGuardHandle {
+        override fun dispose() {}
+    }

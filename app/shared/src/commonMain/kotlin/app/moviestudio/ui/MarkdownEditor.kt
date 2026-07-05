@@ -43,8 +43,10 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.moviestudio.installMarkdownShortcutGuard
 
 /**
  * A tiny, self-contained rich-text editor for Markdown.
@@ -317,7 +319,15 @@ fun MarkdownRichTextEditor(
     // guard releases the count if the editor is torn down (document closed) while still focused.
     var wasFocused by remember { mutableStateOf(false) }
     DisposableEffect(Unit) {
-        onDispose { if (wasFocused) TextInputFocusTracker.onFocusChanged(true, false) }
+        // onPreviewKeyEvent returning true below only stops other Compose handlers from seeing the
+        // event — it does NOT stop the browser from running its own default action for Ctrl/Cmd+
+        // B/I/U (bold/italic toggle, "view source"), so a native browser-level guard is required
+        // too. It only fires while this exact field has focus.
+        val shortcutGuard = installMarkdownShortcutGuard { wasFocused }
+        onDispose {
+            shortcutGuard.dispose()
+            if (wasFocused) TextInputFocusTracker.onFocusChanged(true, false)
+        }
     }
 
     Box(
@@ -388,6 +398,18 @@ fun markdownVisualTransformation(markerColor: Color, accentColor: Color): Visual
             OffsetMapping.Identity
         )
     }
+
+/**
+ * Maps a Markdown heading level (number of leading `#`) to its rendered font size, so `#` reads as
+ * a large title and `####` as a small sub-heading rather than every level looking identical. Levels
+ * beyond 4 (`#####`, `######`) fall back to the smallest heading size.
+ */
+private fun headingFontSize(level: Int): TextUnit = when (level) {
+    1 -> 24.sp
+    2 -> 20.sp
+    3 -> 18.sp
+    else -> 16.sp
+}
 
 private fun buildMarkdownAnnotated(
     text: String,
