@@ -1,5 +1,7 @@
 package app.moviestudio.service
 
+import app.moviestudio.AiChatMessage
+import app.moviestudio.AiChatRole
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.GenerationSetup
@@ -78,10 +80,13 @@ object QwenAIService : AIGenerationService {
     // Text (chat) helper: lyric writing, theme ideas, skeleton planning, prompt refinement
     // ------------------------------------------------------------------------------------------
 
-    override suspend fun generateText(system: String, user: String): String {
+    override suspend fun generateText(system: String, user: String): String =
+        generateChat(system, listOf(AiChatMessage(role = AiChatRole.USER, content = user)))
+
+    override suspend fun generateChat(system: String, messages: List<AiChatMessage>): String {
         // Graceful degradation: without Model Studio credentials, answer offline with
         // deterministic canned responses so planning/lyrics/themes keep working in dev.
-        if (!QwenConfig.isConfigured) return offlineGenerateText(system, user)
+        if (!QwenConfig.isConfigured) return offlineGenerateText(system, foldChatIntoPrompt(messages))
         val body = buildJsonObject {
             put("model", QwenConfig.chatModel)
             put("messages", buildJsonArray {
@@ -89,10 +94,12 @@ object QwenAIService : AIGenerationService {
                     put("role", "system")
                     put("content", system)
                 })
-                add(buildJsonObject {
-                    put("role", "user")
-                    put("content", user)
-                })
+                messages.forEach { message ->
+                    add(buildJsonObject {
+                        put("role", message.role)
+                        put("content", message.content)
+                    })
+                }
             })
         }
         val response = postJson("${QwenConfig.openAiBaseUrl}/chat/completions", body, async = false)

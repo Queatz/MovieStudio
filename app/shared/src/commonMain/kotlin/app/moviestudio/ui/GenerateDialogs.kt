@@ -12,11 +12,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -161,8 +159,11 @@ fun GenerateMediaDialog(
     val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
     val videoAssets = viewModel.libraryAssets.filter { it.type == AssetType.VIDEO && it.ossUrl.isNotBlank() }
 
+    // Placeholder assets (description only, no media yet) generate rather than edit in place.
+    val regenerating = initialAsset != null && !initialAsset.isDescriptionOnly
+
     StudioDialog(
-        title = if (initialAsset != null) "Edit" else "Generate video or image",
+        title = if (regenerating) "Edit" else "Generate video or image",
         onDismiss = onDismiss,
         width = 620.dp
     ) {
@@ -421,9 +422,11 @@ fun GenerateMediaDialog(
 
 /**
  * AI music generation via Fun-Music: a complete lyric editor (with its own AI-generate button),
- * a theme field (with its own AI-generate button) and an instrumental switch. With an
- * [initialAsset], the dialog opens pre-filled from that asset's stored generation setup and
- * regenerates it in place (pushing the old media onto its history).
+ * a theme field (with its own AI-generate button) and an instrumental switch. Both AI-generate
+ * buttons open the reusable [AiPromptDialog], where the prompt can be reviewed and edited before
+ * it's sent and the result refined with chat-style follow-ups. With an [initialAsset], the
+ * dialog opens pre-filled from that asset's stored generation setup and regenerates it in place
+ * (pushing the old media onto its history).
  */
 @Composable
 fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: () -> Unit) {
@@ -435,13 +438,16 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
     var theme by remember { mutableStateOf(initialSetup?.theme ?: initialAsset?.description ?: "") }
     var lyric by remember { mutableStateOf(initialSetup?.lyric ?: "") }
     var instrumental by remember { mutableStateOf(initialSetup?.instrumental ?: false) }
-    var loadingTheme by remember { mutableStateOf(false) }
-    var loadingLyrics by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    // Which AI assist dialog is open: "theme", "lyrics" or none. Both ✨ buttons open the
+    // reusable [AiPromptDialog] so the prompt can be reviewed/edited and refined with follow-ups.
+    var aiAssist by remember { mutableStateOf<String?>(null) }
     val movieTitle = viewModel.currentMovie?.title ?: ""
 
+    // Placeholder assets (description only, no media yet) generate rather than regenerate.
+    val regenerating = initialAsset != null && !initialAsset.isDescriptionOnly
+
     StudioDialog(
-        title = if (initialAsset != null) "Regenerate music" else "Generate music",
+        title = if (regenerating) "Regenerate music" else "Generate music",
         onDismiss = onDismiss,
         width = 560.dp
     ) {
@@ -453,21 +459,8 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
             placeholder = "Uplifting electro-pop with soaring strings...",
             singleLine = true,
             trailingIcon = {
-                if (loadingTheme) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                } else {
-                    RoundIconButton("✨", contentDescription = "AI-generate theme", size = 28.dp) {
-                        loadingTheme = true
-                        scope.launch {
-                            try {
-                                theme = NetworkService.generateTheme(theme, movieTitle)
-                            } catch (e: Exception) {
-                                viewModel.errorMessage = "Theme generation failed: ${e.message}"
-                            } finally {
-                                loadingTheme = false
-                            }
-                        }
-                    }
+                RoundIconButton("✨", contentDescription = "Generate theme", size = 28.dp) {
+                    aiAssist = "theme"
                 }
             }
         )
@@ -494,21 +487,8 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
             maxLines = 10,
             enabled = !instrumental,
             trailingIcon = {
-                if (loadingLyrics) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                } else {
-                    RoundIconButton("✨", contentDescription = "AI-generate lyrics", size = 28.dp, enabled = !instrumental) {
-                        loadingLyrics = true
-                        scope.launch {
-                            try {
-                                lyric = NetworkService.generateLyrics(theme.ifBlank { lyric }, movieTitle)
-                            } catch (e: Exception) {
-                                viewModel.errorMessage = "Lyric generation failed: ${e.message}"
-                            } finally {
-                                loadingLyrics = false
-                            }
-                        }
-                    }
+                RoundIconButton("✨", contentDescription = "enerate lyrics", size = 28.dp, enabled = !instrumental) {
+                    aiAssist = "lyrics"
                 }
             }
         )
@@ -517,7 +497,7 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
             PillButton(
-                if (initialAsset != null) "🔄 Regenerate music" else "🎵 Generate music",
+                if (regenerating) "🔄 Regenerate music" else "🎵 Generate music",
                 enabled = theme.isNotBlank() || lyric.isNotBlank()
             ) {
                 viewModel.generateMedia(
@@ -527,6 +507,37 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
                 onDismiss()
             }
         }
+    }
+
+    // AI assist with prompt review + follow-up refinement (chat-style), on top of this dialog.
+    when (aiAssist) {
+        "theme" -> AiPromptDialog(
+            title = "Generate theme",
+            description = "Review and edit the prompt before it's sent, then refine the " +
+                "suggestion with follow-ups until it fits your movie.",
+            initialPrompt = theme.ifBlank { "A soundtrack theme for the movie \"$movieTitle\"" },
+            promptLabel = "Prompt",
+            promptPlaceholder = "Describe the mood, genre or scene the music should match...",
+            generateLabel = "✨ Generate theme",
+            acceptLabel = "✅ Use theme",
+            generate = { messages -> NetworkService.generateTheme(messages, movieTitle) },
+            onAccept = { theme = it; aiAssist = null },
+            onDismiss = { aiAssist = null }
+        )
+        "lyrics" -> AiPromptDialog(
+            title = "Generate lyrics",
+            description = "Review and edit the prompt before it's sent, then refine the lyrics " +
+                "with follow-ups until they sing.",
+            initialPrompt = theme.ifBlank { lyric }
+                .ifBlank { "An original song for the movie \"$movieTitle\"" },
+            promptLabel = "Prompt",
+            promptPlaceholder = "What should the song be about?",
+            generateLabel = "✨ Generate lyrics",
+            acceptLabel = "✅ Use lyrics",
+            generate = { messages -> NetworkService.generateLyrics(messages, movieTitle) },
+            onAccept = { lyric = it; aiAssist = null },
+            onDismiss = { aiAssist = null }
+        )
     }
 }
 
@@ -991,8 +1002,11 @@ fun SoundEffectDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDi
         mutableStateOf(initialSetup?.sfxModel?.takeIf { it in SUPPORTED_SFX_MODELS } ?: SUPPORTED_SFX_MODELS.first())
     }
 
+    // Placeholder assets (description only, no media yet) generate rather than regenerate.
+    val regenerating = initialAsset != null && !initialAsset.isDescriptionOnly
+
     StudioDialog(
-        title = if (initialAsset != null) "Regenerate sound effect" else "Generate sound effect",
+        title = if (regenerating) "Regenerate sound effect" else "Generate sound effect",
         onDismiss = onDismiss,
         width = 500.dp
     ) {
@@ -1040,7 +1054,7 @@ fun SoundEffectDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDi
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
             PillButton(
-                if (initialAsset != null) "🔄 Regenerate" else "💥 Generate",
+                if (regenerating) "🔄 Regenerate" else "💥 Generate",
                 enabled = prompt.isNotBlank()
             ) {
                 viewModel.generateMedia(
@@ -1089,8 +1103,11 @@ fun TtsDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: (
         viewModel.voiceOptions.presets.map { it to "🔊 $it" } +
             viewModel.voiceOptions.clones.map { it.qwenVoiceId to "🧬 ${it.name} (cloned)" }
 
+    // Placeholder assets (description only, no media yet) generate rather than regenerate.
+    val regenerating = initialAsset != null && !initialAsset.isDescriptionOnly
+
     StudioDialog(
-        title = if (initialAsset != null) "Regenerate speech" else "Text to speech",
+        title = if (regenerating) "Regenerate speech" else "Text to speech",
         onDismiss = onDismiss,
         width = 540.dp
     ) {
@@ -1146,7 +1163,7 @@ fun TtsDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: (
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
             PillButton(
-                if (initialAsset != null) "🔄 Regenerate voiceover" else "🗣️ Generate voiceover",
+                if (regenerating) "🔄 Regenerate voiceover" else "🗣️ Generate voiceover",
                 enabled = text.isNotBlank()
             ) {
                 viewModel.generateMedia(

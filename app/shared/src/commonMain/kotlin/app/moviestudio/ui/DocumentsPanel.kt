@@ -30,13 +30,22 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -307,6 +316,13 @@ private fun DocumentTreeRow(
     onDragEnd: () -> Unit
 ) {
     var originY by remember { mutableStateOf(0f) }
+    // pointerInput(id) below never restarts (the id is stable), so the gesture would keep the
+    // callbacks captured on first composition — including a completeDrop that only ever sees a
+    // null drop target. rememberUpdatedState keeps the latest callbacks visible to the gesture.
+    val currentOnDragStart by rememberUpdatedState(onDragStart)
+    val currentOnDragTo by rememberUpdatedState(onDragTo)
+    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
+    val currentOnDragCancel by rememberUpdatedState(onDragCancel)
     val accent = MaterialTheme.colorScheme.primary
     val background = when {
         dropZone == DropZone.INTO -> accent.copy(alpha = 0.28f)
@@ -343,13 +359,13 @@ private fun DocumentTreeRow(
             // Drag the row onto another document to re-arrange / nest it.
             .pointerInput(row.document.id) {
                 detectDragGestures(
-                    onDragStart = { offset -> onDragStart(originY + offset.y) },
+                    onDragStart = { offset -> currentOnDragStart(originY + offset.y) },
                     onDrag = { change, _ ->
                         change.consume()
-                        onDragTo(originY + change.position.y)
+                        currentOnDragTo(originY + change.position.y)
                     },
-                    onDragEnd = { onDragEnd() },
-                    onDragCancel = { onDragCancel() }
+                    onDragEnd = { currentOnDragEnd() },
+                    onDragCancel = { currentOnDragCancel() }
                 )
             }
             .padding(horizontal = 8.dp, vertical = 6.dp),
@@ -511,23 +527,24 @@ private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieD
     }
     Spacer(Modifier.height(8.dp))
 
-    // ------------------------------------------------------------------------ formatting toolbar
+    // ---------------------------------------------------------------------- formatting toolbar
+    // Shared by the toolbar buttons and the Ctrl/Cmd+B/I/U shortcuts on the editor.
+    fun toggleBold() = state.toggleSpanStyle(SpanStyle(fontWeight = FontWeight.Bold))
+    fun toggleItalic() = state.toggleSpanStyle(SpanStyle(fontStyle = FontStyle.Italic))
+    fun toggleUnderline() = state.toggleSpanStyle(SpanStyle(textDecoration = TextDecoration.Underline))
+
     Row(
         Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        FormatToggle("B", active = state.currentSpanStyle.fontWeight == FontWeight.Bold) {
-            state.toggleSpanStyle(SpanStyle(fontWeight = FontWeight.Bold))
-        }
-        FormatToggle("I", active = state.currentSpanStyle.fontStyle == FontStyle.Italic) {
-            state.toggleSpanStyle(SpanStyle(fontStyle = FontStyle.Italic))
-        }
+        FormatToggle("B", active = state.currentSpanStyle.fontWeight == FontWeight.Bold) { toggleBold() }
+        FormatToggle("I", active = state.currentSpanStyle.fontStyle == FontStyle.Italic) { toggleItalic() }
         FormatToggle(
             "U",
             active = state.currentSpanStyle.textDecoration?.contains(TextDecoration.Underline) == true
         ) {
-            state.toggleSpanStyle(SpanStyle(textDecoration = TextDecoration.Underline))
+            toggleUnderline()
         }
         FormatToggle(
             "S̶",
@@ -546,7 +563,21 @@ private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieD
     // ------------------------------------------------------------------------------- the editor
     RichTextEditor(
         state = state,
-        modifier = Modifier.fillMaxWidth().weight(1f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f)
+            // Standard formatting shortcuts: Ctrl+B/I/U (Cmd on macOS) toggle the style of the
+            // selection, or of what gets typed next when the cursor is collapsed.
+            .onPreviewKeyEvent { event ->
+                val shortcut = event.isCtrlPressed || event.isMetaPressed
+                if (event.type != KeyEventType.KeyDown || !shortcut) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.B -> { toggleBold(); true }
+                    Key.I -> { toggleItalic(); true }
+                    Key.U -> { toggleUnderline(); true }
+                    else -> false
+                }
+            },
         placeholder = {
             Text(
                 "Write the script, notes, research…",
@@ -573,6 +604,9 @@ private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieD
 private fun FormatToggle(label: String, active: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
+            // The button must not steal focus from the rich editor on click: losing focus drops
+            // the text selection, which made the formatting actions appear to do nothing.
+            .focusProperties { canFocus = false }
             .clip(RoundedCornerShape(8.dp)) // clip BEFORE clickable: rounded hover highlight
             .background(
                 if (active) MaterialTheme.colorScheme.primary

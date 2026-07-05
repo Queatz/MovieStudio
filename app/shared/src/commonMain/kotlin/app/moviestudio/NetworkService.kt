@@ -261,21 +261,27 @@ object NetworkService {
         return json.decodeFromString(Job.serializer(), responseText)
     }
 
-    suspend fun generateLyrics(prompt: String, movieTitle: String): String {
-        val body = buildJsonObject {
-            put("prompt", prompt)
-            put("movieTitle", movieTitle)
-        }.toString()
-        val responseText = client.post(url("/api/generate/lyrics"), body)
-        return json.parseToJsonElement(responseText).jsonObject["text"]?.jsonPrimitive?.content.orEmpty()
-    }
+    /**
+     * Generates song lyrics from a conversation (single prompt or follow-up refinements —
+     * newest message last). Returns the AI's raw lyrics text.
+     */
+    suspend fun generateLyrics(messages: List<AiChatMessage>, movieTitle: String): String =
+        generateChatText("/api/generate/lyrics", messages, movieTitle)
 
-    suspend fun generateTheme(prompt: String, movieTitle: String): String {
+    /**
+     * Suggests a musical theme description from a conversation (single prompt or follow-up
+     * refinements — newest message last). Returns the AI's raw theme text.
+     */
+    suspend fun generateTheme(messages: List<AiChatMessage>, movieTitle: String): String =
+        generateChatText("/api/generate/theme", messages, movieTitle)
+
+    /** Shared POST for the conversational text-generation endpoints (lyrics, theme, ...). */
+    private suspend fun generateChatText(path: String, messages: List<AiChatMessage>, movieTitle: String): String {
         val body = buildJsonObject {
-            put("prompt", prompt)
             put("movieTitle", movieTitle)
+            put("messages", json.encodeToJsonElement(ListSerializer(AiChatMessage.serializer()), messages))
         }.toString()
-        val responseText = client.post(url("/api/generate/theme"), body)
+        val responseText = client.post(url(path), body)
         return json.parseToJsonElement(responseText).jsonObject["text"]?.jsonPrimitive?.content.orEmpty()
     }
 

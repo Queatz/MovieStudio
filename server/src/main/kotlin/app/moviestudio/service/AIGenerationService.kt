@@ -1,5 +1,7 @@
 package app.moviestudio.service
 
+import app.moviestudio.AiChatMessage
+import app.moviestudio.AiChatRole
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.AssetVersion
@@ -48,6 +50,15 @@ interface AIGenerationService {
     suspend fun generateText(system: String, user: String): String
 
     /**
+     * Multi-turn variant of [generateText] used by the AI prompt dialogs: the full conversation
+     * (alternating user/assistant turns, newest last) is sent with the [system] prompt so
+     * follow-up messages can refine the previous response. The default implementation folds the
+     * conversation into a single user prompt for backends without native chat support.
+     */
+    suspend fun generateChat(system: String, messages: List<AiChatMessage>): String =
+        generateText(system, foldChatIntoPrompt(messages))
+
+    /**
      * Enrolls a new cloned voice (Qwen voice cloning, China mainland) from the given sample audio
      * and persists it. Returns the stored [VoiceClone].
      */
@@ -68,12 +79,27 @@ interface AIGenerationService {
         override suspend fun generateText(system: String, user: String): String =
             delegate.generateText(system, user)
 
+        override suspend fun generateChat(system: String, messages: List<AiChatMessage>): String =
+            delegate.generateChat(system, messages)
+
         override suspend fun createVoiceClone(name: String, audioUrl: String): VoiceClone =
             delegate.createVoiceClone(name, audioUrl)
 
         override suspend fun executeAiGenerationJob(job: Job, onProgress: suspend (progress: Int, message: String) -> Unit) =
             delegate.executeAiGenerationJob(job, onProgress)
     }
+}
+
+/**
+ * Folds a chat conversation into a single user prompt for text backends that only accept one
+ * system + one user message. Single-turn conversations pass through unchanged.
+ */
+fun foldChatIntoPrompt(messages: List<AiChatMessage>): String {
+    if (messages.size <= 1) return messages.firstOrNull()?.content.orEmpty()
+    return messages.joinToString("\n\n") { message ->
+        val speaker = if (message.role == AiChatRole.ASSISTANT) "Your previous response" else "User"
+        "$speaker:\n${message.content}"
+    } + "\n\nRespond to the latest user message, keeping the same output format."
 }
 
 /**

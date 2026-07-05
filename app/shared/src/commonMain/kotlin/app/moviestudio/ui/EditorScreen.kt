@@ -97,13 +97,19 @@ fun EditorScreen(viewModel: AppViewModel) {
                     .padding(horizontal = 12.dp)
             ) {
                 // Left rail: the timeline notes panel with the movie documents panel docked
-                // under it (its 📄 button sits below the notes panel).
+                // right under it. Collapsed panels wrap to their icon rail (so the 📄 button
+                // sits directly below the 📝 button), while an expanded panel takes the
+                // remaining height — documents get (nearly) the full height when notes are
+                // closed, and the two split it when both are open.
                 Column(Modifier.fillMaxHeight()) {
-                    TimelineNotesPanel(viewModel, Modifier.weight(1f))
+                    TimelineNotesPanel(
+                        viewModel,
+                        if (viewModel.notesPanelExpanded) Modifier.weight(1f) else Modifier
+                    )
                     Spacer(Modifier.height(12.dp))
                     DocumentsPanel(
                         viewModel,
-                        if (viewModel.documentsPanelExpanded) Modifier.weight(2f) else Modifier
+                        if (viewModel.documentsPanelExpanded) Modifier.weight(1f) else Modifier
                     )
                 }
                 Spacer(Modifier.width(12.dp))

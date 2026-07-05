@@ -703,6 +703,27 @@ data class GenerationSetup(
 }
 
 // ---------------------------------------------------------------------------------------------
+// AI text chat (section: AI prompt dialogs — editable prompts with follow-up refinement)
+// ---------------------------------------------------------------------------------------------
+
+/** Role of an [AiChatMessage] author: the user asking, or the AI assistant answering. */
+object AiChatRole {
+    const val USER = "user"
+    const val ASSISTANT = "assistant"
+}
+
+/**
+ * One turn of an AI text conversation, exchanged between the app's AI prompt dialogs and the
+ * server's text-generation endpoints. The history is kept client-side and sent in full with
+ * every request, so follow-up messages can refine the previous AI response.
+ */
+@Serializable
+data class AiChatMessage(
+    val role: String, // see [AiChatRole]
+    val content: String
+)
+
+// ---------------------------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------------------------
 

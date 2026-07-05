@@ -1,5 +1,7 @@
 package app.moviestudio.routing
 
+import app.moviestudio.AiChatMessage
+import app.moviestudio.AiChatRole
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.GenerationSetup
@@ -37,7 +39,19 @@ data class GenerateMediaRequest(
 )
 
 @Serializable
-data class GenerateTextRequest(val prompt: String = "", val movieTitle: String = "")
+data class GenerateTextRequest(
+    val prompt: String = "",
+    val movieTitle: String = "",
+    // Optional multi-turn conversation (newest message last). When present it takes precedence
+    // over [prompt], letting the AI prompt dialogs send follow-up refinements.
+    val messages: List<AiChatMessage> = emptyList()
+)
+
+/** The conversation to send: the explicit [GenerateTextRequest.messages], or a single-turn one. */
+private fun GenerateTextRequest.chatMessages(defaultPrompt: String): List<AiChatMessage> =
+    messages.ifEmpty {
+        listOf(AiChatMessage(role = AiChatRole.USER, content = prompt.ifBlank { defaultPrompt }))
+    }
 
 @Serializable
 data class GeneratedTextResponse(val text: String)
@@ -114,11 +128,11 @@ fun Route.generationRoutes() {
         post("/lyrics") {
             try {
                 val request = call.receive<GenerateTextRequest>()
-                val text = AIGenerationService.generateText(
+                val text = AIGenerationService.generateChat(
                     system = "You are a professional LYRICist for movie soundtracks. Write complete, well-structured " +
                         "song lyrics (with [verse]/[chorus] section markers) matching the requested theme. " +
                         "Respond with only the lyrics, no commentary.",
-                    user = request.prompt.ifBlank { "An original song for the movie \"${request.movieTitle}\"" }
+                    messages = request.chatMessages("An original song for the movie \"${request.movieTitle}\"")
                 )
                 call.respond(GeneratedTextResponse(text))
             } catch (e: Exception) {
@@ -130,11 +144,11 @@ fun Route.generationRoutes() {
         post("/theme") {
             try {
                 val request = call.receive<GenerateTextRequest>()
-                val text = AIGenerationService.generateText(
+                val text = AIGenerationService.generateChat(
                     system = "You are a music supervisor. Given a movie or mood, respond with a single-sentence " +
                         "musical THEME description (genre, instrumentation, tempo, mood) suitable as a " +
                         "music-generation prompt. Respond with only that sentence.",
-                    user = request.prompt.ifBlank { "A soundtrack theme for the movie \"${request.movieTitle}\"" }
+                    messages = request.chatMessages("A soundtrack theme for the movie \"${request.movieTitle}\"")
                 )
                 call.respond(GeneratedTextResponse(text))
             } catch (e: Exception) {
