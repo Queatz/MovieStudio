@@ -46,6 +46,23 @@ class RichTextEditorStateTest {
     }
 
     @Test
+    fun togglingBoldOnAnItalicSelectionMakesItBoldItalic() {
+        val state = stateAt("*hello*", 1, 6) // selection = "hello" inside the italic run
+        state.toggleBold()
+        assertEquals("***hello***", state.markdown)
+        // A `***…***` run counts as both bold and italic for the toolbar.
+        assertTrue(state.isBold)
+        assertTrue(state.isItalic)
+    }
+
+    @Test
+    fun caretInsideATripleStarRunIsBothBoldAndItalic() {
+        val state = stateAt("***hello***", 5) // collapsed caret inside "hello"
+        assertTrue(state.isBold)
+        assertTrue(state.isItalic)
+    }
+
+    @Test
     fun togglingUnderlineUsesHtmlTags() {
         val state = stateAt("hello", 0, 5)
         state.toggleUnderline()

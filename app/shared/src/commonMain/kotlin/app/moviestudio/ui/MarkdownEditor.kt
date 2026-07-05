@@ -19,6 +19,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -52,7 +54,8 @@ import app.moviestudio.installMarkdownShortcutGuard
  * A tiny, self-contained rich-text editor for Markdown.
  *
  * We deliberately do NOT depend on a third-party rich-text widget: the underlying [TextFieldValue]
- * simply holds real Markdown source (`**bold**`, `*italic*`, `<u>underline</u>`, `~~strike~~`,
+ * simply holds real Markdown source (`**bold**`, `*italic*`, `***bold italic***`,
+ * `<u>underline</u>`, `~~strike~~`,
  * `# heading`, `- bullet`, `1. numbered`) and a *length-preserving* [VisualTransformation] paints
  * the styled ranges live. Because the transformation never changes the character count it can use
  * [OffsetMapping.Identity], which keeps cursor/selection behaviour rock solid across every Compose
@@ -85,8 +88,9 @@ class MarkdownEditorState(initialMarkdown: String = "") {
     fun toggleStrikethrough() = wrapSelection("~~")
     fun toggleUnderline() = wrapSelection("<u>", "</u>")
 
-    val isBold: Boolean get() = caretInside(BOLD)
-    val isItalic: Boolean get() = caretInside(ITALIC)
+    // A `***…***` run is both bold and italic, so it counts as active for either toggle.
+    val isBold: Boolean get() = caretInside(BOLD) || caretInside(BOLD_ITALIC)
+    val isItalic: Boolean get() = caretInside(ITALIC) || caretInside(BOLD_ITALIC)
     val isStrikethrough: Boolean get() = caretInside(STRIKE)
     val isUnderline: Boolean get() = caretInside(UNDERLINE)
 
@@ -276,7 +280,8 @@ class MarkdownEditorState(initialMarkdown: String = "") {
     private data class InlineDescriptor(val regex: Regex, val prefixLen: Int, val suffixLen: Int)
 
     private companion object {
-        val BOLD = InlineDescriptor(Regex("""\*\*(?:(?!\*\*).)+\*\*"""), 2, 2)
+        val BOLD_ITALIC = InlineDescriptor(Regex("""\*\*\*(?:(?!\*\*\*).)+\*\*\*"""), 3, 3)
+        val BOLD = InlineDescriptor(Regex("""(?<!\*)\*\*(?:(?!\*\*).)+\*\*(?!\*)"""), 2, 2)
         val ITALIC = InlineDescriptor(Regex("""(?<![*\\])\*(?!\*)[^*\n]+\*(?!\*)"""), 1, 1)
         val STRIKE = InlineDescriptor(Regex("""~~(?:(?!~~).)+~~"""), 2, 2)
         val UNDERLINE = InlineDescriptor(Regex("""<u>.+?</u>""", RegexOption.IGNORE_CASE), 3, 4)
@@ -296,12 +301,17 @@ class MarkdownEditorState(initialMarkdown: String = "") {
  * The editor surface for a [MarkdownEditorState]: a [BasicTextField] over the raw Markdown, styled
  * live by [markdownVisualTransformation], with Ctrl/Cmd+B/I/U shortcuts. Long content scrolls
  * vertically inside the given bounds.
+ *
+ * [focusRequester] lets a caller (e.g. the formatting toolbar) put the caret back into the field
+ * after an action that would otherwise leave it unfocused — toolbar buttons don't take focus
+ * themselves (see [FormatToggle]), so without this the field would stay unfocused after a click.
  */
 @Composable
 fun MarkdownRichTextEditor(
     state: MarkdownEditorState,
     modifier: Modifier = Modifier,
-    placeholder: String = ""
+    placeholder: String = "",
+    focusRequester: FocusRequester = remember { FocusRequester() }
 ) {
     val baseColor = MaterialTheme.colorScheme.onSurface
     val markerColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
@@ -340,6 +350,7 @@ fun MarkdownRichTextEditor(
             onValueChange = { state.value = it },
             modifier = Modifier
                 .fillMaxWidth()
+                .focusRequester(focusRequester)
                 // Use hasFocus (not isFocused): the inner BasicTextField's focus target sits
                 // below the verticalScroll focus-group node this modifier observes, so isFocused
                 // stays false while the field is being typed in. Keying off hasFocus makes the
@@ -408,7 +419,9 @@ private fun headingFontSize(level: Int): TextUnit = when (level) {
     1 -> 24.sp
     2 -> 20.sp
     3 -> 18.sp
-    else -> 16.sp
+    4 -> 16.sp
+    5 -> 14.sp
+    else -> 12.sp
 }
 
 private fun buildMarkdownAnnotated(
@@ -446,8 +459,9 @@ private fun buildMarkdownAnnotated(
         lineStart = lineEnd + 1 // skip the '\n'
     }
 
-    // ---- Inline styling over the whole text. Bold is handled before italic so `**` never gets
-    // mistaken for a single-star italic run.
+    // ---- Inline styling over the whole text. Bold+italic (`***`) is handled first, then bold
+    // before italic, so a `***` run is never mistaken for a `**` bold run or a single-star italic
+    // run (and the bold/italic patterns explicitly refuse to match a marker that is part of a `***`).
     fun style(regex: Regex, prefixLen: Int, suffixLen: Int, span: SpanStyle) {
         for (match in regex.findAll(text)) {
             val start = match.range.first
@@ -460,7 +474,14 @@ private fun buildMarkdownAnnotated(
         }
     }
 
-    style(Regex("""\*\*(?:(?!\*\*).)+\*\*"""), 2, 2, SpanStyle(fontWeight = FontWeight.Bold))
+    style(
+        Regex("""\*\*\*(?:(?!\*\*\*).)+\*\*\*"""), 3, 3,
+        SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)
+    )
+    style(
+        Regex("""(?<!\*)\*\*(?:(?!\*\*).)+\*\*(?!\*)"""), 2, 2,
+        SpanStyle(fontWeight = FontWeight.Bold)
+    )
     style(
         Regex("""(?<![*\\])\*(?!\*)[^*\n]+\*(?!\*)"""), 1, 1,
         SpanStyle(fontStyle = FontStyle.Italic)

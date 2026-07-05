@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
@@ -443,6 +444,7 @@ private fun DocumentsEmptyState(viewModel: AppViewModel) {
 @Composable
 private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieDocument) {
     val state = remember(document.id) { MarkdownEditorState(document.content) }
+    val editorFocusRequester = remember(document.id) { FocusRequester() }
     var editingTitle by remember(document.id) { mutableStateOf(false) }
     var titleDraft by remember(document.id) { mutableStateOf(document.title) }
     var showHistory by remember(document.id) { mutableStateOf(false) }
@@ -526,13 +528,13 @@ private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieD
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        FormatToggle("B", active = state.isBold) { state.toggleBold() }
-        FormatToggle("I", active = state.isItalic) { state.toggleItalic() }
-        FormatToggle("U", active = state.isUnderline) { state.toggleUnderline() }
-        FormatToggle("S̶", active = state.isStrikethrough) { state.toggleStrikethrough() }
-        FormatToggle("H", active = state.isHeading) { state.toggleHeading() }
-        FormatToggle("• List", active = state.isBulletList) { state.toggleBulletList() }
-        FormatToggle("1. List", active = state.isNumberedList) { state.toggleNumberedList() }
+        FormatToggle("B", active = state.isBold) { state.toggleBold(); editorFocusRequester.requestFocus() }
+        FormatToggle("I", active = state.isItalic) { state.toggleItalic(); editorFocusRequester.requestFocus() }
+        FormatToggle("U", active = state.isUnderline) { state.toggleUnderline(); editorFocusRequester.requestFocus() }
+        FormatToggle("S̶", active = state.isStrikethrough) { state.toggleStrikethrough(); editorFocusRequester.requestFocus() }
+        FormatToggle("H", active = state.isHeading) { state.toggleHeading(); editorFocusRequester.requestFocus() }
+        FormatToggle("• List", active = state.isBulletList) { state.toggleBulletList(); editorFocusRequester.requestFocus() }
+        FormatToggle("1. List", active = state.isNumberedList) { state.toggleNumberedList(); editorFocusRequester.requestFocus() }
     }
     Spacer(Modifier.height(8.dp))
 
@@ -540,7 +542,8 @@ private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieD
     MarkdownRichTextEditor(
         state = state,
         modifier = Modifier.fillMaxWidth().weight(1f),
-        placeholder = "Write the script, notes, research…"
+        placeholder = "Write the script, notes, research…",
+        focusRequester = editorFocusRequester
     )
 
     if (showHistory) {
