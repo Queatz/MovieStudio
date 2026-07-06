@@ -261,6 +261,8 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
         VolumeEnvelopeDialog(
             clipLengthSeconds = clipLength,
             initial = effects,
+            audioUrl = asset?.ossUrl ?: "",
+            audioAvailable = asset?.let { !it.isDescriptionOnly && it.ossUrl.isNotBlank() } == true,
             onDismiss = { showVolumeEditor = false },
             onSave = { keyframes ->
                 viewModel.updateClipEffects(clip, effects.copy(volumeKeyframes = keyframes))
@@ -586,6 +588,8 @@ private fun volumePointNear(
 fun VolumeEnvelopeDialog(
     clipLengthSeconds: Float,
     initial: EffectsConfig,
+    audioUrl: String,
+    audioAvailable: Boolean,
     onDismiss: () -> Unit,
     onSave: (List<VolumePoint>) -> Unit
 ) {
@@ -723,6 +727,24 @@ fun VolumeEnvelopeDialog(
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        // The clip's audio waveform, on the same time scale as the envelope above it, so keyframes
+        // can be lined up with the sound they shape.
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Waveform",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(6.dp))
+        AudioWaveformStrip(
+            ossUrl = audioUrl,
+            canPlay = audioAvailable,
+            totalSeconds = clipLengthSeconds,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(72.dp)
         )
 
         DialogActions {

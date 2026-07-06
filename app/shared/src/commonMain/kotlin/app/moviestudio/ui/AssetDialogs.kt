@@ -11,6 +11,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.BoxWithConstraintsScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -446,12 +448,6 @@ fun ClipAudioDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () -> Unit
     var playing by remember(asset.id) { mutableStateOf(false) }
     var position by remember(asset.id) { mutableStateOf(0f) }
 
-    // Decoded waveform peaks (null → a synthetic placeholder is drawn instead).
-    var waveform by remember(asset.id) { mutableStateOf<FloatArray?>(null) }
-    LaunchedEffect(asset.id, asset.ossUrl, canPlay) {
-        waveform = if (canPlay) loadAudioWaveform(asset.ossUrl, WAVEFORM_BUCKETS) else null
-    }
-
     // While playing, loop the playhead within the selected clip window so the user previews exactly
     // what will be saved.
     LaunchedEffect(playing, clipStart, clipEnd) {
@@ -493,66 +489,22 @@ fun ClipAudioDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () -> Unit
 
         // Waveform with draggable clip-window handles: everything outside the window is dimmed.
         val minClipGap = 0.1f
-        BoxWithConstraints(
+        AudioWaveformStrip(
+            ossUrl = asset.ossUrl,
+            canPlay = canPlay,
+            totalSeconds = total,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(110.dp)
-                .clip(RoundedCornerShape(10.dp)) // clip BEFORE pointerInput: rounded hover/press
-                .background(Color(0xFF17151C))
-                .pointerInput(total, clipStart, clipEnd) {
-                    detectTapGestures { offset ->
-                        position = (offset.x / size.width * total).coerceIn(clipStart, clipEnd)
-                    }
-                }
+                .height(110.dp),
+            windowStart = clipStart,
+            windowEnd = clipEnd,
+            playheadSeconds = position,
+            onScrub = { t -> position = t.coerceIn(clipStart, clipEnd) }
         ) {
             val density = LocalDensity.current
             val stripWidthPx = with(density) { maxWidth.toPx() }
             val pxPerSecond = stripWidthPx / total
             val handleWidthPx = with(density) { 14.dp.toPx() }
-
-            Canvas(Modifier.fillMaxSize()) {
-                val w = size.width
-                val h = size.height
-                val mid = h / 2f
-                val maxBar = h * 0.42f
-                val startX = (clipStart / total * w).coerceIn(0f, w)
-                val endX = (clipEnd / total * w).coerceIn(0f, w)
-
-                // Dim the regions outside the selected window.
-                drawRect(Color.Black.copy(alpha = 0.45f), topLeft = Offset(0f, 0f), size = Size(startX, h))
-                drawRect(Color.Black.copy(alpha = 0.45f), topLeft = Offset(endX, 0f), size = Size((w - endX).coerceAtLeast(0f), h))
-                // Tint the selected window.
-                drawRect(
-                    Color(0xFF8F7BFF).copy(alpha = 0.15f),
-                    topLeft = Offset(startX, 0f),
-                    size = Size((endX - startX).coerceAtLeast(1.5f), h)
-                )
-
-                // Waveform bars: brighter inside the window, filled up to the playhead.
-                val barStride = 3f
-                val barWidth = 2f
-                val count = (w / barStride).toInt().coerceAtLeast(1)
-                for (i in 0 until count) {
-                    val x = i * barStride
-                    val t = i.toFloat() / count * total
-                    val bh = (waveformBarHeight(waveform, i, count) * maxBar).coerceAtLeast(1f)
-                    val inWindow = t in clipStart..clipEnd
-                    val color = when {
-                        inWindow && t <= position -> Color(0xFFC9BCFF)
-                        inWindow -> Color(0xFF8F7BFF)
-                        else -> Color(0xFF3A3550)
-                    }
-                    drawRect(color, topLeft = Offset(x, mid - bh), size = Size(barWidth, bh * 2f))
-                }
-
-                // Window boundary lines.
-                drawLine(Color.White, Offset(startX, 0f), Offset(startX, h), strokeWidth = 2f)
-                drawLine(Color.White, Offset(endX, 0f), Offset(endX, h), strokeWidth = 2f)
-
-                // Playhead.
-                val px = (position / total * w).coerceIn(0f, w)
-                drawLine(Color(0xFFFF5A6E), Offset(px, 0f), Offset(px, h), strokeWidth = 2f)
-            }
 
             // Left handle → drags the clip start (never past the end).
             val startX = clipStart * pxPerSecond
@@ -653,6 +605,106 @@ fun ClipAudioDialog(viewModel: AppViewModel, asset: Asset, onDismiss: () -> Unit
 
 /** How many amplitude buckets we decode the audio into for the waveform display. */
 private const val WAVEFORM_BUCKETS = 400
+
+/**
+ * Reusable audio waveform strip: decodes [ossUrl]'s audio into peaks (a synthetic placeholder is
+ * drawn when decoding isn't available) and paints them as a bar waveform on the dark studio
+ * surface. An optional selected window ([windowStart]..[windowEnd]) dims everything outside it and
+ * draws boundary lines, an optional [playheadSeconds] draws a playhead (and fills bars up to it),
+ * [onScrub] makes the strip tap-to-scrub and [content] is laid over the strip (e.g. drag handles).
+ */
+@Composable
+fun AudioWaveformStrip(
+    ossUrl: String,
+    canPlay: Boolean,
+    totalSeconds: Float,
+    modifier: Modifier = Modifier,
+    windowStart: Float? = null,
+    windowEnd: Float? = null,
+    playheadSeconds: Float? = null,
+    onScrub: ((Float) -> Unit)? = null,
+    content: @Composable BoxWithConstraintsScope.() -> Unit = {}
+) {
+    val total = totalSeconds.coerceAtLeast(0.5f)
+
+    // Decoded waveform peaks (null → a synthetic placeholder is drawn instead).
+    var waveform by remember(ossUrl) { mutableStateOf<FloatArray?>(null) }
+    LaunchedEffect(ossUrl, canPlay) {
+        waveform = if (canPlay && ossUrl.isNotBlank()) loadAudioWaveform(ossUrl, WAVEFORM_BUCKETS) else null
+    }
+
+    // Report the latest scrub callback without restarting the gesture detector on every change.
+    val currentScrub by rememberUpdatedState(onScrub)
+
+    BoxWithConstraints(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp)) // clip BEFORE pointerInput: rounded hover/press
+            .background(Color(0xFF17151C))
+            .then(
+                if (onScrub != null) {
+                    Modifier.pointerInput(total) {
+                        detectTapGestures { offset ->
+                            currentScrub?.invoke((offset.x / size.width * total).coerceIn(0f, total))
+                        }
+                    }
+                } else {
+                    Modifier
+                }
+            )
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val mid = h / 2f
+            val maxBar = h * 0.42f
+            val hasWindow = windowStart != null && windowEnd != null
+            val startX = if (hasWindow) (windowStart!! / total * w).coerceIn(0f, w) else 0f
+            val endX = if (hasWindow) (windowEnd!! / total * w).coerceIn(0f, w) else w
+
+            // Dim the regions outside the selected window (when there is one), then tint it.
+            if (hasWindow) {
+                drawRect(Color.Black.copy(alpha = 0.45f), topLeft = Offset(0f, 0f), size = Size(startX, h))
+                drawRect(Color.Black.copy(alpha = 0.45f), topLeft = Offset(endX, 0f), size = Size((w - endX).coerceAtLeast(0f), h))
+                drawRect(
+                    Color(0xFF8F7BFF).copy(alpha = 0.15f),
+                    topLeft = Offset(startX, 0f),
+                    size = Size((endX - startX).coerceAtLeast(1.5f), h)
+                )
+            }
+
+            // Waveform bars: brighter inside the window, filled up to the playhead.
+            val barStride = 3f
+            val barWidth = 2f
+            val count = (w / barStride).toInt().coerceAtLeast(1)
+            for (i in 0 until count) {
+                val x = i * barStride
+                val t = i.toFloat() / count * total
+                val bh = (waveformBarHeight(waveform, i, count) * maxBar).coerceAtLeast(1f)
+                val inWindow = !hasWindow || (t >= windowStart!! && t <= windowEnd!!)
+                val beforePlayhead = playheadSeconds != null && t <= playheadSeconds
+                val color = when {
+                    inWindow && beforePlayhead -> Color(0xFFC9BCFF)
+                    inWindow -> Color(0xFF8F7BFF)
+                    else -> Color(0xFF3A3550)
+                }
+                drawRect(color, topLeft = Offset(x, mid - bh), size = Size(barWidth, bh * 2f))
+            }
+
+            // Window boundary lines.
+            if (hasWindow) {
+                drawLine(Color.White, Offset(startX, 0f), Offset(startX, h), strokeWidth = 2f)
+                drawLine(Color.White, Offset(endX, 0f), Offset(endX, h), strokeWidth = 2f)
+            }
+
+            // Playhead.
+            if (playheadSeconds != null) {
+                val px = (playheadSeconds / total * w).coerceIn(0f, w)
+                drawLine(Color(0xFFFF5A6E), Offset(px, 0f), Offset(px, h), strokeWidth = 2f)
+            }
+        }
+        content()
+    }
+}
 
 /**
  * Visual word-timing editor built for precise caption alignment. A waveform of the audio (decoded
