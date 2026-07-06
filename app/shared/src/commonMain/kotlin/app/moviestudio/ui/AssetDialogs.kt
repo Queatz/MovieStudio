@@ -215,7 +215,10 @@ fun AssetDetailsDialog(
 
         // ------------------------------------------------------------------- version history
         if (asset.history.isNotEmpty()) {
-            SectionLabel("History (${asset.history.size} previous version${if (asset.history.size == 1) "" else "s"})")
+            AccordionSection(
+                title = "History",
+                description = "${asset.history.size} previous version${if (asset.history.size == 1) "" else "s"}"
+            ) {
             asset.history.forEachIndexed { index, version ->
                 Row(
                     modifier = Modifier
@@ -252,6 +255,7 @@ fun AssetDetailsDialog(
                         viewModel.restoreAssetVersion(asset, index)
                     }
                 }
+            }
             }
         }
     }
@@ -1027,8 +1031,11 @@ private fun AssetCostLedger(asset: Asset) {
     val totalTokens = asset.ledger.totalTokens()
     val totalCost = asset.ledger.totalCostUsd()
 
-    SectionLabel("Cost ($callCount call${if (callCount == 1) "" else "s"})")
-
+    AccordionSection(
+        title = "Cost",
+        description = "$callCount call${if (callCount == 1) "" else "s"} · " +
+            "${formatTokens(totalTokens)} tokens · ${formatUsd(totalCost)}"
+    ) {
     // Running total across every AI call connected to this asset.
     Row(
         modifier = Modifier
@@ -1093,6 +1100,7 @@ private fun AssetCostLedger(asset: Asset) {
                 color = MaterialTheme.colorScheme.onSurface
             )
         }
+    }
     }
 }
 

@@ -441,6 +441,59 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
 }
 
 /**
+ * A collapsible section with a [SectionLabel]-styled [title] and a short [description] that stays
+ * visible while collapsed, so the user can see what's inside without expanding. Tapping the header
+ * toggles [content]. Collapsed by default.
+ */
+@Composable
+fun AccordionSection(
+    title: String,
+    description: String,
+    modifier: Modifier = Modifier,
+    initiallyExpanded: Boolean = false,
+    content: @Composable () -> Unit
+) {
+    var expanded by remember { mutableStateOf(initiallyExpanded) }
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp, bottom = 4.dp)
+                .clip(RoundedCornerShape(10.dp)) // clip BEFORE clickable so hover has rounded corners
+                .clickable { expanded = !expanded }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+                if (description.isNotBlank()) {
+                    Text(
+                        description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (expanded) "▾" else "▸",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.width(8.dp))
+        }
+        if (expanded) {
+            content()
+        }
+    }
+}
+
+/**
  * Generic dropdown selector rendered as a rounded field (clipped before clickable) that opens a
  * menu of [options].
  */
