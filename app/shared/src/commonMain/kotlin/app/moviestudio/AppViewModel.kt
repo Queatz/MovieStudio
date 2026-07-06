@@ -29,6 +29,17 @@ data class UploadState(
 )
 
 /**
+ * Signals the library panel that a background generation just produced [asset]. The panel scrolls
+ * to the top when [asset] matches its current filters. The incrementing [id] makes every
+ * completion a distinct signal, so back-to-back generations each re-trigger the scroll even when
+ * the asset object is otherwise equal.
+ */
+data class GeneratedAssetSignal(
+    val asset: Asset,
+    val id: Long
+)
+
+/**
  * Central state holder for the studio: movie list, the open movie's timeline, the global asset
  * library, saved characters/scenes/voices, render history and live background-job tracking
  * (WebSocket push with polling fallback).
@@ -65,6 +76,16 @@ class AppViewModel : ViewModel() {
     // --------------------------------------------------------------------------------- library
     var libraryAssets by mutableStateOf<List<Asset>>(emptyList())
         private set
+
+    /**
+     * The most recent asset produced by a finished background generation, wrapped with a
+     * monotonically increasing id. The library panel observes this to scroll to the top whenever
+     * the fresh asset matches the filters currently applied there.
+     */
+    var generatedAssetSignal by mutableStateOf<GeneratedAssetSignal?>(null)
+        private set
+    private var generatedAssetSeq = 0L
+
     var libraryFilter by mutableStateOf<AssetType?>(null)
     var characters by mutableStateOf<List<Character>>(emptyList())
         private set
@@ -119,7 +140,28 @@ class AppViewModel : ViewModel() {
         private set
     var zoomScale by mutableStateOf(20f) // pixels per second on the timeline
     var scrollOffset by mutableStateOf(0f) // timeline horizontal scroll, in seconds
-    var selectedClipId by mutableStateOf<String?>(null)
+
+    /**
+     * Every selected timeline clip (multi-select). Moving and deleting act on the whole set;
+     * shift-clicking a clip toggles it in and out (see [toggleClipSelection]).
+     */
+    var selectedClipIds by mutableStateOf<Set<String>>(emptySet())
+        private set
+
+    /**
+     * The single selected clip, or null when zero or several clips are selected. Reading it keys
+     * the clip inspector, so the inspector naturally disappears once more than one clip is
+     * selected. Assigning replaces the whole selection with just that clip (or clears it when
+     * null), which keeps every existing single-select call site working.
+     */
+    var selectedClipId: String?
+        get() = selectedClipIds.singleOrNull()
+        set(value) { selectedClipIds = setOfNotNull(value) }
+
+    /** Adds or removes [clipId] from the multi-selection (shift-click on the timeline). */
+    fun toggleClipSelection(clipId: String) {
+        selectedClipIds = toggledSelection(selectedClipIds, clipId)
+    }
 
     /** True while the movie plays in the distraction-free fullscreen mode (ESC exits). */
     var isFullscreenPlayback by mutableStateOf(false)
@@ -518,11 +560,33 @@ class AppViewModel : ViewModel() {
     }
 
     /**
+     * Applies a batch of moved clips to the local timeline in a single pass: each clip is removed
+     * from wherever it currently sits and re-added to the track named by its (possibly changed)
+     * trackId. Used for multi-clip drags so every selected clip re-homes correctly at once.
+     */
+    private fun applyClipsLocally(clips: List<Clip>) {
+        if (clips.isEmpty()) return
+        val movedIds = clips.mapTo(HashSet()) { it.id }
+        timeline = timeline?.copy(
+            tracks = timeline!!.tracks.map { trackWithClips ->
+                val remaining = trackWithClips.clips.filter { it.id !in movedIds }
+                val addedHere = clips.filter { it.trackId == trackWithClips.track.id }
+                trackWithClips.copy(clips = remaining + addedHere)
+            }
+        )
+    }
+
+    /**
      * Local-only clip update used while a drag is in progress: keeps the canvas in sync at full
      * frame rate without hitting the server. The drag commit calls [updateClip].
      */
     fun updateClipLocal(clip: Clip) {
         applyClipLocally(clip)
+    }
+
+    /** Local-only batch update used while a multi-clip drag is in progress (see [updateClips]). */
+    fun updateClipsLocal(clips: List<Clip>) {
+        applyClipsLocally(clips)
     }
 
     /** Persists a moved/resized clip. */
@@ -541,15 +605,49 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /** Persists a batch of moved clips (the commit of a multi-clip drag). No-op when empty. */
+    fun updateClips(clips: List<Clip>) {
+        if (clips.isEmpty()) return
+        val movieId = currentMovie?.id ?: return
+        // Optimistically update local state so dragging feels instant.
+        applyClipsLocally(clips)
+        viewModelScope.launch {
+            try {
+                clips.forEach { NetworkService.updateClip(movieId, it) }
+                refreshTimeline()
+            } catch (e: Exception) {
+                errorMessage = "Failed to update clip: ${e.message}"
+                refreshTimeline()
+            }
+        }
+    }
+
     fun deleteClip(clipId: String) {
         val movieId = currentMovie?.id ?: return
         viewModelScope.launch {
             try {
                 NetworkService.deleteClip(movieId, clipId)
-                if (selectedClipId == clipId) selectedClipId = null
+                selectedClipIds = selectedClipIds - clipId
                 refreshTimeline()
             } catch (e: Exception) {
                 errorMessage = "Failed to delete clip: ${e.message}"
+            }
+        }
+    }
+
+    /** Deletes every selected clip in one go (multi-select delete). No-op when nothing selected. */
+    fun deleteSelectedClips() {
+        val ids = selectedClipIds.toList()
+        if (ids.isEmpty()) return
+        val movieId = currentMovie?.id ?: return
+        selectedClipIds = emptySet()
+        viewModelScope.launch {
+            try {
+                ids.forEach { NetworkService.deleteClip(movieId, it) }
+                refreshTimeline()
+            } catch (e: Exception) {
+                errorMessage = "Failed to delete clip: ${e.message}"
+                refreshTimeline()
             }
         }
     }
@@ -861,14 +959,32 @@ class AppViewModel : ViewModel() {
     // =================================================================================== library
 
     fun refreshLibrary() {
-        viewModelScope.launch {
-            try {
-                // The asset library is global (not scoped to a single movie).
-                libraryAssets = NetworkService.getLibraryAssets(null, null)
-                libraryError = null
-            } catch (e: Exception) {
-                libraryError = "Failed to load library: ${e.message}"
-            }
+        viewModelScope.launch { reloadLibraryAssets() }
+    }
+
+    /** Reloads the global asset library into [libraryAssets] (suspending), tracking any error. */
+    private suspend fun reloadLibraryAssets() {
+        try {
+            // The asset library is global (not scoped to a single movie).
+            libraryAssets = NetworkService.getLibraryAssets(null, null)
+            libraryError = null
+        } catch (e: Exception) {
+            libraryError = "Failed to load library: ${e.message}"
+        }
+    }
+
+    /**
+     * Reloads the library after a background generation finished and, when a genuinely new asset
+     * appeared, publishes it through [generatedAssetSignal] so the library panel can scroll to the
+     * top (when the asset matches the filters currently applied there).
+     */
+    private suspend fun refreshLibraryDetectingNew() {
+        val before = libraryAssets.map { it.id }.toSet()
+        reloadLibraryAssets()
+        val newAsset = libraryAssets.filter { it.id !in before }.maxByOrNull { it.createdAt }
+        if (newAsset != null) {
+            generatedAssetSeq += 1
+            generatedAssetSignal = GeneratedAssetSignal(newAsset, generatedAssetSeq)
         }
     }
 
@@ -1616,8 +1732,9 @@ class AppViewModel : ViewModel() {
                         activeJobs = now
                         val finished = before - now.map { it.id }.toSet()
                         if (finished.isNotEmpty() && wsConnection == null) {
-                            // Without WS events we still want fresh media after completions.
-                            refreshLibrary()
+                            // Without WS events we still want fresh media after completions, and
+                            // to reveal any newly generated asset in the library.
+                            refreshLibraryDetectingNew()
                             refreshTimeline()
                         }
                     } catch (e: Exception) {
@@ -1633,7 +1750,9 @@ class AppViewModel : ViewModel() {
         when (event.status) {
             JobStatus.COMPLETED -> {
                 refreshActiveJobs()
-                refreshLibrary()
+                // Always refresh the library on completion; surface any freshly generated asset
+                // so the panel can scroll to it when it matches the active filters.
+                viewModelScope.launch { refreshLibraryDetectingNew() }
                 when (event.jobType) {
                     JobType.SKELETON -> {
                         // The server planned and inserted timeline items: reload the timeline.

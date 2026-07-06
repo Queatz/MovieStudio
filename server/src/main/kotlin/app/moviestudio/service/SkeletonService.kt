@@ -42,7 +42,11 @@ object SkeletonService {
         val durationSeconds: Double = 5.0
     )
 
-    private const val SYSTEM_PROMPT =
+    /** Hard bounds on how many skeleton items a single job may request/materialize. */
+    internal const val MIN_SKELETON_ITEMS = 8
+    internal const val MAX_SKELETON_ITEMS = 40
+
+    private fun buildSystemPrompt(targetItemCount: Int): String =
         "You are SKELETON_PLANNER, a movie pre-production planner inside a movie studio app. " +
             "Given a movie description, the current playhead position and the existing timeline items, " +
             "you plan new placeholder timeline items (video shots, background music, narration). " +
@@ -53,7 +57,30 @@ object SkeletonService {
             "Rules: place items starting at the given playhead position unless the user asks otherwise; " +
             "avoid overlapping the existing items on the same track; keep a coherent story flow; " +
             "video shots should cover the span contiguously; typically add one MUSIC bed spanning the new section " +
-            "and a VOICE narration item when narration fits. Plan 3-8 items. No markdown, no commentary."
+            "and a VOICE narration item when narration fits. " +
+            "Plan around $targetItemCount items (the app estimated this count from how complex/detailed the request " +
+            "is, aim for that number but never fewer than $MIN_SKELETON_ITEMS or more than $MAX_SKELETON_ITEMS). " +
+            "No markdown, no commentary."
+
+    /**
+     * Infers how many skeleton items should be requested from the model, based on the complexity of the
+     * request: how long/detailed the prompt is (word count and number of distinct beats/clauses) and how
+     * much untouched runway the movie already has. Always clamped to [MIN_SKELETON_ITEMS, MAX_SKELETON_ITEMS].
+     */
+    internal fun inferItemCount(payload: SkeletonPayload, timeline: MovieTimeline): Int {
+        val prompt = payload.prompt.trim()
+        val wordCount = if (prompt.isEmpty()) 0 else prompt.split(Regex("\\s+")).size
+        val beatCount = prompt.split(Regex("[.,;:!?\n]+")).count { it.isNotBlank() }
+        val durationSeconds = timeline.movie.totalDuration
+
+        // Roughly one item per ~6s of runway already implied by the movie, plus items implied by how
+        // many words/beats the user's request contains (longer, more detailed prompts -> more items).
+        val fromDuration = (durationSeconds / 6.0).toInt()
+        val fromWords = wordCount / 4
+        val fromBeats = beatCount * 2
+        val estimate = maxOf(fromDuration, fromWords, fromBeats)
+        return estimate.coerceIn(MIN_SKELETON_ITEMS, MAX_SKELETON_ITEMS)
+    }
 
     suspend fun executeSkeletonJob(job: Job, onProgress: suspend (progress: Int, message: String) -> Unit) {
         logger.info("Executing skeleton job ${job.id} for movie ${job.movieId}")
@@ -67,9 +94,10 @@ object SkeletonService {
         val timeline = TimelineService.assemble(job.movieId)
             ?: throw IllegalStateException("Movie not found: ${job.movieId}")
 
-        val user = buildUserPrompt(payload, timeline)
+        val targetItemCount = inferItemCount(payload, timeline)
+        val user = buildUserPrompt(payload, timeline, targetItemCount)
         onProgress(25, "Asking Qwen to plan the skeleton...")
-        val raw = AIGenerationService.generateText(SYSTEM_PROMPT, user)
+        val raw = AIGenerationService.generateText(buildSystemPrompt(targetItemCount), user)
 
         onProgress(60, "Placing planned items on the timeline...")
         val items = parseItems(raw)
@@ -79,7 +107,7 @@ object SkeletonService {
 
         val existingTracks = TrackRepository.queryByMovieId(job.movieId).toMutableList()
         var created = 0
-        for (item in items.take(12)) {
+        for (item in items.take(MAX_SKELETON_ITEMS)) {
             val trackType = runCatching { TrackType.valueOf(item.trackType.uppercase()) }.getOrDefault(TrackType.VIDEO)
             val assetType = runCatching { AssetType.valueOf(item.assetType.uppercase()) }.getOrDefault(AssetType.VIDEO)
             if (item.description.isBlank()) continue
@@ -131,11 +159,12 @@ object SkeletonService {
         logger.info("Skeleton job ${job.id} completed with $created items")
     }
 
-    private fun buildUserPrompt(payload: SkeletonPayload, timeline: MovieTimeline): String {
+    private fun buildUserPrompt(payload: SkeletonPayload, timeline: MovieTimeline, targetItemCount: Int): String {
         val sb = StringBuilder()
         sb.appendLine("Movie: \"${timeline.movie.title}\" (aspect ${timeline.movie.aspectRatio}).")
         sb.appendLine("Current movie duration: ${timeline.movie.totalDuration} seconds.")
         sb.appendLine("Current playhead position: ${payload.atSeconds} seconds.")
+        sb.appendLine("Requested item count: plan around $targetItemCount items for this request.")
         sb.appendLine("Existing timeline items:")
         var any = false
         for (trackWithClips in timeline.tracks) {

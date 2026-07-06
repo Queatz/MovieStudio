@@ -17,6 +17,9 @@ object KeyModifierState {
 
     /** True while an Alt key is held down (holding Alt disables clip-to-clip snapping). */
     var altDown by mutableStateOf(false)
+
+    /** True while a Shift key is held down (shift-clicking a clip toggles multi-selection). */
+    var shiftDown by mutableStateOf(false)
 }
 
 /** A resolved timeline drop position: seconds on the ruler plus the track row under the pointer. */

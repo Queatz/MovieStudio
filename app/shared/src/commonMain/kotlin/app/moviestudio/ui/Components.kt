@@ -100,6 +100,23 @@ object TextInputFocusTracker {
 val StudioFieldShape = RoundedCornerShape(18.dp)
 
 /**
+ * Tracks how many [StudioDialog]s are currently open across the app (dialogs can nest, e.g. a
+ * confirmation dialog opened from within another dialog). The Default preview renderer draws its
+ * `<video>` element as a native overlay ABOVE the entire UI (see
+ * [app.moviestudio.setPreviewOverlayVisible]), so `PreviewPanel` uses [anyOpen] to hide that
+ * overlay while any dialog is open and show it again once every dialog has closed.
+ */
+object StudioDialogTracker {
+    var openCount by mutableStateOf(0)
+        private set
+
+    val anyOpen: Boolean get() = openCount > 0
+
+    fun onDialogOpened() { openCount++ }
+    fun onDialogClosed() { openCount = maxOf(0, openCount - 1) }
+}
+
+/**
  * The app-wide text input: large rounded corners and a 50% white-alpha background (global theme
  * rules), plus focus bookkeeping for the space-bar playback shortcut.
  *
@@ -317,6 +334,13 @@ fun StudioDialog(
     scrollable: Boolean = true,
     content: @Composable () -> Unit
 ) {
+    // Registers this dialog with StudioDialogTracker for as long as it stays in the composition,
+    // so PreviewPanel can hide the Default renderer's <video> overlay (which draws ABOVE the
+    // entire UI) while any dialog is open, and restore it once every dialog has closed.
+    DisposableEffect(Unit) {
+        StudioDialogTracker.onDialogOpened()
+        onDispose { StudioDialogTracker.onDialogClosed() }
+    }
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             modifier = modifier.widthIn(max = width),

@@ -27,6 +27,10 @@ actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double) {
     // No-op on Android: the preview video element is a browser feature.
 }
 
+actual fun setPreviewOverlayVisible(visible: Boolean) {
+    // No-op on Android: the preview video element is a browser feature.
+}
+
 actual fun playSequencerTone(
     waveform: String,
     frequencyHz: Double,

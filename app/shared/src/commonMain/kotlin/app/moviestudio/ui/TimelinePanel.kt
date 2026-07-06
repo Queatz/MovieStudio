@@ -58,11 +58,13 @@ import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
 import app.moviestudio.Clip
 import app.moviestudio.MovieTimeline
+import app.moviestudio.MovingClip
 import app.moviestudio.TimelineNote
 import app.moviestudio.Track
 import app.moviestudio.TrackType
 import app.moviestudio.TransitionType
 import app.moviestudio.calculatedDuration
+import app.moviestudio.movedClipGroup
 import app.moviestudio.parseEffectsConfig
 import kotlin.math.abs
 import kotlin.math.max
@@ -97,13 +99,19 @@ private fun notePillWidth(textMeasurer: androidx.compose.ui.text.TextMeasurer, l
 private sealed interface DragSession {
     data object Seek : DragSession
     class MoveClip(
-        val clip: Clip,
+        // The clip under the pointer; it drives snapping and its raw start accumulates the drag.
+        val anchor: Clip,
         val sourceTrackType: TrackType,
         val duration: Float,
         val snapEdges: FloatArray,
+        val anchorOriginalStart: Float,
+        val anchorTrackIndex: Int,
+        // Every selected clip captured at drag start (includes the anchor), so the whole group can
+        // be shifted rigidly from its original positions.
+        val movers: List<MovingClip>,
         var newStart: Float,
-        var snappedStart: Float,
-        var newTrackId: String
+        // The whole group at its current dragged position, staged for the commit.
+        var staged: List<Clip>
     ) : DragSession
     class ResizeLeft(
         val clip: Clip,
@@ -124,17 +132,17 @@ private sealed interface DragSession {
 }
 
 /**
- * All snap-candidate times on the timeline: every other clip's start and end (excluding the clip
+ * All snap-candidate times on the timeline: every other clip's start and end (excluding the clips
  * being dragged). Collected once when a drag starts and reused for every pointer move, so we never
  * re-walk the whole timeline mid-gesture. The returned array is sorted so [nearestSnap] can binary
  * search it.
  */
-private fun collectSnapEdges(timeline: MovieTimeline?, excludeClipId: String): FloatArray {
+private fun collectSnapEdges(timeline: MovieTimeline?, excludeClipIds: Set<String>): FloatArray {
     if (timeline == null) return FloatArray(0)
     val edges = ArrayList<Float>()
     timeline.tracks.forEach { trackWithClips ->
         trackWithClips.clips.forEach { clip ->
-            if (clip.id != excludeClipId) {
+            if (clip.id !in excludeClipIds) {
                 edges.add(clip.timelineStart)
                 edges.add(clip.timelineStart + (clip.trimOut - clip.trimIn))
             }
@@ -631,8 +639,17 @@ private fun TimelineCanvas(
                                 viewModel.seek(timeAt(offset.x), allowPastEnd = true)
                             }
                         } else {
-                            val hit = clipHit(offset)
-                            viewModel.selectedClipId = hit?.first?.id
+                            // Shift-click toggles a clip in/out of the multi-selection; a plain
+                            // click on an unselected clip selects just it, while pressing an
+                            // already-selected clip keeps the (possibly multi) selection so the
+                            // whole group can be dragged. Clicking empty space clears it.
+                            val clip = clipHit(offset)?.first
+                            when {
+                                clip == null -> if (!KeyModifierState.shiftDown) viewModel.selectedClipId = null
+                                KeyModifierState.shiftDown -> viewModel.toggleClipSelection(clip.id)
+                                clip.id in viewModel.selectedClipIds -> {}
+                                else -> viewModel.selectedClipId = clip.id
+                            }
                         }
                     }
                 )
@@ -652,35 +669,51 @@ private fun TimelineCanvas(
                                 null
                             } else {
                                 val (clip, trackIndex) = hit
-                                viewModel.selectedClipId = clip.id
+                                // Dragging a clip that isn't part of the current multi-selection
+                                // starts a fresh single selection; dragging one that is keeps the
+                                // whole group so it can be moved together.
+                                if (clip.id !in viewModel.selectedClipIds) viewModel.selectedClipId = clip.id
+                                val selectedIds = viewModel.selectedClipIds
                                 val clipStartX = (clip.timelineStart - scrollState) * zoomState
                                 val clipEndX = (clip.timelineStart + (clip.trimOut - clip.trimIn) - scrollState) * zoomState
                                 val asset = assetsState.firstOrNull { it.id == clip.assetId }
                                 val mediaCap = mediaTrimCap(asset)
                                 val trackType = viewModel.timeline?.tracks?.getOrNull(trackIndex)?.track?.type
-                                // Gather the snap targets once up front so mid-drag moves stay cheap.
-                                val snapEdges = collectSnapEdges(viewModel.timeline, clip.id)
                                 when {
                                     offset.x - clipStartX <= EDGE_GRAB ->
                                         DragSession.ResizeLeft(
-                                            clip, mediaCap, snapEdges,
+                                            clip, mediaCap, collectSnapEdges(viewModel.timeline, setOf(clip.id)),
                                             clip.timelineStart, clip.trimIn,
                                             clip.timelineStart, clip.trimIn
                                         )
                                     clipEndX - offset.x <= EDGE_GRAB ->
                                         DragSession.ResizeRight(
-                                            clip, mediaCap, snapEdges,
+                                            clip, mediaCap, collectSnapEdges(viewModel.timeline, setOf(clip.id)),
                                             clip.trimOut, clip.trimOut
                                         )
-                                    else -> DragSession.MoveClip(
-                                        clip,
-                                        trackType ?: TrackType.VIDEO,
-                                        clip.trimOut - clip.trimIn,
-                                        snapEdges,
-                                        clip.timelineStart,
-                                        clip.timelineStart,
-                                        clip.trackId
-                                    )
+                                    else -> {
+                                        // Capture every selected clip (incl. the anchor) with the
+                                        // row it starts on, so the group shifts rigidly from these
+                                        // baselines. Snap edges exclude the whole group.
+                                        val movers = buildList {
+                                            viewModel.timeline?.tracks?.forEachIndexed { rowIndex, twc ->
+                                                twc.clips.forEach { c ->
+                                                    if (c.id in selectedIds) add(MovingClip(c, rowIndex, twc.track.type))
+                                                }
+                                            }
+                                        }
+                                        DragSession.MoveClip(
+                                            anchor = clip,
+                                            sourceTrackType = trackType ?: TrackType.VIDEO,
+                                            duration = clip.trimOut - clip.trimIn,
+                                            snapEdges = collectSnapEdges(viewModel.timeline, selectedIds),
+                                            anchorOriginalStart = clip.timelineStart,
+                                            anchorTrackIndex = trackIndex,
+                                            movers = movers,
+                                            newStart = clip.timelineStart,
+                                            staged = emptyList()
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -692,27 +725,23 @@ private fun TimelineCanvas(
                             is DragSession.Seek -> viewModel.seek(timeAt(change.position.x), allowPastEnd = true)
                             is DragSession.MoveClip -> {
                                 session.newStart = max(0f, session.newStart + dt)
-                                // Holding Ctrl snaps the clip's start to the nearest whole second;
+                                // Holding Ctrl snaps the anchor's start to the nearest whole second;
                                 // holding Alt disables snapping entirely; otherwise snap whichever
                                 // edge (start/end) is nearest a clip edge.
-                                session.snappedStart = when {
+                                val anchorSnapped = when {
                                     KeyModifierState.ctrlDown -> max(0f, session.newStart.roundToInt().toFloat())
                                     KeyModifierState.altDown -> session.newStart
                                     else -> snapMovedStart(session.snapEdges, session.newStart, session.duration)
                                 }
-                                // Dragging vertically re-homes the clip onto another track of
-                                // the same type.
+                                // The whole selection shifts by the anchor's (snapped) delta and by
+                                // however many rows the pointer moved; dragging vertically re-homes
+                                // each clip onto another track of its own type.
+                                val delta = anchorSnapped - session.anchorOriginalStart
+                                val tracks = viewModel.timeline?.tracks ?: emptyList()
                                 val targetIndex = trackIndexAt(change.position.y)
-                                val targetTrack = viewModel.timeline?.tracks?.getOrNull(targetIndex)?.track
-                                if (targetTrack != null && targetTrack.type == session.sourceTrackType) {
-                                    session.newTrackId = targetTrack.id
-                                }
-                                viewModel.updateClipLocal(
-                                    session.clip.copy(
-                                        timelineStart = session.snappedStart,
-                                        trackId = session.newTrackId
-                                    )
-                                )
+                                val rowDelta = if (targetIndex in tracks.indices) targetIndex - session.anchorTrackIndex else 0
+                                session.staged = movedClipGroup(session.movers, tracks, delta, rowDelta)
+                                viewModel.updateClipsLocal(session.staged)
                             }
                             is DragSession.ResizeLeft -> {
                                 val minTrim = 0f
@@ -779,7 +808,7 @@ private fun TimelineCanvas(
         canvasWidth = size.width
         val currentTimeline = viewModel.timeline ?: return@Canvas
         drawRuler(this, textMeasurer, zoomState, scrollState)
-        drawTracks(this, textMeasurer, currentTimeline, assetsState, zoomState, scrollState, viewModel.selectedClipId)
+        drawTracks(this, textMeasurer, currentTimeline, assetsState, zoomState, scrollState, viewModel.selectedClipIds)
         drawNoteMarkers(this, textMeasurer, notesState, zoomState, scrollState, viewModel.selectedNoteId)
         drawPlayhead(this, viewModel.playhead, zoomState, scrollState)
 
@@ -815,9 +844,7 @@ private fun mediaTrimCap(asset: Asset?): Float {
 private fun commitDrag(viewModel: AppViewModel, session: DragSession?) {
     when (session) {
         is DragSession.MoveClip ->
-            viewModel.updateClip(
-                session.clip.copy(timelineStart = session.snappedStart, trackId = session.newTrackId)
-            )
+            viewModel.updateClips(session.staged)
         is DragSession.ResizeLeft ->
             viewModel.updateClip(session.clip.copy(timelineStart = session.snappedStart, trimIn = session.snappedTrimIn))
         is DragSession.ResizeRight ->
@@ -864,7 +891,7 @@ private fun drawTracks(
     assets: List<Asset>,
     zoom: Float,
     scroll: Float,
-    selectedClipId: String?
+    selectedClipIds: Set<String>
 ) = with(scope) {
     timeline.tracks.forEachIndexed { index, trackWithClips ->
         val top = RULER_HEIGHT + TRACK_GAP + index * (TRACK_HEIGHT + TRACK_GAP)
@@ -902,7 +929,7 @@ private fun drawTracks(
                     style = Stroke(width = 1.5f)
                 )
             }
-            if (clip.id == selectedClipId) {
+            if (clip.id in selectedClipIds) {
                 drawRoundRect(
                     Color.White,
                     topLeft = Offset(startX - 1f, top + 3f),
@@ -912,8 +939,8 @@ private fun drawTracks(
                 )
             }
 
-            // Edge handles for the selected clip.
-            if (clip.id == selectedClipId && widthPx > 26f) {
+            // Edge handles, shown only for a lone selection (resize acts on one clip at a time).
+            if (selectedClipIds.size == 1 && clip.id in selectedClipIds && widthPx > 26f) {
                 drawRect(Color.White.copy(alpha = 0.75f), Offset(startX + 2f, top + 12f), Size(3f, TRACK_HEIGHT - 24f))
                 drawRect(Color.White.copy(alpha = 0.75f), Offset(startX + widthPx - 5f, top + 12f), Size(3f, TRACK_HEIGHT - 24f))
             }

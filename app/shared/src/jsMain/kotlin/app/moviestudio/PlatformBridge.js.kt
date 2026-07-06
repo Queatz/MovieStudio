@@ -5,26 +5,56 @@ import kotlin.js.Promise
 
 // ------------------------------------------------------------------------- job events WebSocket
 
+// Opens a self-healing job-events socket: whenever it closes/errors (server restart, network
+// blip, sleep/wake) it automatically reconnects after a short delay so there is ALWAYS a live
+// channel. On every (re)connect the server replays the recent terminal events, so completions
+// that happened while the socket was down are still delivered. Returns a handle whose `closed`
+// flag stops reconnection when the caller explicitly closes it. Returns null when the browser
+// has no WebSocket support (callers then fall back to polling).
 private fun jsOpenWebSocket(url: String, onMessage: (String) -> Unit): dynamic = js("""
     (function(url, onMessage) {
-        try {
-            var ws = new WebSocket(url);
-            ws.onmessage = function(event) {
-                try { onMessage(String(event.data)); } catch (e) {}
-            };
-            return ws;
-        } catch (e) {
-            return null;
+        if (typeof WebSocket === 'undefined') { return null; }
+        var handle = { ws: null, closed: false, timer: null };
+        function scheduleReconnect() {
+            if (handle.closed || handle.timer) { return; }
+            handle.timer = setTimeout(function() {
+                handle.timer = null;
+                connect();
+            }, 3000);
         }
+        function connect() {
+            if (handle.closed) { return; }
+            try {
+                var ws = new WebSocket(url);
+                handle.ws = ws;
+                ws.onmessage = function(event) {
+                    try { onMessage(String(event.data)); } catch (e) {}
+                };
+                ws.onclose = function() { scheduleReconnect(); };
+                ws.onerror = function() { try { ws.close(); } catch (e) {} };
+            } catch (e) {
+                scheduleReconnect();
+            }
+        }
+        connect();
+        return handle;
     })(url, onMessage)
 """)
 
+private fun jsCloseWebSocket(handle: dynamic): Unit = js("""
+    (function(handle) {
+        handle.closed = true;
+        if (handle.timer) { clearTimeout(handle.timer); handle.timer = null; }
+        try { if (handle.ws) { handle.ws.close(); } } catch (e) {}
+    })(handle)
+""")
+
 actual fun connectJobEvents(wsUrl: String, onMessage: (String) -> Unit): JobEventsConnection? {
-    val ws = jsOpenWebSocket(wsUrl, onMessage) ?: return null
+    val handle = jsOpenWebSocket(wsUrl, onMessage) ?: return null
     return object : JobEventsConnection {
         override fun close() {
             try {
-                ws.close()
+                jsCloseWebSocket(handle)
             } catch (e: Throwable) {
                 // already closed
             }
@@ -263,6 +293,22 @@ private fun jsSetPreviewObjectPosition(x: Double, y: Double): Unit = js("""
 
 actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double) {
     jsSetPreviewObjectPosition(xPercent, yPercent)
+}
+
+// -------------------------------------------------------------------- preview overlay visibility
+
+// Toggles the shared <video> overlay's visibility WITHOUT touching `display` (which already
+// tracks whether a video clip is under the playhead) — so a StudioDialog can hide it temporarily
+// and the overlay is restored to exactly the state it was in once the dialog closes.
+private fun jsSetPreviewOverlayVisible(visible: Boolean): Unit = js("""
+    (function(visible) {
+        var video = document.getElementById('compose-video-preview');
+        if (video) { video.style.visibility = visible ? 'visible' : 'hidden'; }
+    })(visible)
+""")
+
+actual fun setPreviewOverlayVisible(visible: Boolean) {
+    jsSetPreviewOverlayVisible(visible)
 }
 
 // ---------------------------------------------------------------------- sequencer playback

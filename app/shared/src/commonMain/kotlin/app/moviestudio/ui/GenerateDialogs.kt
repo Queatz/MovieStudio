@@ -80,7 +80,8 @@ fun GenerateMediaDialog(
     viewModel: AppViewModel,
     initialAsset: Asset?,
     // When true the dialog edits [initialAsset] in place (the previous media is pushed onto the
-    // asset's history). When false (regenerate/generate) the result is saved as a brand-new asset.
+    // asset's history). When false it generates: a placeholder asset (no media yet) is still filled
+    // in place, while regenerating real media saves the result as a brand-new asset.
     tweak: Boolean = false,
     onDismiss: () -> Unit
 ) {
@@ -90,18 +91,18 @@ fun GenerateMediaDialog(
         } ?: GenerationSetup(kind = "video", prompt = initialAsset?.description ?: "")
     }
 
-    // When tweaking an existing media asset, start in the mode matching its type (image edits start
-    // on "Image", video edits on "Video") and pre-select that very asset as the base media, so the
-    // edit repaints the thing the user opened. Regeneration instead re-runs the stored setup as-is
-    // to produce a new asset, so it does not pre-attach the existing output as a base.
-    val editingImage = tweak && initialAsset?.type == AssetType.IMAGE && initialAsset.ossUrl.isNotBlank()
-    val editingVideo = tweak && initialAsset?.type == AssetType.VIDEO && initialAsset.ossUrl.isNotBlank()
+    // For an existing media asset (whether we tweak it in place or regenerate into a new asset),
+    // start in the mode matching its type (image on "Image", video on "Video") and pre-select that
+    // very asset as the base media — so an edit repaints the thing the user opened and a regenerate
+    // still starts from that image/video as the start/base image.
+    val baseImage = initialAsset?.type == AssetType.IMAGE && initialAsset.ossUrl.isNotBlank()
+    val baseVideo = initialAsset?.type == AssetType.VIDEO && initialAsset.ossUrl.isNotBlank()
 
     var kind by remember {
         mutableStateOf(
             when {
-                editingImage -> "image"
-                editingVideo -> "video"
+                baseImage -> "image"
+                baseVideo -> "video"
                 initialSetup.kind == "image" -> "image"
                 else -> "video"
             }
@@ -110,12 +111,12 @@ fun GenerateMediaDialog(
     var prompt by remember { mutableStateOf(initialSetup.prompt) }
     var negativePrompt by remember { mutableStateOf(initialSetup.negativePrompt) }
     var imageUrl by remember {
-        mutableStateOf(if (editingImage) initialAsset!!.ossUrl else initialSetup.imageUrl)
+        mutableStateOf(if (baseImage) initialAsset!!.ossUrl else initialSetup.imageUrl)
     }
     // Optional end image (I2V last frame): the clip interpolates from the start image to it.
     var endImageUrl by remember { mutableStateOf(initialSetup.endImageUrl) }
     var videoUrl by remember {
-        mutableStateOf(if (editingVideo) initialAsset!!.ossUrl else initialSetup.videoUrl)
+        mutableStateOf(if (baseVideo) initialAsset!!.ossUrl else initialSetup.videoUrl)
     }
     var characterIds by remember { mutableStateOf(initialSetup.characterIds) }
     var sceneIds by remember { mutableStateOf(initialSetup.sceneIds) }
@@ -170,7 +171,9 @@ fun GenerateMediaDialog(
     val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
     val videoAssets = viewModel.libraryAssets.filter { it.type == AssetType.VIDEO && it.ossUrl.isNotBlank() }
 
-    // Placeholder assets (description only, no media yet) generate rather than regenerate.
+    // Placeholder assets (description only, no media yet) always fill in place — generating
+    // replaces the placeholder rather than spawning a new asset. Only real media that already has
+    // output is "regenerated" into a brand-new asset (leaving the original untouched).
     val regenerating = initialAsset != null && !initialAsset.isDescriptionOnly
 
     StudioDialog(
@@ -184,8 +187,8 @@ fun GenerateMediaDialog(
     ) {
         // Explain how this differs from tweaking: regenerating produces a brand-new asset from the
         // stored setup, while editing repaints this asset in place and keeps the old version in its
-        // history.
-        if (initialAsset != null) {
+        // history. Placeholders (no media yet) simply fill in place, so no note is needed for them.
+        if (tweak || regenerating) {
             Text(
                 if (tweak) {
                     "Editing changes this asset in place — the current media is saved to this " +
@@ -477,7 +480,9 @@ fun GenerateMediaDialog(
                 if (tweak) "✨ Apply edit" else "✨ Generate",
                 enabled = prompt.isNotBlank()
             ) {
-                viewModel.generateMedia(setup, assetId = if (tweak) initialAsset?.id else null)
+                // Editing a placeholder (or tweaking real media) fills the existing asset in place;
+                // only regenerating real media targets a brand-new asset.
+                viewModel.generateMedia(setup, assetId = if (tweak || !regenerating) initialAsset?.id else null)
                 onDismiss()
             }
         }
@@ -489,8 +494,9 @@ fun GenerateMediaDialog(
  * a theme field (with its own AI-generate button) and an instrumental switch. Both AI-generate
  * buttons open the reusable [AiPromptDialog], where the prompt can be reviewed and edited before
  * it's sent and the result refined with chat-style follow-ups. With an [initialAsset], the
- * dialog opens pre-filled from that asset's stored generation setup and regenerates from it into a
- * brand-new asset (the original asset is left unchanged).
+ * dialog opens pre-filled from that asset's stored generation setup; regenerating real media
+ * produces a brand-new asset (the original is left unchanged), while a placeholder asset (no media
+ * yet) is filled in place.
  */
 @Composable
 fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: () -> Unit) {
@@ -580,8 +586,9 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
                         instrumental = instrumental,
                         gender = if (instrumental) "" else gender
                     ),
-                    // Regenerating saves the result as a new asset rather than editing in place.
-                    assetId = null
+                    // Regenerating real media saves the result as a new asset; filling a placeholder
+                    // (no media yet) edits that placeholder in place.
+                    assetId = if (regenerating) null else initialAsset?.id
                 )
                 onDismiss()
             }
@@ -1180,8 +1187,9 @@ fun SoundEffectDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDi
             ) {
                 viewModel.generateMedia(
                     GenerationSetup(kind = "sfx", prompt = prompt, durationSeconds = duration, sfxModel = sfxModel),
-                    // Regenerating saves the result as a new asset rather than editing in place.
-                    assetId = null
+                    // Regenerating real media saves the result as a new asset; filling a placeholder
+                    // (no media yet) edits that placeholder in place.
+                    assetId = if (regenerating) null else initialAsset?.id
                 )
                 onDismiss()
             }
@@ -1193,8 +1201,9 @@ fun SoundEffectDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDi
  * Text-to-speech: voice selector offering every Qwen preset plus the user's cloned voices, a
  * "Create voice" button for Qwen voice cloning (China mainland), and optional voice instructions
  * (Qwen instruct) steering the delivery — happy, sad, excited... With an [initialAsset], the
- * dialog opens pre-filled from that asset's stored generation setup and regenerates from it into a
- * brand-new asset (the original asset is left unchanged).
+ * dialog opens pre-filled from that asset's stored generation setup; regenerating real media
+ * produces a brand-new asset (the original is left unchanged), while a placeholder asset (no media
+ * yet) is filled in place.
  */
 @Composable
 fun TtsDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: () -> Unit) {
@@ -1291,8 +1300,9 @@ fun TtsDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: (
             ) {
                 viewModel.generateMedia(
                     GenerationSetup(kind = "tts", prompt = text, voice = voice, instructions = instructions.trim()),
-                    // Regenerating saves the result as a new asset rather than editing in place.
-                    assetId = null
+                    // Regenerating real media saves the result as a new asset; filling a placeholder
+                    // (no media yet) edits that placeholder in place.
+                    assetId = if (regenerating) null else initialAsset?.id
                 )
                 onDismiss()
             }

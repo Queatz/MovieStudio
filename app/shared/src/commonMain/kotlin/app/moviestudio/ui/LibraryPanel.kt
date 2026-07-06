@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
@@ -23,6 +24,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,6 +85,30 @@ private fun assetMatchesQuery(asset: Asset, query: String): Boolean {
 }
 
 /**
+ * True when [asset] would currently be visible in the library asset list given the active [tab],
+ * the "This movie" scope ([onlyThisMovie] / [currentMovieId]) and the search [query]. Mirrors the
+ * filtering applied when building the list, and is used to decide whether a freshly generated
+ * asset warrants scrolling the list to the top.
+ */
+private fun assetVisibleInLibrary(
+    asset: Asset,
+    tab: LibTab,
+    onlyThisMovie: Boolean,
+    currentMovieId: String?,
+    query: String
+): Boolean {
+    val tabMatches = when (tab) {
+        LibTab.All -> true
+        is LibTab.OfType -> asset.type == tab.type
+        // Character/scene tabs never show library assets.
+        LibTab.Characters, LibTab.Scenes -> false
+    }
+    if (!tabMatches) return false
+    if (onlyThisMovie && asset.movieId != currentMovieId) return false
+    return query.isBlank() || assetMatchesQuery(asset, query)
+}
+
+/**
  * The right-hand library: every asset in the studio (the library is global — one holistic
  * suite), the saved characters/scenes libraries and the "Add" menu with all creation flows.
  */
@@ -124,6 +150,21 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
         onDropped = { files -> viewModel.uploadDroppedFiles(files) }
     )
     val dropAccent = MaterialTheme.colorScheme.primary
+
+    // Scroll the asset list to the top whenever a background generation finishes and the freshly
+    // generated asset matches the filters currently applied here, so the new media is revealed.
+    val assetListState = rememberLazyListState()
+    LaunchedEffect(viewModel.generatedAssetSignal?.id) {
+        val signal = viewModel.generatedAssetSignal ?: return@LaunchedEffect
+        val matches = assetVisibleInLibrary(
+            asset = signal.asset,
+            tab = tab,
+            onlyThisMovie = onlyThisMovie,
+            currentMovieId = viewModel.currentMovie?.id,
+            query = searchQuery.trim()
+        )
+        if (matches) assetListState.animateScrollToItem(0)
+    }
 
     Box(modifier = modifier.then(dropTarget)) {
         Column(
@@ -284,7 +325,10 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                         )
                     }
                 } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    LazyColumn(
+                        state = assetListState,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         items(assets, key = { it.id }) { asset ->
                             AssetCard(
                                 asset = asset,

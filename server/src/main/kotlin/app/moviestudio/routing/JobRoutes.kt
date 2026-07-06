@@ -33,15 +33,32 @@ object JobWebSocketManager {
     // waiting forever.
     private val lastEventByJob = ConcurrentHashMap<String, JobProgressEvent>()
 
+    // Recent terminal (COMPLETED/FAILED) events, oldest first, capped at [MAX_RECENT_TERMINAL].
+    // Replayed to a movie-wide / global subscription when it (re)connects, so a client that was
+    // restarted — or whose socket dropped and reconnected — still learns about every job that
+    // finished while it had no live channel. Together with the client's auto-reconnect this keeps
+    // completion notifications reliable even across broken connections.
+    private val recentTerminalEvents = java.util.concurrent.ConcurrentLinkedDeque<JobProgressEvent>()
+    private const val MAX_RECENT_TERMINAL = 100
+
     suspend fun addSubscription(session: DefaultWebSocketServerSession, movieId: String?, jobId: String?) {
         subscriptions.add(Subscription(session, movieId, jobId))
         logger.info("Added WS subscription for movieId=$movieId, jobId=$jobId. Total active: ${subscriptions.size}")
-        // Replay the latest known event for a per-job subscription (see lastEventByJob).
-        val cached = jobId?.let { lastEventByJob[it] } ?: return
-        try {
-            session.send(Frame.Text(json.encodeToString(JobProgressEvent.serializer(), cached)))
-        } catch (e: Exception) {
-            logger.error("Failed to replay last event to new session", e)
+        // Replay events so a client that (re)connects just after — or long after — a job finished
+        // still receives its notification instead of waiting forever:
+        //  - a per-job subscription gets the latest known event for that job (see lastEventByJob);
+        //  - a movie-wide / global subscription gets every recent terminal event it cares about.
+        val toReplay: List<JobProgressEvent> = if (jobId != null) {
+            listOfNotNull(lastEventByJob[jobId])
+        } else {
+            recentTerminalEvents.filter { movieId == null || it.movieId == movieId }
+        }
+        for (event in toReplay) {
+            try {
+                session.send(Frame.Text(json.encodeToString(JobProgressEvent.serializer(), event)))
+            } catch (e: Exception) {
+                logger.error("Failed to replay event to new session", e)
+            }
         }
     }
 
@@ -52,6 +69,15 @@ object JobWebSocketManager {
 
     suspend fun broadcast(event: JobProgressEvent) {
         lastEventByJob[event.jobId] = event
+        // Keep terminal events around so a later-connecting client can be caught up (see
+        // recentTerminalEvents). Supersede any earlier terminal event for the same job.
+        if (event.status == JobStatus.COMPLETED || event.status == JobStatus.FAILED) {
+            recentTerminalEvents.removeIf { it.jobId == event.jobId }
+            recentTerminalEvents.addLast(event)
+            while (recentTerminalEvents.size > MAX_RECENT_TERMINAL) {
+                recentTerminalEvents.pollFirst()
+            }
+        }
         val messageText = json.encodeToString(JobProgressEvent.serializer(), event)
         logger.info("Broadcasting job event: $messageText")
         for (sub in subscriptions) {

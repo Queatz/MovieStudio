@@ -164,6 +164,46 @@ class SharedCommonTest {
         )
     }
 
+    @Test
+    fun testToggledSelection() {
+        // Toggling adds a missing id and removes a present one, leaving the rest untouched.
+        assertEquals(setOf("a"), toggledSelection(emptySet(), "a"))
+        assertEquals(setOf("a", "b"), toggledSelection(setOf("a"), "b"))
+        assertEquals(setOf("a"), toggledSelection(setOf("a", "b"), "b"))
+        assertEquals(emptySet(), toggledSelection(setOf("a"), "a"))
+    }
+
+    @Test
+    fun testMovedClipGroup() {
+        val tracks = listOf(
+            TrackWithClips(preloadTrack("v0", TrackType.VIDEO, 0), listOf(preloadClip("c1", "v0", "a").copy(timelineStart = 2f))),
+            TrackWithClips(preloadTrack("v1", TrackType.VIDEO, 1), emptyList()),
+            TrackWithClips(preloadTrack("m0", TrackType.MUSIC, 2), listOf(preloadClip("c2", "m0", "a").copy(timelineStart = 5f)))
+        )
+        val movers = listOf(
+            MovingClip(tracks[0].clips[0], 0, TrackType.VIDEO),
+            MovingClip(tracks[2].clips[0], 2, TrackType.MUSIC)
+        )
+
+        // A horizontal-only move shifts every start by the same delta and keeps each track.
+        val shifted = movedClipGroup(movers, tracks, deltaSeconds = 3f, rowDelta = 0)
+        assertEquals(5f, shifted[0].timelineStart)
+        assertEquals("v0", shifted[0].trackId)
+        assertEquals(8f, shifted[1].timelineStart)
+        assertEquals("m0", shifted[1].trackId)
+
+        // Row +1: the video clip re-homes onto the compatible video row below it; the music clip's
+        // destination row doesn't exist, so it stays on its own track.
+        val down = movedClipGroup(movers, tracks, deltaSeconds = 0f, rowDelta = 1)
+        assertEquals("v1", down[0].trackId)
+        assertEquals("m0", down[1].trackId)
+
+        // Dragging far left clamps each clip's start at 0 (never negative).
+        val clamped = movedClipGroup(movers, tracks, deltaSeconds = -100f, rowDelta = 0)
+        assertEquals(0f, clamped[0].timelineStart)
+        assertEquals(0f, clamped[1].timelineStart)
+    }
+
     private fun preloadAsset(id: String, type: AssetType, ossUrl: String) = Asset(
         id = id,
         type = type,

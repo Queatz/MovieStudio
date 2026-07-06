@@ -68,7 +68,7 @@ fun EditorScreen(viewModel: AppViewModel) {
             PreviewPanel(viewModel, Modifier.fillMaxSize(), fullscreen = true)
             // Discreet exit affordance (ESC also leaves fullscreen).
             RoundIconButton(
-                "✕",
+                "\uD83E\uDC90",
                 contentDescription = "Exit fullscreen (Esc)",
                 size = 34.dp,
                 background = Color.Black.copy(alpha = 0.45f),

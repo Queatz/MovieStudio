@@ -114,6 +114,18 @@ expect fun requestVideoFullscreen()
 expect fun setPreviewObjectPosition(xPercent: Double, yPercent: Double)
 
 /**
+ * Shows or hides the movie preview's Default-renderer `<video>` overlay (the shared, absolutely
+ * positioned element [app.moviestudio.VideoPlayer] drives on web targets), without touching its
+ * `display` — which already tracks whether a video clip is under the playhead — so visibility can
+ * be restored exactly as it was. The overlay is drawn ABOVE the entire UI, so any
+ * [app.moviestudio.ui.StudioDialog] opened while it is showing would otherwise be hidden
+ * underneath it; callers must hide it while a dialog is open and show it again once none remain.
+ * No-op on platforms without such an overlay (the WebGL renderer and non-web targets render
+ * entirely inside the Compose canvas already, so they never need this).
+ */
+expect fun setPreviewOverlayVisible(visible: Boolean)
+
+/**
  * Plays one short sequencer note at [frequencyHz] for [durationSeconds]. [waveform] is one of
  * "sine" | "square" | "saw" | "triangle", or "sample" — then [sampleUrl] is fetched (and cached)
  * and pitch-shifted by playback rate, matching the server-side synthesizer. No-op on platforms

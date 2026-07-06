@@ -23,6 +23,7 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -109,6 +110,7 @@ fun App() {
                     // holding Alt disables clip-to-clip snapping.
                     KeyModifierState.ctrlDown = event.isCtrlPressed
                     KeyModifierState.altDown = event.isAltPressed
+                    KeyModifierState.shiftDown = event.isShiftPressed
                     val editingText = TextInputFocusTracker.anyFocused
                     val inEditor = viewModel.currentScreen == Screen.EDITOR
                     when {
@@ -125,11 +127,11 @@ fun App() {
                             viewModel.seekBy(if (event.key == Key.DirectionLeft) -step else step)
                             true
                         }
-                        // Delete/Backspace removes the selected timeline clip while not typing.
+                        // Delete/Backspace removes every selected timeline clip while not typing.
                         (event.key == Key.Delete || event.key == Key.Backspace) &&
                             event.type == KeyEventType.KeyDown && !editingText && inEditor &&
-                            viewModel.selectedClipId != null -> {
-                            viewModel.selectedClipId?.let { viewModel.deleteClip(it) }
+                            viewModel.selectedClipIds.isNotEmpty() -> {
+                            viewModel.deleteSelectedClips()
                             true
                         }
                         // ESC leaves fullscreen playback.

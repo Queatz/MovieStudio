@@ -60,6 +60,7 @@ import app.moviestudio.preloadTimelineMedia
 import app.moviestudio.progressAt
 import app.moviestudio.visualAt
 import app.moviestudio.setPreviewObjectPosition
+import app.moviestudio.setPreviewOverlayVisible
 import app.moviestudio.shared.resources.Res
 import app.moviestudio.shared.resources.asap
 import app.moviestudio.shared.resources.yuyu
@@ -149,6 +150,17 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
     val activeVideoEffects = activeVideo?.let { parseEffectsConfig(it.clip.effectsConfig) }
     LaunchedEffect(activeVideo?.clip?.id, activeVideoEffects?.offsetX, activeVideoEffects?.offsetY) {
         setPreviewObjectPosition(activeVideoEffects?.offsetX ?: 50.0, activeVideoEffects?.offsetY ?: 50.0)
+    }
+
+    // The Default renderer draws its <video> element as a native overlay ABOVE the entire UI (see
+    // VideoPlayer), so any StudioDialog opened while it is showing would otherwise be hidden
+    // underneath it. Hide the overlay while any dialog is open and restore it once none remain.
+    // The WebGL renderer composites entirely inside the Compose canvas and never needs this.
+    val usingDefaultRenderer = !(viewModel.previewUseWebGL && isWebGLPreviewSupported())
+    LaunchedEffect(usingDefaultRenderer, StudioDialogTracker.anyOpen) {
+        if (usingDefaultRenderer) {
+            setPreviewOverlayVisible(!StudioDialogTracker.anyOpen)
+        }
     }
 
     Column(modifier = modifier) {

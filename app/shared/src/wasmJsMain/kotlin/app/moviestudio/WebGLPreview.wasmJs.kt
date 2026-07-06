@@ -77,11 +77,9 @@ private const val SETTLE_NANOS = 500_000_000L
         const canvas = document.createElement('canvas');
         // No preserveDrawingBuffer: readback happens right after render() in the same frame, so
         // it is not needed, and dropping it frees the browser compositor's fast present paths.
-        // Prefer WebGL2 (enables the async PBO readback in jsWebGLRenderAndRead); fall back to 1.
         const gl = canvas.getContext('webgl2', { alpha: false }) ||
                    canvas.getContext('webgl', { alpha: false });
         if (!gl) { return; }
-        const isGL2 = !!(window.WebGL2RenderingContext && gl instanceof WebGL2RenderingContext);
         // Unit-quad vertex shader: aPos in [0,1], (0,0) = stage top-left. uTranslate is the
         // slide-in offset as a fraction of the stage size (+X right, +Y down).
         const vsSrc =
@@ -138,7 +136,6 @@ private const val SETTLE_NANOS = 500_000_000L
         S = window.__msWebGLPreview = {
             canvas: canvas,
             gl: gl,
-            isGL2: isGL2,
             uTranslate: gl.getUniformLocation(prog, 'uTranslate'),
             uUvScale: gl.getUniformLocation(prog, 'uUvScale'),
             uUvOffset: gl.getUniformLocation(prog, 'uUvOffset'),
@@ -152,12 +149,7 @@ private const val SETTLE_NANOS = 500_000_000L
             active: false,
             // Set when a hidden <video> presents a new frame (requestVideoFrameCallback) or an
             // image finishes loading, so the paused render loop knows to draw exactly one frame.
-            dirty: true,
-            // Double-buffered pixel-pack buffers for the WebGL2 async readback.
-            pbo: [null, null],
-            pboReady: [false, false],
-            pboIndex: 0,
-            pboSize: 0
+            dirty: true
         };
         // Re-uploads a video texture only when the element actually presents a new frame, so a
         // paused/static video is not re-uploaded on every render. When requestVideoFrameCallback
@@ -395,62 +387,25 @@ private external fun jsWebGLTakeDirty(): Boolean
 // Sizes the compositor to (w,h) device pixels, renders the current layer stack and reads the frame
 // back as RGBA bytes so Compose can paint it inside its own scene graph (Option 1 — the preview is
 // a true Compose citizen, so dialogs/popups layer over it automatically). readPixels is bottom-up,
-// so the caller draws the resulting bitmap vertically flipped.
+// so the caller draws the resulting bitmap vertically flipped. Returns null when the compositor is
+// not ready yet (no GL / not synced).
 //
-// On WebGL2 the readback is asynchronous and double-buffered through pixel-pack buffers (PBOs): the
-// freshly rendered frame is copied into one PBO without stalling the GL pipeline, and the PBO
-// written on the PREVIOUS call (whose transfer has already finished) is pulled into readBuf — so
-// there is no GPU->CPU stall. This costs one frame of latency, invisible for a preview. The very
-// first call (and the first after a resize) has no previous frame and returns null. On WebGL1, or
-// if anything about the PBO path fails, it falls back to a plain synchronous readPixels. Returns
-// null when the compositor is not ready (no GL / not synced) or the async frame is not available yet.
+// The readback is SYNCHRONOUS on purpose: it always returns the frame we just rendered. We tried a
+// double-buffered WebGL2 PBO readback to avoid the GPU->CPU stall, but presenting the PREVIOUS
+// frame — and, after any gap in the render loop, a stale one — made playback visibly stutter back
+// and forth between frames. Reading the freshest frame every time drops old frames entirely and
+// keeps playback monotonic and smooth, which matters far more than the stall for a small preview.
 @JsFun("""
 (w, h) => {
     const S = window.__msWebGLPreview;
     if (!S || !S.gl) { return null; }
     const gl = S.gl;
     const canvas = S.canvas;
-    let sizeChanged = false;
-    if (canvas.width !== w) { canvas.width = w; sizeChanged = true; }
-    if (canvas.height !== h) { canvas.height = h; sizeChanged = true; }
+    if (canvas.width !== w) { canvas.width = w; }
+    if (canvas.height !== h) { canvas.height = h; }
     const needed = w * h * 4;
-    if (!S.readBuf || S.readBuf.length !== needed) { S.readBuf = new Uint8Array(needed); sizeChanged = true; }
+    if (!S.readBuf || S.readBuf.length !== needed) { S.readBuf = new Uint8Array(needed); }
     S.render();
-    if (S.isGL2) {
-        try {
-            const PP = gl.PIXEL_PACK_BUFFER;
-            if (sizeChanged || S.pboSize !== needed) {
-                if (S.pbo[0]) { try { gl.deleteBuffer(S.pbo[0]); } catch (e) {} }
-                if (S.pbo[1]) { try { gl.deleteBuffer(S.pbo[1]); } catch (e) {} }
-                S.pbo[0] = gl.createBuffer();
-                S.pbo[1] = gl.createBuffer();
-                gl.bindBuffer(PP, S.pbo[0]); gl.bufferData(PP, needed, gl.STREAM_READ);
-                gl.bindBuffer(PP, S.pbo[1]); gl.bufferData(PP, needed, gl.STREAM_READ);
-                gl.bindBuffer(PP, null);
-                S.pboReady[0] = false; S.pboReady[1] = false; S.pboIndex = 0; S.pboSize = needed;
-            }
-            const i = S.pboIndex;
-            const j = 1 - i;
-            // Kick off the async transfer of the just-rendered frame into pbo[i].
-            gl.bindBuffer(PP, S.pbo[i]);
-            gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, 0);
-            S.pboReady[i] = true;
-            // Pull the previous frame (its transfer is already done) out of pbo[j]; no stall.
-            let result = null;
-            if (S.pboReady[j]) {
-                gl.bindBuffer(PP, S.pbo[j]);
-                gl.getBufferSubData(PP, 0, S.readBuf);
-                result = new Int8Array(S.readBuf.buffer, 0, needed);
-            }
-            gl.bindBuffer(PP, null);
-            S.pboIndex = j;
-            return result;
-        } catch (e) {
-            // Any PBO hiccup: disable the async path and fall back to synchronous readback.
-            S.isGL2 = false;
-            try { gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null); } catch (e2) {}
-        }
-    }
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, S.readBuf);
     return new Int8Array(S.readBuf.buffer, 0, needed);
 }
