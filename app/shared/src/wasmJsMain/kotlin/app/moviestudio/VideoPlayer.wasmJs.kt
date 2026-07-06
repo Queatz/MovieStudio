@@ -16,6 +16,11 @@ import androidx.compose.ui.platform.LocalDensity
     if (!video) {
         video = document.createElement('video');
         video.id = 'compose-video-preview';
+        // Load media through a CORS request (set BEFORE any src) so the canvas the "Save frame"
+        // feature draws this <video> into stays origin-clean. Without it the cross-origin OSS
+        // source taints the canvas and canvas.toBlob() throws a SecurityError, so frame capture
+        // always fails. OSS CORS allows this GET.
+        video.crossOrigin = 'anonymous';
         video.style.position = 'absolute';
         video.style.zIndex = '1000';
         video.style.backgroundColor = 'black';
