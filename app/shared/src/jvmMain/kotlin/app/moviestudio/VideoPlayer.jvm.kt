@@ -21,6 +21,7 @@ actual fun VideoPlayer(
     offsetXFraction: Float,
     offsetYFraction: Float,
     revealRadiusFraction: Float,
+    volume: Float,
     onEnded: () -> Unit
 ) {
     Box(

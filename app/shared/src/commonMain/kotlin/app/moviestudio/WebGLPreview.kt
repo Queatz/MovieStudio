@@ -24,7 +24,13 @@ data class WebGLPreviewLayer(
     val revealRadiusFraction: Float,
     /** 0-100 center-crop offsets (50 = center), same as [EffectsConfig.offsetX]/[EffectsConfig.offsetY]. */
     val offsetXPercent: Double,
-    val offsetYPercent: Double
+    val offsetYPercent: Double,
+    /**
+     * Playback gain (0 = silent, 1 = 100%) for video layers, the clip's volume envelope evaluated
+     * at the playhead. Only the top-most video is audible, matching the default renderer; the
+     * platform clamps it to the media element's 0..1 range.
+     */
+    val volume: Double = 1.0
 )
 
 /** [WebGLPreviewLayer.kind] of a still image (texture uploaded once, cached by URL). */

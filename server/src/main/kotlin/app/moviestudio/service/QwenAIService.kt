@@ -365,10 +365,17 @@ object QwenAIService : AIGenerationService {
                 // `input.media`, each `{ "type": ..., "url": ... }`. A `first_frame` entry drives
                 // basic image-to-video; a bare URL or an `{ "image": <url> }` entry is rejected
                 // with "Field required: input.media.0.url & Field required: input.media.0.type".
+                // An optional `last_frame` entry (the end image) makes the clip interpolate from
+                // the first frame to it.
                 "i2v" -> put("media", buildJsonArray {
                     add(buildJsonObject {
                         put("type", "first_frame")
                         put("url", setup.imageUrl?.let(OssService::freshDownloadUrl) ?: "")
+                    })
+                    val endImageUrl = setup.endImageUrl
+                    if (!endImageUrl.isNullOrBlank()) add(buildJsonObject {
+                        put("type", "last_frame")
+                        put("url", OssService.freshDownloadUrl(endImageUrl))
                     })
                 })
                 // WAN 2.7 R2V expects the reference images as a list of media objects under

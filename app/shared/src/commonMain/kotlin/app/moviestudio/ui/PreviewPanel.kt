@@ -191,6 +191,7 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                                 active.asset.type == AssetType.IMAGE -> ClipImage(active, transitionVisual)
                                 // The single video that owns the shared <video> element.
                                 active === activeVideo -> {
+                                    val clipLocal = (playhead - active.clip.timelineStart).toDouble()
                                     val mediaTime = active.asset.sourceOffsetSeconds.toFloat() +
                                         active.clip.trimIn + (playhead - active.clip.timelineStart)
                                     VideoPlayer(
@@ -202,7 +203,9 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                                         alpha = transitionVisual.alpha,
                                         offsetXFraction = transitionVisual.translateXFraction,
                                         offsetYFraction = transitionVisual.translateYFraction,
-                                        revealRadiusFraction = transitionVisual.revealRadiusFraction
+                                        revealRadiusFraction = transitionVisual.revealRadiusFraction,
+                                        // The volume-over-time envelope (when present) evaluated at the playhead.
+                                        volume = parseEffectsConfig(active.clip.effectsConfig).volumeAt(clipLocal).toFloat()
                                     )
                                 }
                                 // Any further simultaneous videos can't share the one <video> element.
@@ -257,7 +260,9 @@ private fun WebGLStage(visualClips: List<ActiveClip>, playhead: Float, isPlaying
                 translateYFraction = transitionVisual.translateYFraction,
                 revealRadiusFraction = transitionVisual.revealRadiusFraction,
                 offsetXPercent = effects.offsetX,
-                offsetYPercent = effects.offsetY
+                offsetYPercent = effects.offsetY,
+                // The volume-over-time envelope (when present) evaluated at the playhead.
+                volume = effects.volumeAt((playhead - active.clip.timelineStart).toDouble())
             )
         }
     WebGLPreviewSurface(layers, isPlaying, Modifier.fillMaxSize())

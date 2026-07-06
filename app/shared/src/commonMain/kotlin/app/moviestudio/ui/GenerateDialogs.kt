@@ -70,9 +70,10 @@ private val setupJson = Json { ignoreUnknownKeys = true; isLenient = true }
 
 /**
  * The "generate video / image" dialog (simple yet powerful): a prompt plus optional inputs — a
- * start image, reference images, saved characters and scenes. The WAN 2.7 model is selected
- * predictably from what the user attaches (T2V / I2V / R2V) and shown live. The full setup is
- * stored on the generated asset so it can be retried or tweaked later.
+ * start image (with an optional end image for I2V), reference images, saved characters and
+ * scenes. The WAN 2.7 model is selected predictably from what the user attaches (T2V / I2V / R2V)
+ * and shown live. The full setup is stored on the generated asset so it can be retried or tweaked
+ * later.
  */
 @Composable
 fun GenerateMediaDialog(
@@ -107,6 +108,8 @@ fun GenerateMediaDialog(
     var imageUrl by remember {
         mutableStateOf(if (editingImage) initialAsset!!.ossUrl else initialSetup.imageUrl)
     }
+    // Optional end image (I2V last frame): the clip interpolates from the start image to it.
+    var endImageUrl by remember { mutableStateOf(initialSetup.endImageUrl) }
     var videoUrl by remember {
         mutableStateOf(if (editingVideo) initialAsset!!.ossUrl else initialSetup.videoUrl)
     }
@@ -133,6 +136,8 @@ fun GenerateMediaDialog(
         prompt = prompt,
         negativePrompt = negativePrompt,
         imageUrl = imageUrl,
+        // The end image only applies to image-to-video generation (a start image is present).
+        endImageUrl = if (kind == "video" && imageUrl != null) endImageUrl else null,
         // The base video only applies to video generation (switches to the video-edit model).
         videoUrl = if (kind == "video") videoUrl else null,
         referenceImages = referenceImages,
@@ -300,6 +305,33 @@ fun GenerateMediaDialog(
                         PillButton(label, compact = true) { imageUrl = null }
                     } else {
                         GhostPillButton(label, compact = true) { imageUrl = image.ossUrl }
+                    }
+                }
+            }
+
+            // End image: an optional last frame for I2V — the clip interpolates from the start
+            // image to it. Only offered once a start image (I2V) is chosen.
+            if (imageUrl != null) {
+                SectionLabel("End image (optional — I2V last frame)")
+                // Preview of the currently attached end image.
+                endImageUrl?.let { url ->
+                    ImageThumbnail(url, size = 96.dp) { endImageUrl = null }
+                    Spacer(Modifier.height(6.dp))
+                }
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (endImageUrl == null) {
+                        PillButton("None", compact = true) { }
+                    } else {
+                        GhostPillButton("None", compact = true) { endImageUrl = null }
+                    }
+                    imageAssets.take(12).forEach { image ->
+                        val selected = endImageUrl == image.ossUrl
+                        val label = "🖼 " + (image.description ?: "image").take(18)
+                        if (selected) {
+                            PillButton(label, compact = true) { endImageUrl = null }
+                        } else {
+                            GhostPillButton(label, compact = true) { endImageUrl = image.ossUrl }
+                        }
                     }
                 }
             }

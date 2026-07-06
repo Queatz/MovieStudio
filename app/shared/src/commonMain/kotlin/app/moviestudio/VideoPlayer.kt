@@ -15,6 +15,11 @@ import androidx.compose.ui.Modifier
  *
  * [onEnded] fires once when playback reaches the end of the media, so callers can reset their own
  * `isPlaying`/`playhead` state (e.g. to let a "Play" button restart the clip from the beginning).
+ *
+ * [volume] is the clip's playback gain (0 = silent, 1 = 100%), evaluated at the playhead so a
+ * keyframed volume envelope is honored in the preview like it is for pure-audio clips. Native
+ * media elements clamp this to their 0..1 range (gains above 100% only take full effect in the
+ * final render).
  */
 @Composable
 expect fun VideoPlayer(
@@ -27,5 +32,6 @@ expect fun VideoPlayer(
     offsetXFraction: Float = 0f,
     offsetYFraction: Float = 0f,
     revealRadiusFraction: Float = 1f,
+    volume: Float = 1f,
     onEnded: () -> Unit = {}
 )

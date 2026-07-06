@@ -591,6 +591,17 @@ fun EffectsConfig.volumeAt(clipSeconds: Double): Double {
     return points.last().volume
 }
 
+/**
+ * True when a clip on a track of [trackType] backed by an asset of [assetType] carries an audio
+ * stream the volume control can shape: everything on the audio tracks (music / voice / effects),
+ * plus video media on the video track. Still images and description-only text cards have no audio,
+ * so they are excluded (a null [assetType] on the video track is treated as "not a video asset").
+ */
+fun clipCarriesAudio(trackType: TrackType, assetType: AssetType?): Boolean = when (trackType) {
+    TrackType.MUSIC, TrackType.VOICE, TrackType.EFFECTS -> true
+    TrackType.VIDEO -> assetType == AssetType.VIDEO
+}
+
 /** Parses a clip's [Clip.effectsConfig] JSON. Malformed/empty input yields default settings. */
 fun parseEffectsConfig(raw: String?): EffectsConfig {
     if (raw.isNullOrBlank()) return EffectsConfig()
@@ -720,6 +731,10 @@ data class GenerationSetup(
     val prompt: String = "",
     val negativePrompt: String = "",
     val imageUrl: String? = null,
+    // An optional end image for image-to-video (I2V): the clip is generated so it starts on the
+    // start image ([imageUrl], the first frame) and ends on this one (the last frame). Only used
+    // for I2V, i.e. alongside a start [imageUrl].
+    val endImageUrl: String? = null,
     // A base video to edit (switches video generation to the wan2.7-videoedit model).
     val videoUrl: String? = null,
     val referenceImages: List<String> = emptyList(),

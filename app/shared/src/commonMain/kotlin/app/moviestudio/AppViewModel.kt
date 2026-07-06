@@ -554,6 +554,33 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Duplicates [clipId]: creates an identical clip (same asset, trim and effects) on the same
+     * track, placed immediately after the original so the copy is visible and doesn't hide it.
+     * The new clip becomes the selected one.
+     */
+    fun duplicateClip(clipId: String) {
+        val movieId = currentMovie?.id ?: return
+        val original = findClip(clipId)?.first ?: return
+        val length = original.trimOut - original.trimIn
+        val copy = original.copy(
+            id = generateId(),
+            timelineStart = original.timelineStart + length
+        )
+        // Optimistically update local state so the duplicate appears instantly.
+        applyClipLocally(copy)
+        viewModelScope.launch {
+            try {
+                NetworkService.createClip(movieId, copy)
+                selectedClipId = copy.id
+                refreshTimeline()
+            } catch (e: Exception) {
+                errorMessage = "Failed to duplicate clip: ${e.message}"
+                refreshTimeline()
+            }
+        }
+    }
+
     /** The smallest piece (in seconds) a split may leave on either side of the playhead. */
     private val minSplitSliver = 0.05f
 

@@ -341,20 +341,21 @@ private const val SETTLE_NANOS = 500_000_000L
 """)
 private external fun jsWebGLSyncStructure(structJson: String, playing: Boolean)
 
-// Pushes the fast-changing per-frame values (7 numbers per layer, in stack order: position, alpha,
-// dx, dy, reveal, offsetX, offsetY) as a flat CSV — parsed with a cheap split, no JSON.parse and no
-// per-tick object allocation. The structure must already be in place (jsWebGLSyncStructure); if the
-// count does not match yet, the tick is skipped and the next one applies. Video layers re-seek here
-// when they drift more than 0.5s from their target position.
+// Pushes the fast-changing per-frame values (8 numbers per layer, in stack order: position, alpha,
+// dx, dy, reveal, offsetX, offsetY, volume) as a flat CSV — parsed with a cheap split, no JSON.parse
+// and no per-tick object allocation. The structure must already be in place (jsWebGLSyncStructure);
+// if the count does not match yet, the tick is skipped and the next one applies. Video layers
+// re-seek here when they drift more than 0.5s from their target position, and apply their (clamped)
+// volume so a keyframed envelope is honored in the preview (the top video is the only audible one).
 @JsFun("""
 (csv) => {
     const S = window.__msWebGLPreview;
     if (!S || !S.layers || S.layers.length === 0) { return; }
     const parts = csv.length ? csv.split(',') : [];
     const n = S.layers.length;
-    if (parts.length !== n * 7) { return; }
+    if (parts.length !== n * 8) { return; }
     for (let i = 0; i < n; i++) {
-        const b = i * 7;
+        const b = i * 8;
         const layer = S.layers[i];
         layer.position = parseFloat(parts[b]);
         layer.alpha = parseFloat(parts[b + 1]);
@@ -363,10 +364,14 @@ private external fun jsWebGLSyncStructure(structJson: String, playing: Boolean)
         layer.reveal = parseFloat(parts[b + 4]);
         layer.offsetX = parseFloat(parts[b + 5]);
         layer.offsetY = parseFloat(parts[b + 6]);
+        layer.volume = parseFloat(parts[b + 7]);
         if (layer.kind === 'video') {
             const entry = S.videos[layer.key];
-            if (entry && entry.el && Math.abs(entry.el.currentTime - layer.position) > 0.5) {
-                try { entry.el.currentTime = layer.position; } catch (e) {}
+            if (entry && entry.el) {
+                if (Math.abs(entry.el.currentTime - layer.position) > 0.5) {
+                    try { entry.el.currentTime = layer.position; } catch (e) {}
+                }
+                entry.el.volume = Math.max(0, Math.min(1, layer.volume));
             }
         }
     }
@@ -493,9 +498,9 @@ private fun structuralJson(layers: List<WebGLPreviewLayer>): String = buildStrin
 }
 
 /**
- * Serializes the fast-changing per-frame values as a flat CSV (7 numbers per layer, in stack order:
- * position, alpha, dx, dy, reveal, offsetX, offsetY) — cheaper to build and parse than JSON and
- * allocation-free on the JS side.
+ * Serializes the fast-changing per-frame values as a flat CSV (8 numbers per layer, in stack order:
+ * position, alpha, dx, dy, reveal, offsetX, offsetY, volume) — cheaper to build and parse than JSON
+ * and allocation-free on the JS side.
  */
 private fun frameCsv(layers: List<WebGLPreviewLayer>): String = buildString {
     layers.forEachIndexed { index, layer ->
@@ -506,7 +511,8 @@ private fun frameCsv(layers: List<WebGLPreviewLayer>): String = buildString {
         append(layer.translateYFraction).append(',')
         append(layer.revealRadiusFraction).append(',')
         append(layer.offsetXPercent).append(',')
-        append(layer.offsetYPercent)
+        append(layer.offsetYPercent).append(',')
+        append(layer.volume)
     }
 }
 

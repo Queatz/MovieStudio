@@ -21,6 +21,7 @@ actual fun VideoPlayer(
     offsetXFraction: Float,
     offsetYFraction: Float,
     revealRadiusFraction: Float,
+    volume: Float,
     onEnded: () -> Unit
 ) {
     LaunchedEffect(Unit) {
@@ -120,6 +121,20 @@ actual fun VideoPlayer(
             offsetYFraction.toDouble(),
             revealRadiusFraction.toDouble()
         )
+    }
+
+    // Apply the clip's volume (its envelope evaluated at the playhead) to the shared <video>.
+    // The HTML media element clamps to 0..1, so gains above 100% land fully only in the render.
+    LaunchedEffect(volume) {
+        val updateVolume = js("""
+            function(volume) {
+                const video = document.getElementById('compose-video-preview');
+                if (video) {
+                    video.volume = Math.max(0, Math.min(1, volume));
+                }
+            }
+        """)
+        updateVolume(volume.toDouble())
     }
 
     // Hide the shared <video> only when this player actually leaves the composition (no video clip

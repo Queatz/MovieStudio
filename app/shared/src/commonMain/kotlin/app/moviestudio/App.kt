@@ -12,10 +12,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isAltPressed
@@ -57,6 +60,11 @@ fun App() {
         }
         val viewModel: AppViewModel = viewModel { AppViewModel() }
         val rootFocus = remember { FocusRequester() }
+        // Whether the root (or anything inside its subtree) currently holds keyboard focus.
+        // Clicking a non-text surface — the timeline canvas or the preview stage — clears focus
+        // off the root without touching any text field, which used to silently kill the space-bar
+        // shortcut. Tracking this lets us re-grab focus the instant it is lost to nothing.
+        var rootHasFocus by remember { mutableStateOf(false) }
 
         // A structural signature of the timeline that only changes when tracks or clips are added
         // or removed (never merely moved/resized — those keep the counts constant). Adding a
@@ -74,8 +82,18 @@ fun App() {
         // Keep keyboard focus on the root whenever no text field holds it, so the space-bar
         // shortcut (and the other global shortcuts) always work after the user finishes typing or
         // after an interaction — such as adding a timeline item — momentarily stole focus.
-        LaunchedEffect(TextInputFocusTracker.focusedFields, viewModel.currentScreen, timelineStructure) {
-            if (!TextInputFocusTracker.anyFocused) {
+        LaunchedEffect(
+            TextInputFocusTracker.focusedFields,
+            viewModel.currentScreen,
+            timelineStructure,
+            rootHasFocus
+        ) {
+            // Re-acquire focus whenever no text field is being edited AND the root subtree does
+            // not already hold focus — covering both the initial focus grab and focus lost to a
+            // click on the timeline canvas / preview stage. Running from a LaunchedEffect means
+            // the focus state has settled, so a click that focuses a text field (anyFocused==true)
+            // is left alone rather than having focus yanked back to the root.
+            if (!TextInputFocusTracker.anyFocused && !rootHasFocus) {
                 runCatching { rootFocus.requestFocus() }
             }
         }
@@ -83,6 +101,7 @@ fun App() {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .onFocusChanged { rootHasFocus = it.hasFocus }
                 .focusRequester(rootFocus)
                 .focusable()
                 .onPreviewKeyEvent { event ->

@@ -39,6 +39,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
+import app.moviestudio.AssetType
 import app.moviestudio.CAPTION_FONT_FAMILIES
 import app.moviestudio.CaptionConfig
 import app.moviestudio.Clip
@@ -50,6 +51,7 @@ import app.moviestudio.TrackType
 import app.moviestudio.TransitionSpec
 import app.moviestudio.TransitionType
 import app.moviestudio.VolumePoint
+import app.moviestudio.clipCarriesAudio
 import app.moviestudio.displayName
 import app.moviestudio.parseEffectsConfig
 import app.moviestudio.volumeAt
@@ -57,7 +59,8 @@ import kotlin.math.roundToInt
 
 /**
  * Inspector for the selected timeline clip: transition-in over overlapping media (with a live
- * percentage-of-clip control), captions (voice clips), volume (audio clips) and clip actions.
+ * percentage-of-clip control), captions (voice clips), volume (any audio-carrying clip — the audio
+ * tracks plus video clips whose media has sound) and clip actions.
  */
 @Composable
 fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
@@ -92,7 +95,9 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(6.dp))
-            Row {
+            Column {
+                GhostPillButton("⧉ Duplicate", compact = true) { viewModel.duplicateClip(clip.id) }
+                Spacer(Modifier.height(6.dp))
                 GhostPillButton("🗑 Remove", compact = true) { viewModel.deleteClip(clip.id) }
             }
         }
@@ -186,9 +191,10 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
             Spacer(Modifier.width(16.dp))
         }
 
-        // Volume (audio-carrying tracks): flat slider, or the volume-over-time envelope once
-        // keyframes exist — with the advanced editor a click away in both cases.
-        if (track.type == TrackType.MUSIC || track.type == TrackType.VOICE || track.type == TrackType.EFFECTS) {
+        // Volume (audio-carrying clips): every clip on an audio track, plus video clips on the
+        // video track whose media carries an audio stream. Flat slider, or the volume-over-time
+        // envelope once keyframes exist — with the advanced editor a click away in both cases.
+        if (clipCarriesAudio(track.type, asset?.type)) {
             Column(Modifier.width(190.dp)) {
                 if (effects.volumeKeyframes.isEmpty()) {
                     LabeledSlider(

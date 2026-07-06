@@ -125,6 +125,17 @@ private external fun jsUpdateVideoBounds(x: Double, y: Double, w: Double, h: Dou
 private external fun jsUpdateVideoTransition(opacity: Double, dx: Double, dy: Double, reveal: Double)
 
 @JsFun("""
+(volume) => {
+    const video = document.getElementById('compose-video-preview');
+    if (video) {
+        // The HTML media element clamps to 0..1, so gains above 100% land fully only in the render.
+        video.volume = Math.max(0, Math.min(1, volume));
+    }
+}
+""")
+private external fun jsUpdateVideoVolume(volume: Double)
+
+@JsFun("""
 () => {
     const video = document.getElementById('compose-video-preview');
     if (video) {
@@ -146,6 +157,7 @@ actual fun VideoPlayer(
     offsetXFraction: Float,
     offsetYFraction: Float,
     revealRadiusFraction: Float,
+    volume: Float,
     onEnded: () -> Unit
 ) {
     LaunchedEffect(Unit) {
@@ -171,6 +183,12 @@ actual fun VideoPlayer(
             offsetYFraction.toDouble(),
             revealRadiusFraction.toDouble()
         )
+    }
+
+    // Apply the clip's volume (its envelope evaluated at the playhead) to the shared <video>, so a
+    // keyframed volume envelope is honored in the preview like it is for pure-audio clips.
+    LaunchedEffect(volume) {
+        jsUpdateVideoVolume(volume.toDouble())
     }
 
     // Hide the shared <video> only when this player actually leaves the composition (no video clip

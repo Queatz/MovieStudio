@@ -29,6 +29,12 @@ class QwenVideoRequestTest {
             .filter { it.getValue("type").jsonPrimitive.content == "first_frame" }
             .map { it.getValue("url").jsonPrimitive.content }
 
+    /** The `url` values of each `last_frame` media object in the `input.media` list. */
+    private fun JsonObject.lastFrameUrls(): List<String> =
+        getValue("media").jsonArray.map { it.jsonObject }
+            .filter { it.getValue("type").jsonPrimitive.content == "last_frame" }
+            .map { it.getValue("url").jsonPrimitive.content }
+
     /** The `url` values of each `reference_image` media object in the `input.media` list. */
     private fun JsonObject.referenceUrls(): List<String> =
         getValue("media").jsonArray.map { it.jsonObject }
@@ -50,6 +56,24 @@ class QwenVideoRequestTest {
 
         assertEquals(listOf("https://oss/first-frame.png"), input.firstFrameUrls(), "I2V must send the image as a first_frame media object under input.media")
         assertNull(input["img_url"], "I2V must not send the legacy img_url field")
+        assertTrue(input.lastFrameUrls().isEmpty(), "I2V without an end image must not send a last_frame media object")
+    }
+
+    @Test
+    fun i2vSendsEndImageAsLastFrameMediaObject() {
+        val setup = GenerationSetup(
+            kind = "video",
+            prompt = "A cat",
+            imageUrl = "https://oss/first-frame.png",
+            endImageUrl = "https://oss/last-frame.png",
+        )
+        assertEquals("i2v", setup.resolveVideoModelKind())
+
+        val body = QwenAIService.buildVideoRequestBody(setup, "A cat, cinematic", "i2v", "wan2.7-i2v")
+        val input = body.input()
+
+        assertEquals(listOf("https://oss/first-frame.png"), input.firstFrameUrls(), "the start image must remain the first_frame media object")
+        assertEquals(listOf("https://oss/last-frame.png"), input.lastFrameUrls(), "the end image must be sent as a last_frame media object under input.media")
     }
 
     @Test

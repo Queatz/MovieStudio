@@ -3,6 +3,7 @@ package app.moviestudio
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -76,6 +77,21 @@ class ModelsTest {
         val legacy = parseEffectsConfig("""{"volume":0.6}""")
         assertTrue(legacy.volumeKeyframes.isEmpty())
         assertEquals(0.6, legacy.volumeAt(10.0), 0.0001)
+    }
+
+    @Test
+    fun clipCarriesAudioForAudioTracksAndVideoAssetsOnly() {
+        // Every clip on an audio track carries audio, whatever the asset type (or even none yet).
+        for (trackType in listOf(TrackType.MUSIC, TrackType.VOICE, TrackType.EFFECTS)) {
+            assertTrue(clipCarriesAudio(trackType, AssetType.AUDIO))
+            assertTrue(clipCarriesAudio(trackType, AssetType.VIDEO))
+            assertTrue(clipCarriesAudio(trackType, null))
+        }
+        // On the video track only video media carries audio; images and text cards do not.
+        assertTrue(clipCarriesAudio(TrackType.VIDEO, AssetType.VIDEO))
+        assertFalse(clipCarriesAudio(TrackType.VIDEO, AssetType.IMAGE))
+        assertFalse(clipCarriesAudio(TrackType.VIDEO, AssetType.TEXT))
+        assertFalse(clipCarriesAudio(TrackType.VIDEO, null))
     }
 
     @Test
