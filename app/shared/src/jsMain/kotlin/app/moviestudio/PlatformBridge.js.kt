@@ -90,6 +90,64 @@ actual fun updateAudioPlayback(items: List<AudioPlayItem>, playing: Boolean) {
     jsUpdateAudioPool(json, playing)
 }
 
+// ------------------------------------------------------------------------------ media preloading
+
+// Maintains a session-lived pool of hidden media elements keyed by URL: <video>/<audio> preloaded
+// with preload='auto' (muted, CORS so they decode/draw like the preview does) and decoded <img>
+// loaders. Warming these keeps every timeline asset persistently buffered, so the shared preview
+// <video>, the <audio> playback pool and Coil image loads all resolve from cache instantly and the
+// movie preview no longer stalls when a clip enters the playhead. URLs absent from the latest
+// reconcile are released so the pool tracks the current timeline.
+private fun jsPreloadMedia(itemsJson: String): Unit = js("""
+    (function(itemsJson) {
+        var items = JSON.parse(itemsJson);
+        if (!window.__msPreloadPool) { window.__msPreloadPool = {}; }
+        var pool = window.__msPreloadPool;
+        var wanted = {};
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            var url = item.url;
+            wanted[url] = true;
+            if (pool[url]) { continue; }
+            var el;
+            if (item.kind === 'IMAGE') {
+                el = new Image();
+                el.crossOrigin = 'anonymous';
+                el.src = url;
+            } else {
+                el = document.createElement(item.kind === 'VIDEO' ? 'video' : 'audio');
+                el.crossOrigin = 'anonymous';
+                el.preload = 'auto';
+                el.muted = true;
+                if (item.kind === 'VIDEO') { el.setAttribute('playsinline', 'true'); }
+                el.src = url;
+                try { el.load(); } catch (e) {}
+            }
+            pool[url] = el;
+        }
+        for (var key in pool) {
+            if (!wanted[key]) {
+                var stale = pool[key];
+                try { stale.src = ''; if (stale.load) { stale.load(); } } catch (e) {}
+                delete pool[key];
+            }
+        }
+    })(itemsJson)
+""")
+
+actual fun preloadTimelineMedia(items: List<PreloadMediaItem>) {
+    val json = buildString {
+        append('[')
+        items.forEachIndexed { index, item ->
+            if (index > 0) append(',')
+            append("{\"url\":\"").append(item.url).append("\",")
+            append("\"kind\":\"").append(item.kind.name).append("\"}")
+        }
+        append(']')
+    }
+    jsPreloadMedia(json)
+}
+
 // -------------------------------------------------------------------------------- frame capture
 
 private fun jsCaptureFrameAndUpload(uploadUrl: String): Promise<Boolean> = js("""

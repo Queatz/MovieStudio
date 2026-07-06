@@ -211,6 +211,37 @@ generate a movie skeleton in place — the same affordance as the timeline's Gen
 This keeps images (instant), video (streamed) and audio (streamed) all aligned to one timeline,
 whether the user is playing or scrubbing.
 
+### 6.1 Preloading & persistence
+
+Because the master clock jumps between clips (playing or scrubbing), media that is only fetched
+*when* the playhead reaches its clip stalls the preview: a `<video>` `src` swap re-buffers, a
+freshly-created `<audio>` re-downloads and an uncached image pops in late. To keep the preview
+smooth, `PreviewPanel` preloads **every** media file on the timeline up front and keeps it
+persistently buffered for the session:
+
+```kotlin
+val preloadItems = remember(timeline, viewModel.libraryAssets) {
+    collectPreloadMedia(timeline, viewModel.libraryAssets)
+}
+LaunchedEffect(preloadItems) { preloadTimelineMedia(preloadItems) }
+```
+
+- `collectPreloadMedia(timeline, assets)` (in `PlatformBridge.kt`) is a pure, unit-tested function
+  that walks every clip, resolves its `Asset` and returns each **distinct** media URL once (blank
+  `ossUrl` description-only clips skipped), tagged with a `PreloadKind` (`VIDEO` / `IMAGE` / `AUDIO`)
+  derived from the asset type. It is keyed on `timeline` + `libraryAssets`, so it recomputes only
+  when the set of timeline media changes — never on a plain playhead tick.
+- `preloadTimelineMedia(items)` (the platform bridge) reconciles a **session-lived pool keyed by
+  URL** (`window.__msPreloadPool`) of hidden, CORS-loaded `<video>`/`<audio>` elements
+  (`preload='auto'`, muted) and decoded `<img>` loaders. Warming these keeps the browser's HTTP
+  cache and decode buffers primed, so the shared preview `<video>`, the `<audio>` playback pool
+  (§4) and Coil image loads (§5.1) all resolve **instantly** from cache instead of loading on
+  demand. URLs no longer on the timeline are released on the next reconcile. No-op on
+  desktop/Android (no DOM).
+
+This runs from `PreviewPanel` specifically (not the timeline editor), so it also warms the media for
+the distraction-free `fullscreen` playback mode, where the timeline panel is not composed.
+
 ---
 
 ## 7. How it all comes together

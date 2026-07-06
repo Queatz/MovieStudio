@@ -54,7 +54,9 @@ import app.moviestudio.WebGLPreviewSurface
 import app.moviestudio.isWebGLPreviewSupported
 import app.moviestudio.aspectRatioToFloat
 import app.moviestudio.calculatedDuration
+import app.moviestudio.collectPreloadMedia
 import app.moviestudio.parseEffectsConfig
+import app.moviestudio.preloadTimelineMedia
 import app.moviestudio.progressAt
 import app.moviestudio.visualAt
 import app.moviestudio.setPreviewObjectPosition
@@ -84,6 +86,17 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
     val timeline = viewModel.timeline
     val movie = viewModel.currentMovie
     val playhead = viewModel.playhead
+
+    // Preload (and keep persistently buffered) every media file on the timeline — video, image and
+    // audio — so playback and scrubbing across clips stay smooth: by the time the playhead reaches a
+    // clip its media is already fetched/decoded rather than loaded on demand. Recomputed only when
+    // the set of timeline media changes, so it never runs on a plain playhead tick.
+    val preloadItems = remember(timeline, viewModel.libraryAssets) {
+        collectPreloadMedia(timeline, viewModel.libraryAssets)
+    }
+    LaunchedEffect(preloadItems) {
+        preloadTimelineMedia(preloadItems)
+    }
 
     // Resolve everything currently under the playhead.
     val activeClips = remember(timeline, playhead, viewModel.libraryAssets) {

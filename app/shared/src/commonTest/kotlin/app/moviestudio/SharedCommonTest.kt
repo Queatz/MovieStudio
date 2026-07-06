@@ -118,4 +118,87 @@ class SharedCommonTest {
         assertEquals("minor", decoded.scale)
         assertEquals(2, decoded.measures)
     }
+
+    @Test
+    fun testCollectPreloadMedia() {
+        // A null timeline preloads nothing.
+        assertEquals(emptyList(), collectPreloadMedia(null, emptyList()))
+
+        val assets = listOf(
+            preloadAsset("vid", AssetType.VIDEO, "https://oss/clip.mp4"),
+            preloadAsset("img", AssetType.IMAGE, "https://oss/poster.png"),
+            preloadAsset("song", AssetType.MUSIC, "https://oss/song.mp3"),
+            preloadAsset("vo", AssetType.VOICE, "https://oss/vo.wav"),
+            // A description-only placeholder (blank ossUrl) has nothing to preload.
+            preloadAsset("desc", AssetType.TEXT, "")
+        )
+        val timeline = timelineOf(
+            preloadTrack("t-video", TrackType.VIDEO, 0) to listOf(
+                preloadClip("c1", "t-video", "vid"),
+                preloadClip("c2", "t-video", "img"),
+                preloadClip("c3", "t-video", "desc"),
+                // A second clip reusing the same video asset must not duplicate the URL.
+                preloadClip("c4", "t-video", "vid")
+            ),
+            preloadTrack("t-music", TrackType.MUSIC, 1) to listOf(
+                preloadClip("c5", "t-music", "song")
+            ),
+            preloadTrack("t-voice", TrackType.VOICE, 2) to listOf(
+                preloadClip("c6", "t-voice", "vo"),
+                // A clip referencing a missing asset is skipped.
+                preloadClip("c7", "t-voice", "ghost")
+            )
+        )
+
+        val result = collectPreloadMedia(timeline, assets)
+
+        // Each media URL appears once, in first-seen order; kind derives from the asset type.
+        assertEquals(
+            listOf(
+                PreloadMediaItem("https://oss/clip.mp4", PreloadKind.VIDEO),
+                PreloadMediaItem("https://oss/poster.png", PreloadKind.IMAGE),
+                PreloadMediaItem("https://oss/song.mp3", PreloadKind.AUDIO),
+                PreloadMediaItem("https://oss/vo.wav", PreloadKind.AUDIO)
+            ),
+            result
+        )
+    }
+
+    private fun preloadAsset(id: String, type: AssetType, ossUrl: String) = Asset(
+        id = id,
+        type = type,
+        ossUrl = ossUrl,
+        durationSeconds = 5.0,
+        movieId = "movie-1",
+        tags = emptyList(),
+        aiPrompt = null
+    )
+
+    private fun preloadTrack(id: String, type: TrackType, zIndex: Int) = Track(
+        id = id,
+        movieId = "movie-1",
+        type = type,
+        zIndex = zIndex
+    )
+
+    private fun preloadClip(id: String, trackId: String, assetId: String) = Clip(
+        id = id,
+        trackId = trackId,
+        assetId = assetId,
+        timelineStart = 0f,
+        trimIn = 0f,
+        trimOut = 5f,
+        effectsConfig = ""
+    )
+
+    private fun timelineOf(vararg tracks: Pair<Track, List<Clip>>) = MovieTimeline(
+        movie = Movie(
+            id = "movie-1",
+            title = "Test Movie",
+            totalDuration = 0.0,
+            status = MovieStatus.DRAFT,
+            createdAt = 0L
+        ),
+        tracks = tracks.map { (track, clips) -> TrackWithClips(track, clips) }
+    )
 }

@@ -37,6 +37,9 @@ object FFmpegService {
     private val logger = LoggerFactory.getLogger(FFmpegService::class.java)
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** How many trailing lines of FFmpeg's stderr to retain for surfacing a failure reason. */
+    private const val FFMPEG_LOG_TAIL_LINES = 40
+
     suspend fun executeRenderJob(job: Job, onProgress: suspend (progress: Int, message: String) -> Unit) {
         logger.info("Executing FFmpeg render job ${job.id} for movie ${job.movieId}")
 
@@ -368,42 +371,63 @@ object FFmpegService {
 
             onProgress(25, "Rendering movie with FFmpeg...")
 
+            // Retain a bounded tail of FFmpeg's stderr so a failure surfaces the actual reason (the
+            // last lines almost always carry the error) instead of a generic message. The full
+            // output still streams to the server log at INFO.
+            val ffmpegLogTail = ArrayDeque<String>()
+
             withContext(Dispatchers.IO) {
                 val process = try {
                     ProcessBuilder(args).start()
                 } catch (e: java.io.IOException) {
-                    logger.warn("FFmpeg binary not found: ${e.message}. Simulating rendering progress instead.")
+                    logger.warn("FFmpeg binary '${MediaUtil.ffmpegBinary}' not found: ${e.message}. Simulating rendering progress instead.")
                     null
                 }
 
-                if (process != null) {
-                    process.errorStream.bufferedReader().useLines { lines ->
-                        lines.forEach { line ->
-                            logger.info("[FFmpeg] $line")
-                            val seconds = parseFfmpegTime(line)
-                            if (seconds != null && totalDuration > 0) {
-                                val progress = ((seconds / totalDuration) * 100).toInt().coerceIn(0, 100)
-                                val scaledProgress = 25 + (progress * 0.6).toInt()
-                                onProgress(scaledProgress, "Rendering movie: $progress%...")
-                            }
-                        }
-                    }
-                    val exitCode = process.waitFor()
-                    if (exitCode != 0) {
-                        logger.warn("FFmpeg failed with exit code $exitCode (likely mock media). Falling back to simulated render.")
-                        for (p in 0..100 step 20) {
-                            onProgress(25 + (p * 0.6).toInt(), "Rendering movie (simulated fallback): $p%...")
-                            delay(200)
-                        }
-                        outputFile.writeText("MOCK COMPILED MP4 VIDEO DATA")
-                    }
-                } else {
+                if (process == null) {
+                    // Dev/CI without an ffmpeg binary: keep degrading gracefully with a placeholder.
                     for (p in 0..100 step 20) {
                         onProgress(25 + (p * 0.6).toInt(), "Rendering movie (simulated): $p%...")
                         delay(200)
                     }
                     outputFile.writeText("MOCK COMPILED MP4 VIDEO DATA")
+                    return@withContext
                 }
+
+                process.errorStream.bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        logger.info("[FFmpeg] $line")
+                        ffmpegLogTail.addLast(line)
+                        while (ffmpegLogTail.size > FFMPEG_LOG_TAIL_LINES) ffmpegLogTail.removeFirst()
+                        val seconds = parseFfmpegTime(line)
+                        if (seconds != null && totalDuration > 0) {
+                            val progress = ((seconds / totalDuration) * 100).toInt().coerceIn(0, 100)
+                            val scaledProgress = 25 + (progress * 0.6).toInt()
+                            onProgress(scaledProgress, "Rendering movie: $progress%...")
+                        }
+                    }
+                }
+                val exitCode = process.waitFor()
+                if (exitCode != 0) {
+                    // Previously a non-zero exit silently fell back to a placeholder file and the
+                    // render was reported as successful. Surface the real failure instead.
+                    logger.error(
+                        "FFmpeg render failed for job ${job.id} (exit code $exitCode). FFmpeg output tail:\n" +
+                            ffmpegLogTail.joinToString("\n")
+                    )
+                    throw Exception("FFmpeg exited with code $exitCode. ${summarizeFfmpegError(ffmpegLogTail)}")
+                }
+            }
+
+            // A zero-exit FFmpeg run can still leave nothing usable behind (e.g. a filtergraph that
+            // produced no frames), which previously slipped through as a "successful" 0-byte render.
+            // Verify there is real output before uploading and reporting success.
+            if (!outputFile.exists() || outputFile.length() == 0L) {
+                logger.error(
+                    "FFmpeg reported success but produced no output for job ${job.id}. FFmpeg output tail:\n" +
+                        ffmpegLogTail.joinToString("\n")
+                )
+                throw Exception("FFmpeg produced an empty (0-byte) output file. ${summarizeFfmpegError(ffmpegLogTail)}")
             }
 
             onProgress(90, "Uploading rendered movie to Alibaba Cloud OSS...")
@@ -447,6 +471,16 @@ object FFmpegService {
             )
 
             logger.info("FFmpeg render job ${job.id} completed successfully. resultUrl: $uploadedUrl")
+        } catch (e: Exception) {
+            // Surface the failure (the caller marks the job FAILED with this message) and take the
+            // movie back out of RENDERING so it isn't left stuck in that state after a failed render.
+            logger.error("FFmpeg render job ${job.id} failed: ${e.message}", e)
+            MovieRepository.getById(job.movieId)?.let { current ->
+                if (current.status == MovieStatus.RENDERING) {
+                    MovieRepository.update(current.copy(status = MovieStatus.DRAFT))
+                }
+            }
+            throw e
         } finally {
             try {
                 if (tempDir.exists()) {
@@ -536,6 +570,24 @@ object FFmpegService {
             lines[maxLines - 1] = lines[maxLines - 1].take(width - 1) + "…"
         }
         return lines.ifEmpty { listOf(text.take(width)) }
+    }
+
+    /**
+     * Distills a short, human-readable reason from FFmpeg's stderr [logTail]: the last few
+     * non-empty, non-progress lines (which almost always carry the actual error). Kept short so it
+     * fits a job's error field and the progress toast; the full output is in the server log.
+     */
+    internal fun summarizeFfmpegError(logTail: Collection<String>): String {
+        val meaningful = logTail
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("frame=") }
+        val reason = meaningful.takeLast(3).joinToString(" | ")
+            .ifBlank { logTail.joinToString(" | ").trim() }
+        return if (reason.isBlank()) {
+            "See the server log for the full FFmpeg output."
+        } else {
+            "FFmpeg output: ${reason.take(500)}"
+        }
     }
 
     private fun parseFfmpegTime(line: String): Double? {

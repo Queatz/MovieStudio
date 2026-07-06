@@ -36,6 +36,60 @@ data class AudioPlayItem(
 expect fun updateAudioPlayback(items: List<AudioPlayItem>, playing: Boolean)
 
 /**
+ * How a [PreloadMediaItem] should be preloaded, so the platform can pick the matching element
+ * (`<video>` / `<audio>` / `<img>`) and preload strategy.
+ */
+enum class PreloadKind { VIDEO, IMAGE, AUDIO }
+
+/**
+ * One media file that appears on the current timeline and should be fetched/decoded ahead of time
+ * (and kept warm) so the movie preview plays it back instantly — instead of stalling — when the
+ * playhead reaches its clip.
+ */
+data class PreloadMediaItem(
+    val url: String,
+    val kind: PreloadKind
+)
+
+/**
+ * Every distinct, media-bearing asset referenced by [timeline]'s clips, each tagged with the
+ * [PreloadKind] to preload it as (derived from the asset's [AssetType]). Description-only clips
+ * (blank `ossUrl`) are skipped and each URL appears once, in first-seen order. Pure and
+ * deterministic, so it is unit-testable and its result can be handed to [preloadTimelineMedia].
+ */
+fun collectPreloadMedia(timeline: MovieTimeline?, assets: List<Asset>): List<PreloadMediaItem> {
+    if (timeline == null) return emptyList()
+    val assetsById = assets.associateBy { it.id }
+    val seen = HashSet<String>()
+    val result = ArrayList<PreloadMediaItem>()
+    timeline.tracks.forEach { trackWithClips ->
+        trackWithClips.clips.forEach { clip ->
+            val asset = assetsById[clip.assetId] ?: return@forEach
+            val url = asset.ossUrl
+            if (url.isBlank() || !seen.add(url)) return@forEach
+            val kind = when (asset.type) {
+                AssetType.IMAGE -> PreloadKind.IMAGE
+                AssetType.VIDEO -> PreloadKind.VIDEO
+                else -> PreloadKind.AUDIO
+            }
+            result.add(PreloadMediaItem(url, kind))
+        }
+    }
+    return result
+}
+
+/**
+ * Preloads — and keeps warm for the rest of the session — every media file on the current timeline
+ * ([items], typically from [collectPreloadMedia]). On web targets this maintains a pool of hidden,
+ * CORS-loaded `<video>` / `<audio>` elements and `<img>` loaders keyed by URL, so that when the
+ * playhead reaches a clip its media is already fetched/decoded and preview playback starts
+ * instantly. Repeated calls reconcile the pool with [items]; media no longer on the timeline is
+ * released. No-op on platforms without a DOM (desktop / Android), where images already stream
+ * through Coil.
+ */
+expect fun preloadTimelineMedia(items: List<PreloadMediaItem>)
+
+/**
  * Captures the current frame of the movie preview's video element as a PNG and PUTs it to
  * [uploadUrl] (a pre-signed OSS URL). Returns true on success, false when there is no frame to
  * capture or the platform cannot capture frames.

@@ -9,6 +9,10 @@ actual fun updateAudioPlayback(items: List<AudioPlayItem>, playing: Boolean) {
     // No-op on desktop: preview audio playback is a browser feature.
 }
 
+actual fun preloadTimelineMedia(items: List<PreloadMediaItem>) {
+    // No-op on desktop: media preloading warms a browser <video>/<audio>/<img> pool.
+}
+
 actual suspend fun captureVideoFrameAndUpload(uploadUrl: String): Boolean = false
 
 actual fun triggerDownload(url: String, fileName: String) {
