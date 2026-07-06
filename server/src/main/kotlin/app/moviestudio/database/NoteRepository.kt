@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory
 
 object NoteRepository {
     private val logger = LoggerFactory.getLogger(NoteRepository::class.java)
-    private const val COLLECTION = "notes"
+    private val COLLECTION = DbCollection.NOTES
     private val json = Json { 
         ignoreUnknownKeys = true 
         prettyPrint = false
@@ -28,24 +28,24 @@ object NoteRepository {
     fun insert(note: TimelineNote): TimelineNote {
         validate(note)
         val doc = toDoc(note)
-        ArangoDatabase.db.collection(COLLECTION).insertDocument(RawJson.of(doc))
+        ArangoDatabase.db.collection(COLLECTION.collectionName).insertDocument(RawJson.of(doc))
         return note
     }
 
     fun getById(id: String): TimelineNote? {
-        val rawJson = ArangoDatabase.db.collection(COLLECTION).getDocument(id, RawJson::class.java) ?: return null
+        val rawJson = ArangoDatabase.db.collection(COLLECTION.collectionName).getDocument(id, RawJson::class.java) ?: return null
         return json.decodeFromString(TimelineNote.serializer(), rawJson.get())
     }
 
     fun update(note: TimelineNote): TimelineNote {
         validate(note)
         val doc = toDoc(note)
-        ArangoDatabase.db.collection(COLLECTION).updateDocument(note.id, RawJson.of(doc))
+        ArangoDatabase.db.collection(COLLECTION.collectionName).updateDocument(note.id, RawJson.of(doc))
         return note
     }
 
     fun delete(id: String) {
-        ArangoDatabase.db.collection(COLLECTION).deleteDocument(id)
+        ArangoDatabase.db.collection(COLLECTION.collectionName).deleteDocument(id)
     }
 
     fun deleteByMovieId(movieId: String) {

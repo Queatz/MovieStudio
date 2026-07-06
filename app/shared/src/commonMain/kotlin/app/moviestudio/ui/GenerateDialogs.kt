@@ -1,6 +1,7 @@
 package app.moviestudio.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -47,6 +48,7 @@ import app.moviestudio.SEQUENCER_MIN_TEMPO_BPM
 import app.moviestudio.SEQUENCER_STEPS_PER_MEASURE
 import app.moviestudio.SEQUENCER_VISIBLE_OCTAVES
 import app.moviestudio.SUPPORTED_IMAGE_SIZES
+import app.moviestudio.SUPPORTED_MUSIC_GENDERS
 import app.moviestudio.SUPPORTED_SFX_MODELS
 import app.moviestudio.SUPPORTED_VIDEO_SIZES
 import app.moviestudio.SequencerNote
@@ -200,7 +202,8 @@ fun GenerateMediaDialog(
             label = "Prompt",
             placeholder = "A sunny meadow full of wildflowers, butterflies drifting by...",
             minLines = 2,
-            maxLines = 4
+            maxLines = 4,
+            showAiButton = true
         )
         Spacer(Modifier.height(8.dp))
         StudioTextField(
@@ -438,6 +441,8 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
     var theme by remember { mutableStateOf(initialSetup?.theme ?: initialAsset?.description ?: "") }
     var lyric by remember { mutableStateOf(initialSetup?.lyric ?: "") }
     var instrumental by remember { mutableStateOf(initialSetup?.instrumental ?: false) }
+    // Preferred vocal gender ("female"/"male"); blank lets Fun-Music pick. Only relevant with vocals.
+    var gender by remember { mutableStateOf(initialSetup?.gender ?: "") }
     // Which AI chat dialog is open: "theme", "lyrics" or none. Both ✨ buttons open the
     // reusable [AiPromptDialog] so the prompt can be reviewed/edited and refined with follow-ups.
     var aiAssist by remember { mutableStateOf<String?>(null) }
@@ -477,6 +482,12 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
         }
         Spacer(Modifier.height(10.dp))
 
+        // Vocal gender only applies when the track has vocals.
+        if (!instrumental) {
+            MusicGenderToggle(selected = gender) { gender = it }
+            Spacer(Modifier.height(10.dp))
+        }
+
         StudioTextField(
             value = lyric,
             onValueChange = { lyric = it },
@@ -487,7 +498,7 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
             maxLines = 10,
             enabled = !instrumental,
             trailingIcon = {
-                RoundIconButton("✨", contentDescription = "enerate lyrics", size = 28.dp, enabled = !instrumental) {
+                RoundIconButton("✨", contentDescription = "Generate lyrics", size = 28.dp, enabled = !instrumental) {
                     aiAssist = "lyrics"
                 }
             }
@@ -501,7 +512,13 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
                 enabled = theme.isNotBlank() || lyric.isNotBlank()
             ) {
                 viewModel.generateMedia(
-                    GenerationSetup(kind = "music", theme = theme, lyric = lyric, instrumental = instrumental),
+                    GenerationSetup(
+                        kind = "music",
+                        theme = theme,
+                        lyric = lyric,
+                        instrumental = instrumental,
+                        gender = if (instrumental) "" else gender
+                    ),
                     assetId = initialAsset?.id
                 )
                 onDismiss()
@@ -538,6 +555,47 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
             onAccept = { lyric = it; aiAssist = null },
             onDismiss = { aiAssist = null }
         )
+    }
+}
+
+/**
+ * Female/Male vocal-gender picker for [GenerateMusicDialog]. Two pills mapped to
+ * [SUPPORTED_MUSIC_GENDERS]; tapping the active pill clears the choice (blank = let Fun-Music
+ * decide). Each pill is clipped before its clickable so the hover/press highlight follows the
+ * rounded corners (project guideline).
+ */
+@Composable
+private fun MusicGenderToggle(selected: String, onSelect: (String) -> Unit) {
+    Column {
+        Text(
+            "Vocal gender",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SUPPORTED_MUSIC_GENDERS.forEach { option ->
+                val active = selected == option
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50)) // clip BEFORE clickable so the hover pill is rounded
+                        .background(
+                            if (active) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                        .clickable { onSelect(if (active) "" else option) }
+                        .padding(horizontal = 18.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        option.replaceFirstChar { it.uppercase() },
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                        color = if (active) MaterialTheme.colorScheme.onPrimary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -1033,7 +1091,8 @@ fun SoundEffectDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDi
             modifier = Modifier.fillMaxWidth(),
             label = "Sound description",
             placeholder = "Thunder rolling over a canyon, heavy rain...",
-            minLines = 2
+            minLines = 2,
+            showAiButton = true
         )
         Spacer(Modifier.height(8.dp))
         DropdownSelector(
@@ -1118,7 +1177,8 @@ fun TtsDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: (
             label = "Narration text",
             placeholder = "In a world where movies make themselves...",
             minLines = 3,
-            maxLines = 8
+            maxLines = 8,
+            showAiButton = true
         )
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.Bottom) {

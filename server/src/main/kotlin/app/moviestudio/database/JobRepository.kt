@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory
 
 object JobRepository {
     private val logger = LoggerFactory.getLogger(JobRepository::class.java)
-    private const val COLLECTION = "jobs"
+    private val COLLECTION = DbCollection.JOBS
     private val json = Json { 
         ignoreUnknownKeys = true 
         prettyPrint = false
@@ -23,23 +23,23 @@ object JobRepository {
 
     fun insert(job: Job): Job {
         val doc = toDoc(job)
-        ArangoDatabase.db.collection(COLLECTION).insertDocument(RawJson.of(doc))
+        ArangoDatabase.db.collection(COLLECTION.collectionName).insertDocument(RawJson.of(doc))
         return job
     }
 
     fun getById(id: String): Job? {
-        val rawJson = ArangoDatabase.db.collection(COLLECTION).getDocument(id, RawJson::class.java) ?: return null
+        val rawJson = ArangoDatabase.db.collection(COLLECTION.collectionName).getDocument(id, RawJson::class.java) ?: return null
         return json.decodeFromString(Job.serializer(), rawJson.get())
     }
 
     fun update(job: Job): Job {
         val doc = toDoc(job)
-        ArangoDatabase.db.collection(COLLECTION).updateDocument(job.id, RawJson.of(doc))
+        ArangoDatabase.db.collection(COLLECTION.collectionName).updateDocument(job.id, RawJson.of(doc))
         return job
     }
 
     fun delete(id: String) {
-        ArangoDatabase.db.collection(COLLECTION).deleteDocument(id)
+        ArangoDatabase.db.collection(COLLECTION.collectionName).deleteDocument(id)
     }
 
     fun pollPendingJobs(): List<Job> {

@@ -2,7 +2,9 @@ package app.moviestudio
 
 import app.moviestudio.database.*
 import app.moviestudio.job.JobQueueWorker
+import app.moviestudio.service.AIGenerationService
 import app.moviestudio.service.MusicSynthesizer
+import app.moviestudio.service.QwenAIService
 import app.moviestudio.service.SkeletonService
 import io.ktor.client.plugins.websocket.*
 import io.ktor.client.request.*
@@ -23,7 +25,8 @@ class Phase5IntegrationTest {
     private val json = Json { ignoreUnknownKeys = true }
 
     private val collections = listOf(
-        "movies", "assets", "tracks", "clips", "jobs", "characters", "scenes", "voiceclones", "renders"
+        DbCollection.MOVIES, DbCollection.ASSETS, DbCollection.TRACKS, DbCollection.CLIPS, DbCollection.JOBS,
+        DbCollection.CHARACTERS, DbCollection.SCENES, DbCollection.VOICE_CLONES, DbCollection.RENDERS
     )
 
     @Before
@@ -31,7 +34,7 @@ class Phase5IntegrationTest {
         JobQueueWorker.stop()
         try {
             ArangoDatabase.init()
-            collections.forEach { ArangoDatabase.db.collection(it).truncate() }
+            collections.forEach { ArangoDatabase.db.collection(it.collectionName).truncate() }
         } catch (e: Exception) {
             println("Skipping DB setup because ArangoDB is not available: ${e.message}")
         }
@@ -40,8 +43,9 @@ class Phase5IntegrationTest {
     @After
     fun tearDown() {
         JobQueueWorker.stop()
+        AIGenerationService.setInstance(QwenAIService)
         try {
-            collections.forEach { ArangoDatabase.db.collection(it).truncate() }
+            collections.forEach { ArangoDatabase.db.collection(it.collectionName).truncate() }
         } catch (e: Exception) {
             // Ignore
         }
@@ -314,6 +318,25 @@ class Phase5IntegrationTest {
         assertFalse(scenesAfterDelete.any { it.id == scene.id })
 
         // Voice options: presets + clones (created via the mock cloning service).
+        AIGenerationService.setInstance(object : AIGenerationService {
+            override suspend fun generateTranscript(asset: Asset): Asset = asset
+
+            override suspend fun generateText(system: String, user: String): String = ""
+
+            override suspend fun createVoiceClone(name: String, audioUrl: String): VoiceClone {
+                val clone = VoiceClone(
+                    id = UUID.randomUUID().toString(),
+                    name = name,
+                    qwenVoiceId = "mock-voice-${name.lowercase().replace(Regex("[^a-z0-9]+"), "-")}",
+                    sourceAudioUrl = audioUrl,
+                    createdAt = System.currentTimeMillis()
+                )
+                VoiceCloneRepository.insert(clone)
+                return clone
+            }
+
+            override suspend fun executeAiGenerationJob(job: Job, onProgress: suspend (progress: Int, message: String) -> Unit) = Unit
+        })
         val cloneRes = client.post("/api/voice/clones") {
             contentType(ContentType.Application.Json)
             setBody("""{"name": "My Voice", "audioUrl": "https://oss.com/sample.mp3"}""")

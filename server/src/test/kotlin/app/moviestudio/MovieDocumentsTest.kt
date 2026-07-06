@@ -1,6 +1,7 @@
 package app.moviestudio
 
 import app.moviestudio.database.ArangoDatabase
+import app.moviestudio.database.DbCollection
 import app.moviestudio.database.DocumentRepository
 import app.moviestudio.database.MovieRepository
 import io.ktor.client.request.*
@@ -29,8 +30,8 @@ class MovieDocumentsTest {
         // Initialize ArangoDB and truncate collections for clean slate
         try {
             ArangoDatabase.init()
-            ArangoDatabase.db.collection("movies").truncate()
-            ArangoDatabase.db.collection("documents").truncate()
+            ArangoDatabase.db.collection(DbCollection.MOVIES.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.DOCUMENTS.collectionName).truncate()
         } catch (e: Exception) {
             println("Skipping DB setup because ArangoDB is not available: ${e.message}")
         }
@@ -39,8 +40,8 @@ class MovieDocumentsTest {
     @After
     fun tearDown() {
         try {
-            ArangoDatabase.db.collection("movies").truncate()
-            ArangoDatabase.db.collection("documents").truncate()
+            ArangoDatabase.db.collection(DbCollection.MOVIES.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.DOCUMENTS.collectionName).truncate()
         } catch (e: Exception) {
             // Ignore
         }

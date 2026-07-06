@@ -138,6 +138,11 @@ fun StudioTextField(
     aiPromptTitle: String = "✨ AI chat",
     aiPromptDescription: String? =
         "Describe what you want, chat to refine it, then insert the result into the field.",
+    // Shows a visible "✨" trailing icon that opens the same AI prompt dialog as Alt+Enter, for
+    // fields where the shortcut alone isn't discoverable enough (e.g. the main prompt/description
+    // inputs of the generate dialogs). Ignored when [trailingIcon] is already provided or
+    // [aiGenerate] is null.
+    showAiButton: Boolean = false,
 ) {
     val focus = remember { FocusRequester() }
     // Alt+Enter opens the reusable AI prompt dialog (enabled by default; disabled only when the
@@ -247,7 +252,20 @@ fun StudioTextField(
         enabled = enabled,
         textStyle = textStyle,
         leadingIcon = leadingIcon,
-        trailingIcon = trailingIcon,
+        trailingIcon = trailingIcon ?: if (showAiButton && aiGenerate != null) {
+            {
+                RoundIconButton(
+                    "✨",
+                    contentDescription = "AI generate",
+                    size = 28.dp,
+                    enabled = enabled
+                ) {
+                    showAiPrompt = true
+                }
+            }
+        } else {
+            null
+        },
         shape = StudioFieldShape,
         colors = OutlinedTextFieldDefaults.colors(
             focusedContainerColor = fieldBackground,

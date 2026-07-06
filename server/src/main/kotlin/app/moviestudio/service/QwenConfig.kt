@@ -28,7 +28,7 @@ import org.slf4j.LoggerFactory
  *                              (e.g. "happy", "sad", "excited") are supplied (default
  *                              qwen3-tts-instruct).
  * - QWEN_VOICE_ENROLL_MODEL    Voice cloning/enrollment model (default voice-enrollment).
- * - QWEN_VOICE_CLONE_TARGET    TTS model cloned voices target (default cosyvoice-v2).
+ * - QWEN_VOICE_CLONE_TARGET    TTS model cloned voices target (default cosyvoice-v3.5-plus).
  * - QWEN_AUDIO_MODEL           Sound-effect model, used both text-to-audio and video-driven
  *                              (default fun-audiogen-v1); verified against the
  *                              audio-generation/audio-synthesis endpoint.
@@ -64,7 +64,7 @@ object QwenConfig {
     // instructions describing how the line should be delivered (e.g. "happy", "sad", "excited").
     val ttsInstructModel: String = Env.get("QWEN_TTS_INSTRUCT_MODEL", "qwen3-tts-instruct-flash")
     val voiceEnrollModel: String = Env.get("QWEN_VOICE_ENROLL_MODEL", "voice-enrollment")
-    val voiceCloneTargetModel: String = Env.get("QWEN_VOICE_CLONE_TARGET", "cosyvoice-v2")
+    val voiceCloneTargetModel: String = Env.get("QWEN_VOICE_CLONE_TARGET", "cosyvoice-v3.5-plus")
 
     // Sound-effect model backing the audio-generation/audio-synthesis endpoint, for both the
     // direct text-to-audio and video-driven (GenerationSetup.sfxModel == "fun-audiogen" /

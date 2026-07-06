@@ -27,11 +27,11 @@ class Phase3IntegrationTest {
         JobQueueWorker.stop()
         try {
             ArangoDatabase.init()
-            ArangoDatabase.db.collection("movies").truncate()
-            ArangoDatabase.db.collection("assets").truncate()
-            ArangoDatabase.db.collection("tracks").truncate()
-            ArangoDatabase.db.collection("clips").truncate()
-            ArangoDatabase.db.collection("jobs").truncate()
+            ArangoDatabase.db.collection(DbCollection.MOVIES.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.ASSETS.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.TRACKS.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.CLIPS.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.JOBS.collectionName).truncate()
         } catch (e: Exception) {
             println("Skipping DB setup: ${e.message}")
         }
@@ -41,11 +41,11 @@ class Phase3IntegrationTest {
     fun tearDown() {
         JobQueueWorker.stop()
         try {
-            ArangoDatabase.db.collection("movies").truncate()
-            ArangoDatabase.db.collection("assets").truncate()
-            ArangoDatabase.db.collection("tracks").truncate()
-            ArangoDatabase.db.collection("clips").truncate()
-            ArangoDatabase.db.collection("jobs").truncate()
+            ArangoDatabase.db.collection(DbCollection.MOVIES.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.ASSETS.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.TRACKS.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.CLIPS.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.JOBS.collectionName).truncate()
         } catch (e: Exception) {
             // Ignore
         }

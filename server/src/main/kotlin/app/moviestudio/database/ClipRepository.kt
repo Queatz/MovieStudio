@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory
 
 object ClipRepository {
     private val logger = LoggerFactory.getLogger(ClipRepository::class.java)
-    private const val COLLECTION = "clips"
+    private val COLLECTION = DbCollection.CLIPS
     private val json = Json { 
         ignoreUnknownKeys = true 
         prettyPrint = false
@@ -29,24 +29,24 @@ object ClipRepository {
     fun insert(clip: Clip): Clip {
         validate(clip)
         val doc = toDoc(clip)
-        ArangoDatabase.db.collection(COLLECTION).insertDocument(RawJson.of(doc))
+        ArangoDatabase.db.collection(COLLECTION.collectionName).insertDocument(RawJson.of(doc))
         return clip
     }
 
     fun getById(id: String): Clip? {
-        val rawJson = ArangoDatabase.db.collection(COLLECTION).getDocument(id, RawJson::class.java) ?: return null
+        val rawJson = ArangoDatabase.db.collection(COLLECTION.collectionName).getDocument(id, RawJson::class.java) ?: return null
         return json.decodeFromString(Clip.serializer(), rawJson.get())
     }
 
     fun update(clip: Clip): Clip {
         validate(clip)
         val doc = toDoc(clip)
-        ArangoDatabase.db.collection(COLLECTION).updateDocument(clip.id, RawJson.of(doc))
+        ArangoDatabase.db.collection(COLLECTION.collectionName).updateDocument(clip.id, RawJson.of(doc))
         return clip
     }
 
     fun delete(id: String) {
-        ArangoDatabase.db.collection(COLLECTION).deleteDocument(id)
+        ArangoDatabase.db.collection(COLLECTION.collectionName).deleteDocument(id)
     }
 
     fun deleteByTrackId(trackId: String) {

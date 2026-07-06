@@ -275,7 +275,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                                 query.isNotBlank() -> "No media matches “$query”."
                                 onlyThisMovie && typed.isNotEmpty() ->
                                     "No media created for this movie yet.\nUncheck “This movie” to browse the whole library."
-                                else -> "Nothing here yet.\nUse ＋ Add or drop files here to create or upload media."
+                                else -> "Nothing here yet.\nUse ＋ to add or drop files here to create or upload media."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant

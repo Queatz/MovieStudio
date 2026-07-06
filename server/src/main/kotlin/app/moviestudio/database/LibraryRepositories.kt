@@ -17,7 +17,7 @@ import kotlinx.serialization.json.JsonPrimitive
  * hand-written repositories for the core movie entities.
  */
 open class SimpleCrudRepository<T>(
-    private val collection: String,
+    private val collection: DbCollection,
     private val serializer: KSerializer<T>,
     private val idOf: (T) -> String
 ) {
@@ -36,22 +36,22 @@ open class SimpleCrudRepository<T>(
     }
 
     fun insert(entity: T): T {
-        ArangoDatabase.db.collection(collection).insertDocument(RawJson.of(toDoc(entity)))
+        ArangoDatabase.db.collection(collection.collectionName).insertDocument(RawJson.of(toDoc(entity)))
         return entity
     }
 
     fun getById(id: String): T? {
-        val rawJson = ArangoDatabase.db.collection(collection).getDocument(id, RawJson::class.java) ?: return null
+        val rawJson = ArangoDatabase.db.collection(collection.collectionName).getDocument(id, RawJson::class.java) ?: return null
         return json.decodeFromString(serializer, rawJson.get())
     }
 
     fun update(entity: T): T {
-        ArangoDatabase.db.collection(collection).updateDocument(idOf(entity), RawJson.of(toDoc(entity)))
+        ArangoDatabase.db.collection(collection.collectionName).updateDocument(idOf(entity), RawJson.of(toDoc(entity)))
         return entity
     }
 
     fun delete(id: String) {
-        ArangoDatabase.db.collection(collection).deleteDocument(id)
+        ArangoDatabase.db.collection(collection.collectionName).deleteDocument(id)
     }
 
     fun listAll(): List<T> {
@@ -75,17 +75,17 @@ open class SimpleCrudRepository<T>(
     }
 }
 
-object CharacterRepository : SimpleCrudRepository<Character>("characters", Character.serializer(), { it.id })
+object CharacterRepository : SimpleCrudRepository<Character>(DbCollection.CHARACTERS, Character.serializer(), { it.id })
 
-object SceneRepository : SimpleCrudRepository<Scene>("scenes", Scene.serializer(), { it.id })
+object SceneRepository : SimpleCrudRepository<Scene>(DbCollection.SCENES, Scene.serializer(), { it.id })
 
-object VoiceCloneRepository : SimpleCrudRepository<VoiceClone>("voiceclones", VoiceClone.serializer(), { it.id })
+object VoiceCloneRepository : SimpleCrudRepository<VoiceClone>(DbCollection.VOICE_CLONES, VoiceClone.serializer(), { it.id })
 
-object RenderRepository : SimpleCrudRepository<RenderRecord>("renders", RenderRecord.serializer(), { it.id }) {
+object RenderRepository : SimpleCrudRepository<RenderRecord>(DbCollection.RENDERS, RenderRecord.serializer(), { it.id }) {
     fun queryByMovieId(movieId: String): List<RenderRecord> = queryByField("movieId", movieId)
 }
 
-object TipRepository : SimpleCrudRepository<Tip>("tips", Tip.serializer(), { it.id }) {
+object TipRepository : SimpleCrudRepository<Tip>(DbCollection.TIPS, Tip.serializer(), { it.id }) {
     /**
      * Tips whose title or content contains [query] (case-insensitive), newest first. A blank
      * query returns all tips. Uses an AQL LIKE with the term wrapped in wildcards.
@@ -94,7 +94,7 @@ object TipRepository : SimpleCrudRepository<Tip>("tips", Tip.serializer(), { it.
         val term = query.trim()
         if (term.isEmpty()) return listAll()
         val aql = """
-            FOR d IN tips
+            FOR d IN ${DbCollection.TIPS}
                 FILTER LIKE(LOWER(d.title), @term, true) OR LIKE(LOWER(d.content), @term, true)
                 SORT $defaultSort
                 RETURN d

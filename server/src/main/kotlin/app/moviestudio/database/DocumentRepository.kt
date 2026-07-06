@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory
 
 object DocumentRepository {
     private val logger = LoggerFactory.getLogger(DocumentRepository::class.java)
-    private const val COLLECTION = "documents"
+    private val COLLECTION = DbCollection.DOCUMENTS
     private val json = Json {
         ignoreUnknownKeys = true
         prettyPrint = false
@@ -28,12 +28,12 @@ object DocumentRepository {
     fun insert(document: MovieDocument): MovieDocument {
         validate(document)
         val doc = toDoc(document)
-        ArangoDatabase.db.collection(COLLECTION).insertDocument(RawJson.of(doc))
+        ArangoDatabase.db.collection(COLLECTION.collectionName).insertDocument(RawJson.of(doc))
         return document
     }
 
     fun getById(id: String): MovieDocument? {
-        val rawJson = ArangoDatabase.db.collection(COLLECTION).getDocument(id, RawJson::class.java) ?: return null
+        val rawJson = ArangoDatabase.db.collection(COLLECTION.collectionName).getDocument(id, RawJson::class.java) ?: return null
         return json.decodeFromString(MovieDocument.serializer(), rawJson.get())
     }
 
@@ -41,12 +41,12 @@ object DocumentRepository {
         validate(document)
         val doc = toDoc(document)
         // replaceDocument (not update) so cleared fields like parentId = null are persisted.
-        ArangoDatabase.db.collection(COLLECTION).replaceDocument(document.id, RawJson.of(doc))
+        ArangoDatabase.db.collection(COLLECTION.collectionName).replaceDocument(document.id, RawJson.of(doc))
         return document
     }
 
     fun delete(id: String) {
-        ArangoDatabase.db.collection(COLLECTION).deleteDocument(id)
+        ArangoDatabase.db.collection(COLLECTION.collectionName).deleteDocument(id)
     }
 
     fun deleteByMovieId(movieId: String) {

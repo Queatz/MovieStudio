@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -191,9 +192,11 @@ private fun trackIndexAt(y: Float): Int = ((y - RULER_HEIGHT - TRACK_GAP) / (TRA
  * The timeline editor (always dark, regardless of theme): AI generate bar, track headers,
  * a canvas with the ruler / clips / playhead, and the scroll + zoom controls.
  *
- * Gesture notes: the pointer handlers are installed with `pointerInput(Unit)` and read all
- * changing state through [rememberUpdatedState], so fast mouse moves and mid-drag state updates
- * never restart (cancel) an in-progress drag.
+ * Gesture notes: the pointer handlers are installed with `pointerInput(Unit)`, so fast mouse
+ * moves and mid-drag state updates never restart (cancel) an in-progress drag. Zoom/scroll/asset
+ * state is read through [rememberUpdatedState]; the timeline itself is read straight off the
+ * (stable) `viewModel` reference on every hit-test/drag callback, so tracks and clips added after
+ * the canvas first composed are always seen — not just the ones present when it first loaded.
  */
 @Composable
 fun TimelinePanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
@@ -494,12 +497,27 @@ private fun TimelineCanvas(
 ) {
     val textMeasurer = rememberTextMeasurer()
 
-    // Latest state, readable from inside the long-lived pointerInput(Unit) handlers.
-    val timelineState by rememberUpdatedState(viewModel.timeline)
+    // Latest state, readable from inside the long-lived pointerInput(Unit) handlers. The
+    // timeline itself is read straight off `viewModel` (a stable reference) rather than through
+    // rememberUpdatedState, so tracks/clips added after this canvas first composed (e.g. via the
+    // "+ Track" menu or a fresh drop) are never missed by hit-testing or snap-edge collection.
     val zoomState by rememberUpdatedState(viewModel.zoomScale)
     val scrollState by rememberUpdatedState(viewModel.scrollOffset)
     val assetsState by rememberUpdatedState(viewModel.libraryAssets)
     val notesState by rememberUpdatedState(viewModel.timelineNotes)
+
+    // A structural signature of the timeline that changes only when tracks or clips are added or
+    // removed. Moving or resizing a clip — even re-homing it onto another track — keeps both the
+    // track count and the total clip count unchanged, so this stays constant throughout a drag.
+    // The tap/drag gesture handlers are keyed on it (instead of Unit) so that a structural change
+    // ("+ Track", a fresh drop, a delete) tears down and reinstalls fresh gesture coroutines that
+    // pick up the new tracks/clips, while an in-progress drag is never interrupted.
+    val gestureKey by remember {
+        derivedStateOf {
+            val t = viewModel.timeline
+            (t?.tracks?.size ?: 0) to (t?.tracks?.sumOf { it.clips.size } ?: 0)
+        }
+    }
 
     var dragSession by remember { mutableStateOf<DragSession?>(null) }
 
@@ -527,7 +545,7 @@ private fun TimelineCanvas(
     }
 
     fun clipHit(offset: Offset): Pair<Clip, Int>? {
-        val currentTimeline = timelineState ?: return null
+        val currentTimeline = viewModel.timeline ?: return null
         val trackIndex = ((offset.y - RULER_HEIGHT - TRACK_GAP) / (TRACK_HEIGHT + TRACK_GAP)).toInt()
         if (trackIndex < 0 || trackIndex >= currentTimeline.tracks.size) return null
         val time = timeAt(offset.x)
@@ -557,7 +575,7 @@ private fun TimelineCanvas(
                         // Holding Ctrl while dropping snaps to the nearest whole second.
                         if (KeyModifierState.ctrlDown) seconds = seconds.roundToInt().toFloat()
                         val trackIndex = trackIndexAt(position.y - bounds.top)
-                        val trackId = timelineState?.tracks?.getOrNull(trackIndex)?.track?.id
+                        val trackId = viewModel.timeline?.tracks?.getOrNull(trackIndex)?.track?.id
                         TimelineDropTarget(seconds, trackId)
                     } else {
                         null
@@ -585,7 +603,8 @@ private fun TimelineCanvas(
             }
             // Tap: focus a note marker or seek from the ruler, select/deselect clips below it.
             // Double-tap: open the clip's asset in the details dialog (like the library panel).
-            .pointerInput(Unit) {
+            // Keyed on [gestureKey] so it reinstalls after tracks/clips are added or removed.
+            .pointerInput(gestureKey) {
                 detectTapGestures(
                     onDoubleTap = { offset ->
                         if (offset.y > RULER_HEIGHT) {
@@ -618,9 +637,10 @@ private fun TimelineCanvas(
                     }
                 )
             }
-            // Drag: seek scrubbing, clip move and edge resize. Installed once (pointerInput(Unit))
-            // so state changes mid-drag can never cancel the gesture.
-            .pointerInput(Unit) {
+            // Drag: seek scrubbing, clip move and edge resize. Keyed on [gestureKey] (which is
+            // stable throughout any drag) so adding/removing a track or clip reinstalls the gesture
+            // with fresh snap-edge collection, while an in-progress drag is never cancelled.
+            .pointerInput(gestureKey) {
                 detectDragGestures(
                     onDragStart = { offset ->
                         dragSession = if (offset.y <= RULER_HEIGHT) {
@@ -637,9 +657,9 @@ private fun TimelineCanvas(
                                 val clipEndX = (clip.timelineStart + (clip.trimOut - clip.trimIn) - scrollState) * zoomState
                                 val asset = assetsState.firstOrNull { it.id == clip.assetId }
                                 val mediaCap = mediaTrimCap(asset)
-                                val trackType = timelineState?.tracks?.getOrNull(trackIndex)?.track?.type
+                                val trackType = viewModel.timeline?.tracks?.getOrNull(trackIndex)?.track?.type
                                 // Gather the snap targets once up front so mid-drag moves stay cheap.
-                                val snapEdges = collectSnapEdges(timelineState, clip.id)
+                                val snapEdges = collectSnapEdges(viewModel.timeline, clip.id)
                                 when {
                                     offset.x - clipStartX <= EDGE_GRAB ->
                                         DragSession.ResizeLeft(
@@ -683,7 +703,7 @@ private fun TimelineCanvas(
                                 // Dragging vertically re-homes the clip onto another track of
                                 // the same type.
                                 val targetIndex = trackIndexAt(change.position.y)
-                                val targetTrack = timelineState?.tracks?.getOrNull(targetIndex)?.track
+                                val targetTrack = viewModel.timeline?.tracks?.getOrNull(targetIndex)?.track
                                 if (targetTrack != null && targetTrack.type == session.sourceTrackType) {
                                     session.newTrackId = targetTrack.id
                                 }
@@ -757,7 +777,7 @@ private fun TimelineCanvas(
             }
     ) {
         canvasWidth = size.width
-        val currentTimeline = timelineState ?: return@Canvas
+        val currentTimeline = viewModel.timeline ?: return@Canvas
         drawRuler(this, textMeasurer, zoomState, scrollState)
         drawTracks(this, textMeasurer, currentTimeline, assetsState, zoomState, scrollState, viewModel.selectedClipId)
         drawNoteMarkers(this, textMeasurer, notesState, zoomState, scrollState, viewModel.selectedNoteId)

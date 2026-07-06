@@ -727,6 +727,9 @@ data class GenerationSetup(
     val lyric: String = "",
     val theme: String = "",
     val instrumental: Boolean = false,
+    // Preferred vocal gender for Fun-Music ("female" | "male"); blank lets the model decide.
+    // Ignored when [instrumental] is set (no vocals to gender).
+    val gender: String = "",
     // Voice-specific options.
     val voice: String = "",
     // Optional voice instructions for TTS (Qwen instruct): how the line should be delivered,
@@ -787,9 +790,16 @@ val SUPPORTED_VIDEO_SIZES: List<String> = listOf(
     "832*480", "480*832", "624*624"
 )
 
-/** Image generation sizes offered by the text-to-image / image-edit models. */
+/**
+ * Image generation sizes offered by the text-to-image / image-edit models. Includes every
+ * [SUPPORTED_VIDEO_SIZES] tier (so a movie's chosen size lines up across image and video
+ * generations) plus the larger sizes qwen-image-max additionally supports.
+ */
 val SUPPORTED_IMAGE_SIZES: List<String> = listOf(
-    "1024*1024", "1280*720", "720*1280", "768*1024", "1024*768"
+    "1024*1024", "1280*720", "720*1280", "768*1024", "1024*768",
+    "960*960", "1920*1080", "1080*1920", "1440*1440",
+    "832*480", "480*832", "624*624",
+    "1328*1328", "1664*928", "928*1664", "1472*1140", "1140*1472"
 )
 
 /**
@@ -800,6 +810,13 @@ val SUPPORTED_IMAGE_SIZES: List<String> = listOf(
  * - "fun-audiogen-vd": video-driven, scores a WAN source video with audio matching its visuals.
  */
 val SUPPORTED_SFX_MODELS: List<String> = listOf("wan", "fun-audiogen", "fun-audiogen-vd")
+
+/**
+ * Vocal gender options offered for Fun-Music generation (see [GenerationSetup.gender]). These map
+ * directly to the Fun-Music API's `gender` input; an empty selection lets the model decide and
+ * sends no `gender` at all.
+ */
+val SUPPORTED_MUSIC_GENDERS: List<String> = listOf("female", "male")
 
 /**
  * Picks the generation size (e.g. "1280*720") from [sizes] whose aspect is closest to the

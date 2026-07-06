@@ -10,6 +10,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -56,9 +58,23 @@ fun App() {
         val viewModel: AppViewModel = viewModel { AppViewModel() }
         val rootFocus = remember { FocusRequester() }
 
+        // A structural signature of the timeline that only changes when tracks or clips are added
+        // or removed (never merely moved/resized — those keep the counts constant). Adding a
+        // track/clip goes through a dropdown menu or a drag-and-drop that steals keyboard focus
+        // from the root; keying the focus effect on this signature re-acquires focus right after
+        // such a change so the Delete/Space/arrow shortcuts (and the Ctrl/Alt snap modifiers, which
+        // are fed from the root key handler) keep working without needing a page reload.
+        val timelineStructure by remember {
+            derivedStateOf {
+                val t = viewModel.timeline
+                (t?.tracks?.size ?: 0) to (t?.tracks?.sumOf { it.clips.size } ?: 0)
+            }
+        }
+
         // Keep keyboard focus on the root whenever no text field holds it, so the space-bar
-        // shortcut always works after the user finishes typing.
-        LaunchedEffect(TextInputFocusTracker.focusedFields, viewModel.currentScreen) {
+        // shortcut (and the other global shortcuts) always work after the user finishes typing or
+        // after an interaction — such as adding a timeline item — momentarily stole focus.
+        LaunchedEffect(TextInputFocusTracker.focusedFields, viewModel.currentScreen, timelineStructure) {
             if (!TextInputFocusTracker.anyFocused) {
                 runCatching { rootFocus.requestFocus() }
             }

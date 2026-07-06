@@ -2,6 +2,7 @@ package app.moviestudio
 
 import app.moviestudio.database.ArangoDatabase
 import app.moviestudio.database.AssetRepository
+import app.moviestudio.database.DbCollection
 import app.moviestudio.database.MovieRepository
 import app.moviestudio.routing.UploadUrlRequest
 import app.moviestudio.routing.UploadUrlResponse
@@ -26,8 +27,8 @@ class Phase2IntegrationTest {
         // Initialize ArangoDB and truncate collections for clean slate
         try {
             ArangoDatabase.init()
-            ArangoDatabase.db.collection("movies").truncate()
-            ArangoDatabase.db.collection("assets").truncate()
+            ArangoDatabase.db.collection(DbCollection.MOVIES.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.ASSETS.collectionName).truncate()
         } catch (e: Exception) {
             println("Skipping DB setup because ArangoDB is not available: ${e.message}")
         }
@@ -36,8 +37,8 @@ class Phase2IntegrationTest {
     @After
     fun tearDown() {
         try {
-            ArangoDatabase.db.collection("movies").truncate()
-            ArangoDatabase.db.collection("assets").truncate()
+            ArangoDatabase.db.collection(DbCollection.MOVIES.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.ASSETS.collectionName).truncate()
         } catch (e: Exception) {
             // Ignore
         }

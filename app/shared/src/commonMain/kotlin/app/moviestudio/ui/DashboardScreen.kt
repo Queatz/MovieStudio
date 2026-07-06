@@ -350,7 +350,7 @@ private fun TipsPanelContent(viewModel: AppViewModel, modifier: Modifier) {
                     }
                 )
             } else {
-                PillButton("＋ New Tip", modifier = Modifier.fillMaxWidth()) { showCreateForm = true }
+                PillButton("＋ Tip", modifier = Modifier.fillMaxWidth()) { showCreateForm = true }
             }
             Spacer(Modifier.height(12.dp))
         }

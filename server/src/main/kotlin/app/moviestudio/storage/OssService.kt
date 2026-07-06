@@ -9,6 +9,9 @@ import com.aliyun.oss.model.PutObjectRequest
 import com.aliyun.oss.model.ResponseHeaderOverrides
 import com.aliyun.oss.model.SetBucketCORSRequest
 import org.slf4j.LoggerFactory
+import java.net.URI
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.util.Date
 
 object OssService {
@@ -35,6 +38,43 @@ object OssService {
         val endpointClean = endpoint.removePrefix("http://").removePrefix("https://")
         return "https://$bucketName.$endpointClean/$objectKey"
     }
+
+    private fun endpointHost(): String = endpoint.removePrefix("http://").removePrefix("https://").removeSuffix("/")
+
+    private fun decodeObjectKey(rawKey: String): String? = URLDecoder.decode(
+        rawKey.trimStart('/'),
+        StandardCharsets.UTF_8.name()
+    ).takeIf { it.isNotBlank() }
+
+    /**
+     * Extracts an object key from one of this app's OSS URLs, ignoring any signed-query suffix.
+     * Returns null for external URLs, so callers can safely leave user-provided internet URLs as-is.
+     */
+    internal fun objectKeyFromUrl(url: String): String? {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
+        val scheme = uri.scheme?.lowercase() ?: return null
+        if (scheme != "http" && scheme != "https") return null
+        val host = uri.host ?: return null
+        val rawPath = uri.rawPath?.trimStart('/') ?: return null
+        val endpointClean = endpointHost()
+        val virtualHost = "$bucketName.$endpointClean"
+
+        if (host.equals(virtualHost, ignoreCase = true)) {
+            return decodeObjectKey(rawPath)
+        }
+        if (host.equals(endpointClean, ignoreCase = true)) {
+            val bucketPrefix = "$bucketName/"
+            if (rawPath.startsWith(bucketPrefix)) return decodeObjectKey(rawPath.removePrefix(bucketPrefix))
+        }
+        return null
+    }
+
+    /**
+     * Re-signs URLs that point at our private OSS bucket, leaving all external URLs untouched.
+     * This prevents Model Studio from receiving stale/plain private bucket URLs that it cannot
+     * download server-side and reports as `url error, please check url`.
+     */
+    fun freshDownloadUrl(url: String): String = objectKeyFromUrl(url)?.let { downloadUrl(it) } ?: url
 
     /**
      * A pre-signed GET URL for reading a private object. This grants temporary, credential-signed

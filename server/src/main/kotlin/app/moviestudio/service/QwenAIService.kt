@@ -311,36 +311,7 @@ object QwenAIService : AIGenerationService {
         val refinedPrompt = refinePrompt(setup.prompt, "video", ledger)
 
         onProgress(20, "Submitting $modelKind task ($model)...")
-        val requestBody = buildJsonObject {
-            put("model", model)
-            putJsonObject("input") {
-                put("prompt", refinedPrompt)
-                if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
-                when (modelKind) {
-                    "i2v" -> put("img_url", setup.imageUrl ?: "")
-                    "r2v" -> put("ref_images_url", buildJsonArray {
-                        setup.referenceImages.take(4).forEach { add(JsonPrimitive(it)) }
-                    })
-                    // Full wan2.7-videoedit support: the base video to edit, plus every optional
-                    // guidance input the model accepts — reference images and a guiding first frame.
-                    "videoedit" -> {
-                        put("video_url", setup.videoUrl ?: "")
-                        if (setup.referenceImages.isNotEmpty()) put("ref_images_url", buildJsonArray {
-                            setup.referenceImages.take(4).forEach { add(JsonPrimitive(it)) }
-                        })
-                        if (!setup.imageUrl.isNullOrBlank()) put("img_url", setup.imageUrl)
-                    }
-                }
-            }
-            putJsonObject("parameters") {
-                // T2V and video-edit both accept an explicit output size; I2V/R2V infer it.
-                if (modelKind == "t2v" || modelKind == "videoedit") {
-                    put("size", setup.resolution.ifBlank { "1280*720" })
-                }
-                val dur = setup.durationSeconds.toInt()
-                if (dur in 1..15) put("duration", dur)
-            }
-        }
+        val requestBody = buildVideoRequestBody(setup, refinedPrompt, modelKind, model)
         val mediaUrl = runAsyncGenerationTask(
             submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/video-generation/video-synthesis",
             requestBody = requestBody,
@@ -356,40 +327,83 @@ object QwenAIService : AIGenerationService {
     }
 
     /**
+     * Builds the DashScope video-synthesis request body for the WAN 2.7 family. Pure and
+     * network-free so the per-[modelKind] input shape can be unit-tested (see
+     * `QwenVideoRequestTest`); [modelKind] comes from [GenerationSetup.resolveVideoModelKind].
+     *
+     * The kind decides which optional input the body carries under `input`:
+     * - i2v: the first-frame image as a list of media objects under `media`, where each entry is
+     *        `{ "type": "first_frame", "url": <url> }` — the shape WAN 2.7 image-to-video
+     *        documents (see the Model Studio "Wan 2.7 - image-to-video" API reference, which also
+     *        allows `last_frame`/`driving_audio`/`first_clip` entries). Model Studio rejects the
+     *        legacy `img_url` with "Field required: input.media", a scalar `media` with "Input
+     *        should be a valid list: input.media", a list of bare URL strings with the same
+     *        message, and a `{ "image": <url> }` entry with "Field required: input.media.0.url &
+     *        Field required: input.media.0.type".
+     * - r2v: up to four reference images under `ref_images_url`.
+     * - videoedit: the base `video_url`, plus optional reference images and a guiding first frame.
+     */
+    internal fun buildVideoRequestBody(
+        setup: GenerationSetup,
+        refinedPrompt: String,
+        modelKind: String,
+        model: String,
+    ): JsonObject = buildJsonObject {
+        put("model", model)
+        putJsonObject("input") {
+            put("prompt", refinedPrompt)
+            if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
+            when (modelKind) {
+                // WAN 2.7 I2V expects the first-frame image as a list of media objects under
+                // `input.media`, each `{ "type": ..., "url": ... }`. A `first_frame` entry drives
+                // basic image-to-video; a bare URL or an `{ "image": <url> }` entry is rejected
+                // with "Field required: input.media.0.url & Field required: input.media.0.type".
+                "i2v" -> put("media", buildJsonArray {
+                    add(buildJsonObject {
+                        put("type", "first_frame")
+                        put("url", setup.imageUrl?.let(OssService::freshDownloadUrl) ?: "")
+                    })
+                })
+                "r2v" -> put("ref_images_url", buildJsonArray {
+                    setup.referenceImages.take(4).forEach { add(JsonPrimitive(OssService.freshDownloadUrl(it))) }
+                })
+                // Full wan2.7-videoedit support: the base video to edit, plus every optional
+                // guidance input the model accepts — reference images and a guiding first frame.
+                "videoedit" -> {
+                    put("video_url", setup.videoUrl?.let(OssService::freshDownloadUrl) ?: "")
+                    if (setup.referenceImages.isNotEmpty()) put("ref_images_url", buildJsonArray {
+                        setup.referenceImages.take(4).forEach { add(JsonPrimitive(OssService.freshDownloadUrl(it))) }
+                    })
+                    val imageUrl = setup.imageUrl
+                    if (!imageUrl.isNullOrBlank()) put("img_url", OssService.freshDownloadUrl(imageUrl))
+                }
+            }
+        }
+        putJsonObject("parameters") {
+            // T2V and video-edit both accept an explicit output size; I2V/R2V infer it.
+            if (modelKind == "t2v" || modelKind == "videoedit") {
+                put("size", setup.resolution.ifBlank { "1280*720" })
+            }
+            val dur = setup.durationSeconds.toInt()
+            if (dur in 1..15) put("duration", dur)
+        }
+    }
+
+    /**
      * Image generation. Text-to-image by default; when the setup carries a base image
      * ([app.moviestudio.GenerationSetup.imageUrl]) the image-edit (image-to-image) model is used
      * instead, repainting the base image according to the prompt (repose, restyle, etc.).
      */
     private suspend fun executeImage(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
-        val baseImageUrl = setup.imageUrl?.takeIf { it.isNotBlank() }
+        val baseImageUrl = setup.imageUrl?.takeIf { it.isNotBlank() }?.let(OssService::freshDownloadUrl)
         val model = if (baseImageUrl != null) QwenConfig.imageEditModel else QwenConfig.imageModel
         onProgress(15, if (baseImageUrl != null) "Submitting image edit task ($model)..." else "Submitting image task ($model)...")
         // The qwen-image family (both the plain and edit variants) is only exposed through the
         // chat-style multimodal-generation/generation endpoint - the legacy Wanx
         // aigc/text2image and aigc/image2image endpoints reject qwen-image-* model names with
         // HTTP 400 "url error, please check url！" (model name / API endpoint mismatch).
-        val requestBody = buildJsonObject {
-            put("model", model)
-            putJsonObject("input") {
-                put("messages", buildJsonArray {
-                    add(buildJsonObject {
-                        put("role", "user")
-                        put("content", buildJsonArray {
-                            if (baseImageUrl != null) {
-                                add(buildJsonObject { put("image", baseImageUrl) })
-                            }
-                            add(buildJsonObject { put("text", setup.prompt) })
-                        })
-                    })
-                })
-            }
-            putJsonObject("parameters") {
-                put("n", 1)
-                if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
-                put("size", setup.resolution.replace("x", "*").ifBlank { "1024*1024" })
-            }
-        }
+        val requestBody = buildImageRequestBody(setup, model)
         // Unlike the WAN video/audio models, the qwen-image family only supports synchronous
         // invocation: submitting with the `X-DashScope-Async` header set (as the shared
         // runAsyncGenerationTask helper does for every other media type) is rejected with
@@ -416,6 +430,29 @@ object QwenAIService : AIGenerationService {
         GenerationCommon.finalize(job, payload, ossUrl, 5.0, ledgerEntries = ledger)
     }
 
+    internal fun buildImageRequestBody(setup: GenerationSetup, model: String): JsonObject = buildJsonObject {
+        val baseImageUrl = setup.imageUrl?.takeIf { it.isNotBlank() }?.let(OssService::freshDownloadUrl)
+        put("model", model)
+        putJsonObject("input") {
+            put("messages", buildJsonArray {
+                add(buildJsonObject {
+                    put("role", "user")
+                    put("content", buildJsonArray {
+                        if (baseImageUrl != null) {
+                            add(buildJsonObject { put("image", baseImageUrl) })
+                        }
+                        add(buildJsonObject { put("text", setup.prompt) })
+                    })
+                })
+            })
+        }
+        putJsonObject("parameters") {
+            put("n", 1)
+            if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
+            put("size", setup.resolution.replace("x", "*").ifBlank { "1024*1024" })
+        }
+    }
+
     /**
      * Music generation via Fun-Music (`fun-music-v1`): a synchronous API accepting a theme
      * prompt, optional full lyrics and an instrumental switch, returning a 24h OSS URL that we
@@ -424,15 +461,7 @@ object QwenAIService : AIGenerationService {
     private suspend fun executeMusic(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         onProgress(20, "Composing music with ${QwenConfig.musicModel}...")
-        val requestBody = buildJsonObject {
-            put("model", QwenConfig.musicModel)
-            putJsonObject("input") {
-                val theme = setup.theme.ifBlank { setup.prompt }
-                if (theme.isNotBlank()) put("prompt", theme)
-                if (setup.lyric.isNotBlank() && !setup.instrumental) put("lyrics", setup.lyric)
-                put("instrumental", setup.instrumental)
-            }
-        }
+        val requestBody = buildMusicRequestBody(setup, QwenConfig.musicModel)
         val response = postJson(
             "${QwenConfig.dashScopeBaseUrl}/services/audio/music/generation",
             requestBody,
@@ -447,6 +476,28 @@ object QwenAIService : AIGenerationService {
         onProgress(80, "Uploading generated music to Alibaba OSS...")
         val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "music", "mp3", 30.0)
         GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
+    }
+
+    /**
+     * Builds the Fun-Music (`fun-music-v1`) request body. Pure and network-free so its `input`
+     * shape can be unit-tested (see `QwenMusicRequestTest`).
+     *
+     * The theme (falling back to the plain prompt) becomes `input.prompt`; full lyrics ride along
+     * as `input.lyrics` and the preferred vocal `gender` ("female"/"male") as `input.gender` -
+     * both only when the track has vocals ([GenerationSetup.instrumental] is false). A blank
+     * gender is omitted so the model picks the voice itself.
+     */
+    internal fun buildMusicRequestBody(setup: GenerationSetup, model: String): JsonObject = buildJsonObject {
+        put("model", model)
+        putJsonObject("input") {
+            val theme = setup.theme.ifBlank { setup.prompt }
+            if (theme.isNotBlank()) put("prompt", theme)
+            if (!setup.instrumental) {
+                if (setup.lyric.isNotBlank()) put("lyrics", setup.lyric)
+                if (setup.gender.isNotBlank()) put("gender", setup.gender)
+            }
+            put("instrumental", setup.instrumental)
+        }
     }
 
     /**

@@ -16,6 +16,14 @@ tasks.withType<JavaExec>().configureEach {
     workingDir = rootProject.projectDir
 }
 
+// Guarantee that EVERY test run talks to an isolated TEST database, never the production
+// `moviestudio` one (tests truncate whole collections). The marker below is read by
+// `ArangoDatabase` to pick the `<main>_test` database; the `.env` still resolves from the repo root.
+tasks.withType<Test>().configureEach {
+    workingDir = rootProject.projectDir
+    systemProperty("app.moviestudio.testDatabase", "true")
+}
+
 dependencies {
     api(projects.core)
     implementation(libs.logback)

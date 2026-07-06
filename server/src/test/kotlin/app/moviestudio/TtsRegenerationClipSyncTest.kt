@@ -3,6 +3,7 @@ package app.moviestudio
 import app.moviestudio.database.ArangoDatabase
 import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.ClipRepository
+import app.moviestudio.database.DbCollection
 import app.moviestudio.database.JobRepository
 import app.moviestudio.database.MovieRepository
 import app.moviestudio.database.TrackRepository
@@ -26,14 +27,14 @@ import kotlin.test.assertNotNull
  */
 class TtsRegenerationClipSyncTest {
 
-    private val collections = listOf("movies", "assets", "tracks", "clips", "jobs")
+    private val collections = listOf(DbCollection.MOVIES, DbCollection.ASSETS, DbCollection.TRACKS, DbCollection.CLIPS, DbCollection.JOBS)
     private var dbAvailable = true
 
     @Before
     fun setUp() {
         try {
             ArangoDatabase.init()
-            collections.forEach { ArangoDatabase.db.collection(it).truncate() }
+            collections.forEach { ArangoDatabase.db.collection(it.collectionName).truncate() }
         } catch (e: Exception) {
             dbAvailable = false
             println("Skipping DB setup because ArangoDB is not available: ${e.message}")
@@ -44,7 +45,7 @@ class TtsRegenerationClipSyncTest {
     fun tearDown() {
         if (!dbAvailable) return
         try {
-            collections.forEach { ArangoDatabase.db.collection(it).truncate() }
+            collections.forEach { ArangoDatabase.db.collection(it.collectionName).truncate() }
         } catch (e: Exception) {
             // Ignore
         }

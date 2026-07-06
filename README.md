@@ -85,7 +85,7 @@ Recognized variables:
 | `QWEN_AUDIO_MODEL` | Sound-effect model (text-to-audio and video-driven, default `fun-audiogen-v1`). |
 | `QWEN_TTS_MODEL` | Text-to-speech model (default `qwen-tts`). |
 | `QWEN_VOICE_ENROLL_MODEL` | Voice cloning enrollment model (default `voice-enrollment`). |
-| `QWEN_VOICE_CLONE_TARGET` | TTS model cloned voices target (default `cosyvoice-v2`). |
+| `QWEN_VOICE_CLONE_TARGET` | TTS model cloned voices target (default `cosyvoice-v3.5-plus`). |
 | `QWEN_TRANSCRIPTION_MODEL` | Speech-to-text model for transcripts (default `paraformer-v2`). |
 | `QWEN_POLL_INTERVAL_MS` | Async task poll interval in ms (default `3000`). |
 | `QWEN_POLL_TIMEOUT_MS` | Async task max wait in ms (default `300000`). |

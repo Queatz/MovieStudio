@@ -1,6 +1,7 @@
 package app.moviestudio
 
 import app.moviestudio.database.ArangoDatabase
+import app.moviestudio.database.DbCollection
 import app.moviestudio.database.MovieRepository
 import app.moviestudio.database.NoteRepository
 import io.ktor.client.request.*
@@ -28,8 +29,8 @@ class TimelineNotesTest {
         // Initialize ArangoDB and truncate collections for clean slate
         try {
             ArangoDatabase.init()
-            ArangoDatabase.db.collection("movies").truncate()
-            ArangoDatabase.db.collection("notes").truncate()
+            ArangoDatabase.db.collection(DbCollection.MOVIES.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.NOTES.collectionName).truncate()
         } catch (e: Exception) {
             println("Skipping DB setup because ArangoDB is not available: ${e.message}")
         }
@@ -38,8 +39,8 @@ class TimelineNotesTest {
     @After
     fun tearDown() {
         try {
-            ArangoDatabase.db.collection("movies").truncate()
-            ArangoDatabase.db.collection("notes").truncate()
+            ArangoDatabase.db.collection(DbCollection.MOVIES.collectionName).truncate()
+            ArangoDatabase.db.collection(DbCollection.NOTES.collectionName).truncate()
         } catch (e: Exception) {
             // Ignore
         }

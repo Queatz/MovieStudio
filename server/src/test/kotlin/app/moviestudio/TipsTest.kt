@@ -1,6 +1,7 @@
 package app.moviestudio
 
 import app.moviestudio.database.ArangoDatabase
+import app.moviestudio.database.DbCollection
 import app.moviestudio.database.TipRepository
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -25,7 +26,7 @@ class TipsTest {
     fun setUp() {
         try {
             ArangoDatabase.init()
-            ArangoDatabase.db.collection("tips").truncate()
+            ArangoDatabase.db.collection(DbCollection.TIPS.collectionName).truncate()
         } catch (e: Exception) {
             println("Skipping DB setup because ArangoDB is not available: ${e.message}")
         }
@@ -34,7 +35,7 @@ class TipsTest {
     @After
     fun tearDown() {
         try {
-            ArangoDatabase.db.collection("tips").truncate()
+            ArangoDatabase.db.collection(DbCollection.TIPS.collectionName).truncate()
         } catch (e: Exception) {
             // Ignore
         }
