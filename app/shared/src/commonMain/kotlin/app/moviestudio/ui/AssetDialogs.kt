@@ -270,7 +270,7 @@ fun AssetDetailsDialog(
 
     if (showGenerate) {
         // The full per-type generation dialog, pre-filled from the asset's stored setup —
-        // regenerating pushes the previous media onto the asset's restorable history.
+        // regenerating saves the result as a brand-new asset (this asset is left unchanged).
         when (asset.type) {
             AssetType.MUSIC -> GenerateMusicDialog(viewModel, initialAsset = asset) { showGenerate = false }
             AssetType.AUDIO -> SoundEffectDialog(viewModel, initialAsset = asset) { showGenerate = false }
@@ -279,7 +279,9 @@ fun AssetDetailsDialog(
         }
     }
     if (showTweak) {
-        GenerateMediaDialog(viewModel, initialAsset = asset) { showTweak = false }
+        // Tweaking edits the current asset in place, pushing its previous media onto the asset's
+        // restorable history (rather than creating a new asset like regenerating does).
+        GenerateMediaDialog(viewModel, initialAsset = asset, tweak = true) { showTweak = false }
     }
     if (showClipAudio) {
         ClipAudioDialog(viewModel, asset) { showClipAudio = false }

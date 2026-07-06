@@ -1,6 +1,8 @@
 package app.moviestudio.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -33,6 +35,8 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -48,7 +52,12 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.moviestudio.AiChatMessage
+import app.moviestudio.NetworkService
 import app.moviestudio.installMarkdownShortcutGuard
+import app.moviestudio.startRealtimeSpeechInput
+import app.moviestudio.stopRealtimeSpeechInput
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * A tiny, self-contained rich-text editor for Markdown.
@@ -305,13 +314,28 @@ class MarkdownEditorState(initialMarkdown: String = "") {
  * [focusRequester] lets a caller (e.g. the formatting toolbar) put the caret back into the field
  * after an action that would otherwise leave it unfocused — toolbar buttons don't take focus
  * themselves (see [FormatToggle]), so without this the field would stay unfocused after a click.
+ *
+ * Like [StudioTextField], the editor supports hold-to-dictate: long-press the surface (pointer or
+ * touch) to start realtime speech-to-text — recognized words stream into the document while the
+ * press is held, and dictation stops the moment the press is released. While dictation is live the
+ * placeholder switches to "Start speaking...".
+ *
+ * It also supports an AI chat by default: pressing Alt+Enter opens the reusable [AiPromptDialog],
+ * where the user can chat with the AI and, once happy, press "Insert" to append the generated text
+ * to the document. [aiGenerate] performs the actual AI call and defaults to the generic
+ * [NetworkService.generateText] endpoint; pass `null` to disable the shortcut entirely.
  */
 @Composable
 fun MarkdownRichTextEditor(
     state: MarkdownEditorState,
     modifier: Modifier = Modifier,
     placeholder: String = "",
-    focusRequester: FocusRequester = remember { FocusRequester() }
+    focusRequester: FocusRequester = remember { FocusRequester() },
+    enabled: Boolean = true,
+    aiGenerate: (suspend (messages: List<AiChatMessage>) -> String)? = { NetworkService.generateText(it) },
+    aiPromptTitle: String = "✨ AI chat",
+    aiPromptDescription: String? =
+        "Describe what you want, chat to refine it, then insert the result into the editor."
 ) {
     val baseColor = MaterialTheme.colorScheme.onSurface
     val markerColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
@@ -328,6 +352,10 @@ fun MarkdownRichTextEditor(
     // otherwise those keys are swallowed globally instead of editing the document. The dispose
     // guard releases the count if the editor is torn down (document closed) while still focused.
     var wasFocused by remember { mutableStateOf(false) }
+    // Alt+Enter opens the reusable AI prompt dialog (enabled by default; disabled only when the
+    // caller passes a null [aiGenerate]).
+    var showAiPrompt by remember { mutableStateOf(false) }
+    var dictating by remember { mutableStateOf(false) }
     DisposableEffect(Unit) {
         // onPreviewKeyEvent returning true below only stops other Compose handlers from seeing the
         // event — it does NOT stop the browser from running its own default action for Ctrl/Cmd+
@@ -336,6 +364,9 @@ fun MarkdownRichTextEditor(
         val shortcutGuard = installMarkdownShortcutGuard { wasFocused }
         onDispose {
             shortcutGuard.dispose()
+            // A dictation session left running (e.g. the editor is torn down mid-press) must not
+            // keep the microphone open.
+            if (dictating) stopRealtimeSpeechInput()
             if (wasFocused) TextInputFocusTracker.onFocusChanged(true, false)
         }
     }
@@ -372,12 +403,52 @@ fun MarkdownRichTextEditor(
                         shortcut && event.key == Key.B -> { state.toggleBold(); true }
                         shortcut && event.key == Key.I -> { state.toggleItalic(); true }
                         shortcut && event.key == Key.U -> { state.toggleUnderline(); true }
+                        // Alt+Enter opens the AI prompt dialog (chat with the AI, then insert its
+                        // result). Enabled by default; skipped only when [aiGenerate] is null.
+                        aiGenerate != null && event.isAltPressed && event.key == Key.Enter -> {
+                            showAiPrompt = true
+                            true
+                        }
                         // Enter continues the current list (or leaves it on an empty item); when the
                         // caret isn't on a list line we return false so a normal newline is inserted.
                         !shortcut && !event.isAltPressed && !event.isShiftPressed &&
                             (event.key == Key.Enter || event.key == Key.NumPadEnter) ->
                             state.continueList()
                         else -> false
+                    }
+                }
+                // Hold-to-dictate. Observed on the Initial pass without consuming anything, so the
+                // normal text-editing gestures keep working exactly as before.
+                .pointerInput(enabled) {
+                    if (!enabled) return@pointerInput
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        // A long press is a press still held after the platform long-press timeout.
+                        val releasedEarly = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.changes.none { it.pressed }) break
+                            }
+                        }
+                        if (releasedEarly == null) {
+                            // Dictate for as long as the press is held. A failing platform bridge
+                            // must never kill this pointer handler (that would disable dictation
+                            // for the rest of the editor's lifetime).
+                            val base = state.markdown
+                            val started = runCatching {
+                                startRealtimeSpeechInput { spoken ->
+                                    val prefix = if (base.isBlank()) "" else base.trimEnd() + " "
+                                    state.setMarkdown(prefix + spoken)
+                                }
+                            }.getOrDefault(false)
+                            dictating = started
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.changes.none { it.pressed }) break
+                            }
+                            if (started) stopRealtimeSpeechInput()
+                            dictating = false
+                        }
                     }
                 },
             textStyle = textStyle,
@@ -386,11 +457,43 @@ fun MarkdownRichTextEditor(
             decorationBox = { inner ->
                 Box {
                     if (state.value.text.isEmpty()) {
-                        Text(placeholder, color = markerColor, fontSize = 15.sp)
+                        // Live dictation: invite the user to talk (visible while the document is
+                        // still empty), mirroring [StudioTextField].
+                        if (dictating) {
+                            Text(
+                                "Start speaking...",
+                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
+                                fontSize = 15.sp
+                            )
+                        } else {
+                            Text(placeholder, color = markerColor, fontSize = 15.sp)
+                        }
                     }
                     inner()
                 }
             }
+        )
+    }
+
+    // AI prompt dialog (opened with Alt+Enter): chat with the AI and insert its result into the
+    // document. Shown unless the caller disabled the shortcut by passing a null [aiGenerate].
+    if (showAiPrompt && aiGenerate != null) {
+        AiPromptDialog(
+            title = aiPromptTitle,
+            description = aiPromptDescription,
+            initialPrompt = state.markdown,
+            generate = aiGenerate,
+            generateLabel = "✨ Generate",
+            acceptLabel = "Insert",
+            onAccept = { generated ->
+                // Append the accepted text to whatever is already there so nothing the user typed
+                // is lost, mirroring hold-to-dictate's spacing.
+                val base = state.markdown
+                val prefix = if (base.isBlank()) "" else base.trimEnd() + " "
+                state.setMarkdown(prefix + generated)
+                showAiPrompt = false
+            },
+            onDismiss = { showAiPrompt = false }
         )
     }
 }
