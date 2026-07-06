@@ -168,13 +168,14 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                     // tracks (higher zIndex) stack on top: still images, the active video and
                     // description-only text cards all live together here.
                     if (viewModel.previewUseWebGL && isWebGLPreviewSupported()) {
-                        // WebGL method: description cards are text and stay Compose-rendered
-                        // (below the canvas overlay, like they sit below the DOM <video> in the
-                        // default method); every media layer is composited on the GPU canvas.
+                        // WebGL method: every media layer is composited on the GPU and drawn back
+                        // INTO the Compose scene graph (bottom of the stage). Description cards are
+                        // text and stay Compose-rendered on top of it, so — unlike the old floating
+                        // overlay — dialogs, cards and captions all layer over the preview correctly.
+                        WebGLStage(visualClips, playhead, viewModel.isPlaying)
                         visualClips.forEach { active ->
                             if (active.asset.isDescriptionOnly) DescriptionCard(active.asset)
                         }
-                        WebGLStage(visualClips, playhead, viewModel.isPlaying)
                     } else {
                         visualClips.forEach { active ->
                             // Transition-in over whatever plays beneath this clip, evaluated at the

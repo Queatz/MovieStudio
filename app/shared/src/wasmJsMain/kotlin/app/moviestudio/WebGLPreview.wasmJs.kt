@@ -1,48 +1,71 @@
 package app.moviestudio
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
+import js.buffer.ArrayBuffer
+import js.typedarrays.Int8Array
+import js.typedarrays.toByteArray
+import org.jetbrains.skia.ColorAlphaType
+import org.jetbrains.skia.ColorType
+import org.jetbrains.skia.Image
+import org.jetbrains.skia.ImageInfo
+import kotlin.math.roundToInt
 
 @JsFun("() => (typeof WebGLRenderingContext !== 'undefined')")
 private external fun jsHasWebGL(): Boolean
 
 actual fun isWebGLPreviewSupported(): Boolean = jsHasWebGL()
 
-// Reconciles the WebGL compositor with the current bottom-to-top layer stack. Lazily creates the
-// shared <canvas id="compose-webgl-preview"> overlay, its GL context/shader program and the
-// per-layer texture sources: a pool of hidden <video> elements (keyed by clip id, CORS-loaded so
-// texImage2D stays legal on the cross-origin OSS media) and a session cache of <img> loaders.
-// Videos are re-seeked when they drift more than 0.5s and play/pause with the master clock —
-// mirroring the default preview's shared element; only the TOP-most video is audible, matching
-// the default method's single-<video> audio. A requestAnimationFrame loop redraws every frame
-// (video textures are re-uploaded per frame); with no layers the canvas hides and the loop stops
-// so Compose-drawn content behind it (description cards, empty state) shows through.
+// Cap on the WebGL readback (and therefore the ImageBitmap) resolution. The preview stage is small,
+// so a larger buffer only inflates the per-frame GPU->CPU readpixels + skia raster cost without a
+// visible quality gain; the bitmap is scaled up to fill the stage. Aspect is preserved when capping.
+private const val MAX_WEBGL_READBACK_DIM = 1600
+
+private fun readbackSize(size: IntSize): IntSize {
+    val maxDim = maxOf(size.width, size.height)
+    if (maxDim <= MAX_WEBGL_READBACK_DIM) return size
+    val scale = MAX_WEBGL_READBACK_DIM.toFloat() / maxDim
+    return IntSize(
+        maxOf(1, (size.width * scale).roundToInt()),
+        maxOf(1, (size.height * scale).roundToInt())
+    )
+}
+
+// Lazily creates the WebGL compositor (a DETACHED <canvas> — never added to the DOM, never
+// positioned, so it can't cover Compose dialogs) and reconciles it with the bottom-to-top layer
+// stack. Per-layer texture sources are a pool of hidden <video> elements (keyed by clip id,
+// CORS-loaded so texImage2D stays legal on the cross-origin OSS media) and a session cache of
+// <img> loaders. Videos are re-seeked when they drift more than 0.5s and play/pause with the
+// master clock — mirroring the default preview's shared element; only the TOP-most video is
+// audible, matching the default method's single-<video> audio. The frame is NOT presented here:
+// jsWebGLRenderAndRead draws + reads it back so it can be painted inside the Compose scene graph.
 @JsFun("""
 (layersJson, playing) => {
     const layers = JSON.parse(layersJson);
     let S = window.__msWebGLPreview;
     if (!S) {
+        // Detached canvas: it is only a render + readback target. It is never appended to the
+        // document, so unlike the old floating overlay it cannot paint over Compose popups.
         const canvas = document.createElement('canvas');
-        canvas.id = 'compose-webgl-preview';
-        canvas.style.position = 'absolute';
-        canvas.style.zIndex = '1000';
-        canvas.style.backgroundColor = 'black';
-        canvas.style.display = 'none';
-        // Decorative overlay like the shared <video>: pointer events pass through so the
-        // Compose canvas keeps native focus (space-bar shortcut etc).
-        canvas.style.pointerEvents = 'none';
-        document.body.appendChild(canvas);
-        // preserveDrawingBuffer keeps the last rendered frame readable so the "Save frame"
-        // feature can capture the canvas with toBlob(). alpha:false = opaque black stage.
+        // preserveDrawingBuffer keeps the last rendered frame readable so "Save frame" can
+        // capture it with toBlob(). alpha:false = opaque black stage.
         const gl = canvas.getContext('webgl', { alpha: false, preserveDrawingBuffer: true });
-        if (!gl) { document.body.removeChild(canvas); return; }
+        if (!gl) { return; }
         // Unit-quad vertex shader: aPos in [0,1], (0,0) = stage top-left. uTranslate is the
         // slide-in offset as a fraction of the stage size (+X right, +Y down).
         const vsSrc =
@@ -108,20 +131,9 @@ actual fun isWebGLPreviewSupported(): Boolean = jsHasWebGL()
             layers: [],
             videos: {},
             images: {},
-            raf: 0
+            readBuf: null,
+            active: false
         };
-        // The stage bounds may have been reported before the first layer sync created us.
-        const pb = window.__msWebGLPendingBounds;
-        if (pb) {
-            window.__msWebGLPendingBounds = null;
-            canvas.style.left = pb.x + 'px';
-            canvas.style.top = pb.y + 'px';
-            canvas.style.width = pb.w + 'px';
-            canvas.style.height = pb.h + 'px';
-            const dpr = window.devicePixelRatio || 1;
-            canvas.width = Math.max(1, Math.round(pb.w * dpr));
-            canvas.height = Math.max(1, Math.round(pb.h * dpr));
-        }
         S.newTexture = () => {
             const tex = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -192,11 +204,8 @@ actual fun isWebGLPreviewSupported(): Boolean = jsHasWebGL()
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
         };
-        S.loop = () => {
-            S.render();
-            S.raf = requestAnimationFrame(S.loop);
-        };
     }
+    S.active = true;
     S.layers = layers;
     // Reconcile the hidden <video> texture-source pool with the video layers.
     const wantedVideos = {};
@@ -216,6 +225,8 @@ actual fun isWebGLPreviewSupported(): Boolean = jsHasWebGL()
             v.preload = 'auto';
             v.setAttribute('playsinline', 'true');
             v.style.display = 'none'; // texture source only, never shown directly
+            // Kept in the DOM (hidden) purely so the browser reliably decodes/plays it; it is
+            // never visible, so it does not cover any Compose UI.
             document.body.appendChild(v);
             entry = S.videos[layer.key] = { el: v, tex: S.newTexture() };
         }
@@ -256,50 +267,40 @@ actual fun isWebGLPreviewSupported(): Boolean = jsHasWebGL()
             img.src = layers[i].url;
         }
     }
-    if (layers.length > 0) {
-        S.canvas.style.display = 'block';
-        if (!S.raf) { S.raf = requestAnimationFrame(S.loop); }
-    } else {
-        S.canvas.style.display = 'none';
-        if (S.raf) { cancelAnimationFrame(S.raf); S.raf = 0; }
-    }
 }
 """)
 private external fun jsWebGLSyncLayers(layersJson: String, playing: Boolean)
 
-// Places the canvas overlay over the stage (CSS pixels) and sizes its backing store at
-// devicePixelRatio for a crisp render. Bounds reported before the first layer sync are parked in
-// window.__msWebGLPendingBounds and applied when the compositor is created.
+// Sizes the compositor to (w,h) device pixels, renders the current layer stack and reads the frame
+// back as RGBA bytes so Compose can paint it inside its own scene graph (Option 1 — the preview is
+// a true Compose citizen, so dialogs/popups layer over it automatically). readPixels is bottom-up,
+// so the caller draws the resulting bitmap vertically flipped. Returns null when the compositor is
+// not ready yet (no GL / not synced).
 @JsFun("""
-(x, y, w, h) => {
+(w, h) => {
     const S = window.__msWebGLPreview;
-    if (!S) {
-        window.__msWebGLPendingBounds = { x: x, y: y, w: w, h: h };
-        return;
-    }
+    if (!S || !S.gl) { return null; }
+    const gl = S.gl;
     const canvas = S.canvas;
-    canvas.style.left = x + 'px';
-    canvas.style.top = y + 'px';
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
-    const dpr = window.devicePixelRatio || 1;
-    const bw = Math.max(1, Math.round(w * dpr));
-    const bh = Math.max(1, Math.round(h * dpr));
-    if (canvas.width !== bw) { canvas.width = bw; }
-    if (canvas.height !== bh) { canvas.height = bh; }
+    if (canvas.width !== w) { canvas.width = w; }
+    if (canvas.height !== h) { canvas.height = h; }
+    const needed = w * h * 4;
+    if (!S.readBuf || S.readBuf.length !== needed) { S.readBuf = new Uint8Array(needed); }
+    S.render();
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, S.readBuf);
+    return new Int8Array(S.readBuf.buffer, 0, needed);
 }
 """)
-private external fun jsWebGLSetBounds(x: Double, y: Double, w: Double, h: Double)
+private external fun jsWebGLRenderAndRead(w: Int, h: Int): Int8Array<ArrayBuffer>?
 
-// Hides the WebGL canvas, stops the render loop and tears down the video texture pool. Called
-// when the surface leaves the composition (preview method switched back to Default, movie
-// closed...). The GL context, program and image cache are kept for a cheap re-entry.
+// Stops the compositor when the WebGL stage leaves the composition (preview method switched back
+// to Default, movie closed...). Tears down the video texture pool and clears the active flag; the
+// GL context, program and image cache are kept for a cheap re-entry.
 @JsFun("""
 () => {
     const S = window.__msWebGLPreview;
     if (!S) { return; }
-    S.canvas.style.display = 'none';
-    if (S.raf) { cancelAnimationFrame(S.raf); S.raf = 0; }
+    S.active = false;
     for (const key in S.videos) {
         try { S.videos[key].el.pause(); } catch (e) {}
         if (S.videos[key].el.parentNode) { S.videos[key].el.parentNode.removeChild(S.videos[key].el); }
@@ -336,30 +337,62 @@ actual fun WebGLPreviewSurface(
     isPlaying: Boolean,
     modifier: Modifier
 ) {
+    // The last frame read back from the GPU, painted inside the Compose scene graph below.
+    var bitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    // Stage size in physical pixels (Compose Web lays out in CSS px * devicePixelRatio).
+    var sizePx by remember { mutableStateOf(IntSize.Zero) }
+    // Whether there is anything to composite; when false the surface paints nothing so the stage's
+    // black background and any Compose-drawn description cards behind it stay visible.
+    var hasLayers by remember { mutableStateOf(false) }
+
     // Re-sync the compositor whenever the stack changes (every playhead tick while playing).
     LaunchedEffect(layers, isPlaying) {
+        hasLayers = layers.isNotEmpty()
         jsWebGLSyncLayers(layersToJson(layers), isPlaying)
     }
 
-    // Hide the canvas and stop the loop when the WebGL stage leaves the composition.
+    // Stop the compositor and release the video pool when the WebGL stage leaves the composition.
     DisposableEffect(Unit) {
-        onDispose { jsWebGLHide() }
+        onDispose {
+            bitmap = null
+            jsWebGLHide()
+        }
     }
 
-    // Same DPI correction as VideoPlayer: Compose Web reports physical pixels, the CSS overlay is
-    // positioned in logical pixels, so divide by the density.
-    val density = LocalDensity.current.density
-    Box(
-        modifier = modifier
-            .background(Color.Black)
-            .onGloballyPositioned { coordinates ->
-                val windowOffset = coordinates.localToWindow(androidx.compose.ui.geometry.Offset.Zero)
-                jsWebGLSetBounds(
-                    (windowOffset.x / density).toDouble(),
-                    (windowOffset.y / density).toDouble(),
-                    (coordinates.size.width / density).toDouble(),
-                    (coordinates.size.height / density).toDouble()
-                )
+    // Frame loop, driven by the Compose clock: render on the GPU, read the pixels back and turn
+    // them into an ImageBitmap. Runs only while this surface is composed (the coroutine is
+    // cancelled on dispose).
+    LaunchedEffect(Unit) {
+        while (true) {
+            withFrameNanos { }
+            val size = sizePx
+            if (!hasLayers || size.width <= 0 || size.height <= 0) {
+                if (bitmap != null) bitmap = null
+                continue
             }
-    )
+            val rb = readbackSize(size)
+            val arr = jsWebGLRenderAndRead(rb.width, rb.height) ?: continue
+            val bytes = arr.toByteArray()
+            if (bytes.size != rb.width * rb.height * 4) continue
+            val info = ImageInfo(rb.width, rb.height, ColorType.RGBA_8888, ColorAlphaType.OPAQUE)
+            bitmap = Image.makeRaster(info, bytes, rb.width * 4).toComposeImageBitmap()
+        }
+    }
+
+    Box(modifier = modifier.onSizeChanged { sizePx = it }) {
+        val bmp = bitmap
+        if (bmp != null && hasLayers) {
+            Canvas(Modifier.fillMaxSize()) {
+                // readPixels returns rows bottom-to-top, so mirror vertically to present the frame
+                // right-side up. The bitmap (possibly downscaled) is stretched to fill the stage;
+                // its aspect matches the stage, so there is no distortion.
+                scale(scaleX = 1f, scaleY = -1f) {
+                    drawImage(
+                        image = bmp,
+                        dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt())
+                    )
+                }
+            }
+        }
+    }
 }

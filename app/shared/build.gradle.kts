@@ -140,6 +140,7 @@ kotlin {
             implementation(libs.ktor.clientJs)
         }
         wasmJsMain.dependencies {
+            implementation(libs.wrappers.browser)
             // Ktor engine so Coil's KtorNetworkFetcherFactory can load network images in the browser.
             implementation(libs.ktor.clientJs)
         }

@@ -104,10 +104,12 @@ actual fun updateAudioPlayback(items: List<AudioPlayItem>, playing: Boolean) {
                 .catch((e) => resolve(0));
         };
         // WebGL preview method: grab the frame straight off the compositor canvas (created
-        // with preserveDrawingBuffer, so toBlob sees the last rendered frame).
-        const glCanvas = document.getElementById('compose-webgl-preview');
-        if (glCanvas && glCanvas.style.display !== 'none' && glCanvas.width > 0) {
-            glCanvas.toBlob(upload, 'image/png');
+        // with preserveDrawingBuffer, so toBlob sees the last rendered frame). The canvas is
+        // detached from the DOM now that the frame is painted inside Compose, so reach it
+        // through the compositor state; toBlob still returns a correctly-oriented PNG.
+        const S = window.__msWebGLPreview;
+        if (S && S.active && S.canvas && S.canvas.width > 0) {
+            S.canvas.toBlob(upload, 'image/png');
             return;
         }
         const video = document.getElementById('compose-video-preview');

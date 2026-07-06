@@ -40,14 +40,16 @@ const val WEBGL_LAYER_VIDEO = "video"
 expect fun isWebGLPreviewSupported(): Boolean
 
 /**
- * The WebGL-powered preview stage: composites all [layers] (bottom-to-top) onto one GPU canvas
- * overlaid on the stage bounds. Unlike the default DOM `<video>` path this draws every layer —
- * several videos included — strictly in z order, with the same cover-crop and transition math.
- * Video layers play/pause with [isPlaying] and re-seek to their [WebGLPreviewLayer.positionSeconds]
- * when they drift, slaved to the master playback clock exactly like the default renderer.
+ * The WebGL-powered preview stage: composites all [layers] (bottom-to-top) on the GPU and paints
+ * the result INSIDE the Compose scene graph (the frame is read back from the GPU and drawn as an
+ * `ImageBitmap`), so Compose dialogs, cards and captions layer over it automatically. Unlike the
+ * default DOM `<video>` path this draws every layer — several videos included — strictly in z
+ * order, with the same cover-crop and transition math. Video layers play/pause with [isPlaying] and
+ * re-seek to their [WebGLPreviewLayer.positionSeconds] when they drift, slaved to the master
+ * playback clock exactly like the default renderer.
  *
- * With no [layers] the platform surface hides itself so Compose-drawn content behind it
- * (description cards, the empty state) stays visible. Non-web platforms render a placeholder.
+ * With no [layers] the surface paints nothing so Compose-drawn content behind it (the stage's black
+ * background, the empty state) stays visible. Non-web platforms render a placeholder.
  */
 @Composable
 expect fun WebGLPreviewSurface(

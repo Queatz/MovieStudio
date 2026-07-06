@@ -239,32 +239,41 @@ masterpiece.
 The transport row offers a preview-method toggle (`🎛 Default` / `🎛 WebGL`; the label shows the
 method in use). It is only shown where `isWebGLPreviewSupported()` is true (web targets with
 WebGL) and is stored as `AppViewModel.previewUseWebGL`. In the WebGL method the stage's media
-compositing moves off the DOM `<video>` + Compose path onto **one GPU canvas**
+compositing moves off the DOM `<video>` + Compose path onto the **GPU**, and — unlike the default
+`<video>` overlay — the composited frame is drawn back **inside the Compose scene graph** so
+dialogs, cards and captions layer over it automatically
 (`WebGLPreview.kt` expect + the `WebGLPreview.js.kt` / `WebGLPreview.wasmJs.kt` actuals):
 
 - `PreviewPanel` converts every media-bearing visual clip under the playhead into a
   `WebGLPreviewLayer` (bottom-to-top by `zIndex`) carrying the **same** transition-in state and
   0-100 crop offsets the default renderer evaluates, then hands the stack to
   `WebGLPreviewSurface`.
-- The platform actual maintains a `<canvas id="compose-webgl-preview">` overlay positioned over
-  the stage exactly like the shared `<video>` (absolute, DPI-corrected bounds from
-  `onGloballyPositioned`, pointer events off) and composites the layers with a WebGL shader:
-  cover-fit crop window (FFmpeg's `(iw-ow) * offset/100`), cross-fade alpha, slide translate and
-  the pixel-space circular reveal — all matching the default method and the FFmpeg export.
+- The platform actual keeps a **detached** `<canvas>` (never added to the DOM, so it can never
+  cover Compose UI) and composites the layers with a WebGL shader: cover-fit crop window
+  (FFmpeg's `(iw-ow) * offset/100`), cross-fade alpha, slide translate and the pixel-space
+  circular reveal — all matching the default method and the FFmpeg export.
+- **Rendered into Compose (Option 1).** Each Compose frame (`withFrameNanos`) the surface sizes
+  the canvas to the stage (device pixels, capped), renders, `gl.readPixels(...)` the frame back
+  and wraps the bytes in a Skia `Image` (`Image.makeRaster(...).toComposeImageBitmap()`). That
+  `ImageBitmap` is painted in a Compose `Canvas` at the bottom of the stage, mirrored vertically
+  (WebGL's `readPixels` is bottom-up). This GPU→CPU→GPU round-trip per frame is the method's main
+  cost, acceptable for a preview; the compositing/transition math still runs on the GPU.
 - **Textures.** Still images are fetched once per URL (CORS) and cached for the session. Each
-  video layer gets a hidden, CORS-loaded `<video>` element (pooled by clip id) whose current
-  frame is re-uploaded to its texture every animation frame. Videos re-seek when they drift more
-  than 0.5 s and play/pause with the master clock; only the **top-most** video layer is audible
-  (parity with the default method's single shared element).
+  video layer gets a hidden, CORS-loaded `<video>` element (pooled by clip id; kept in the DOM
+  only so the browser decodes/plays it — it is `display:none`, never visible) whose current frame
+  is re-uploaded to its texture every frame. Videos re-seek when they drift more than 0.5 s and
+  play/pause with the master clock; only the **top-most** video layer is audible (parity with the
+  default method's single shared element).
 - **Differences from the default method.** Several overlapping videos render simultaneously, and
-  layering is strictly by `zIndex` — the DOM-overlay limitation of 5.2 does not apply to media
-  layers. Sliding clips are inherently clipped to the stage (the transform happens inside the
-  canvas), like the FFmpeg render. Description cards and captions are still Compose-drawn, so
-  they sit under the canvas whenever media layers are present (the same class of limitation as
-  the DOM `<video>`).
-- **Save frame** captures the WebGL canvas directly (it is created with `preserveDrawingBuffer`)
-  when this method is active. With no media layers the canvas hides itself and stops its render
-  loop, so the Compose empty state / description cards show through.
+  layering is strictly by `zIndex` — the DOM-overlay limitation of 5.2 does not apply. Because the
+  preview is now a real Compose node, description cards and captions layer **on top** correctly and
+  Material dialogs/popups are never obscured (the whole reason for Option 1). Sliding clips are
+  inherently clipped to the stage (the transform happens inside the canvas), like the FFmpeg render.
+- **Save frame** captures the WebGL canvas directly (created with `preserveDrawingBuffer`, so
+  `toBlob` sees the last rendered frame) when this method is active. Since the canvas is no longer
+  in the DOM it is reached through the compositor state (`window.__msWebGLPreview.canvas`, guarded
+  by an `active` flag). With no media layers the surface paints nothing, so the Compose empty state
+  / description cards show through.
 
 ---
 
