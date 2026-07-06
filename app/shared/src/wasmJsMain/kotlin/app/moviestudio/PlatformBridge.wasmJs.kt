@@ -103,13 +103,26 @@ actual fun updateAudioPlayback(items: List<AudioPlayItem>, playing: Boolean) {
                 .then((resp) => resolve(resp.ok ? 1 : 0))
                 .catch((e) => resolve(0));
         };
-        // WebGL preview method: grab the frame straight off the compositor canvas (created
-        // with preserveDrawingBuffer, so toBlob sees the last rendered frame). The canvas is
-        // detached from the DOM now that the frame is painted inside Compose, so reach it
-        // through the compositor state; toBlob still returns a correctly-oriented PNG.
+        // WebGL preview method: the compositor no longer preserves its drawing buffer, so build the
+        // PNG from the last frame we read back (S.readBuf, bottom-to-top RGBA). Paint it into a 2D
+        // canvas, then draw that flipped vertically so the saved image is right-side up.
         const S = window.__msWebGLPreview;
-        if (S && S.active && S.canvas && S.canvas.width > 0) {
-            S.canvas.toBlob(upload, 'image/png');
+        if (S && S.active && S.readBuf && S.canvas && S.canvas.width > 0 &&
+            S.readBuf.length === S.canvas.width * S.canvas.height * 4) {
+            const w = S.canvas.width, h = S.canvas.height;
+            const src = document.createElement('canvas');
+            src.width = w; src.height = h;
+            const sctx = src.getContext('2d');
+            const imgData = sctx.createImageData(w, h);
+            imgData.data.set(S.readBuf);
+            sctx.putImageData(imgData, 0, 0);
+            const out = document.createElement('canvas');
+            out.width = w; out.height = h;
+            const octx = out.getContext('2d');
+            octx.translate(0, h);
+            octx.scale(1, -1);
+            octx.drawImage(src, 0, 0);
+            out.toBlob(upload, 'image/png');
             return;
         }
         const video = document.getElementById('compose-video-preview');

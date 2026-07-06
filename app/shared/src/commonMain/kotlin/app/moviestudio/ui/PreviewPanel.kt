@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -461,12 +463,7 @@ private fun TransportControls(viewModel: AppViewModel) {
         GhostPillButton("⛶ Fullscreen", compact = true) { viewModel.enterFullscreenPlayback() }
         if (isWebGLPreviewSupported()) {
             Spacer(Modifier.width(8.dp))
-            // Toggles the stage between the Default (DOM <video> + Compose) and the WebGL
-            // compositor preview methods; the label shows the method currently in use.
-            GhostPillButton(
-                if (viewModel.previewUseWebGL) "🎛 WebGL" else "🎛 Default",
-                compact = true
-            ) { viewModel.previewUseWebGL = !viewModel.previewUseWebGL }
+            RendererDropdown(viewModel)
         }
     }
 
@@ -478,6 +475,66 @@ private fun TransportControls(viewModel: AppViewModel) {
             }
         )
     }
+}
+
+/**
+ * Dropdown that toggles the stage between the Default (DOM `<video>` + Compose) and the WebGL
+ * compositor preview methods, spelling out the trade-off of each option so the user can pick the
+ * one that fits their machine / task: WebGL renders more accurately (matches the FFmpeg export
+ * pixel-for-pixel) while Default is more performant (lighter on the GPU).
+ */
+@Composable
+private fun RendererDropdown(viewModel: AppViewModel) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        GhostPillButton(
+            if (viewModel.previewUseWebGL) "🎛 WebGL" else "🎛 Default",
+            compact = true
+        ) { expanded = true }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            RendererOption(
+                title = "🎛 WebGL",
+                description = "More accurate",
+                selected = viewModel.previewUseWebGL,
+                onClick = {
+                    expanded = false
+                    viewModel.previewUseWebGL = true
+                }
+            )
+            RendererOption(
+                title = "🎛 Default",
+                description = "More performant",
+                selected = !viewModel.previewUseWebGL,
+                onClick = {
+                    expanded = false
+                    viewModel.previewUseWebGL = false
+                }
+            )
+        }
+    }
+}
+
+/** A single entry in the [RendererDropdown], showing the renderer's name and its trade-off. */
+@Composable
+private fun RendererOption(title: String, description: String, selected: Boolean, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = {
+            Column {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        onClick = onClick
+    )
 }
 
 /** Save-frame dialog: captures the current preview frame into the image library. */

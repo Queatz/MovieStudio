@@ -101,13 +101,26 @@ private fun jsCaptureFrameAndUpload(uploadUrl: String): Promise<Boolean> = js(""
                     .then(function(resp) { resolve(resp.ok); })
                     .catch(function(e) { resolve(false); });
             };
-            // WebGL preview method: grab the frame straight off the compositor canvas (created
-            // with preserveDrawingBuffer, so toBlob sees the last rendered frame). The canvas is
-            // detached from the DOM now that the frame is painted inside Compose, so reach it
-            // through the compositor state; toBlob still returns a correctly-oriented PNG.
+            // WebGL preview method: the compositor no longer preserves its drawing buffer, so build
+            // the PNG from the last frame we read back (S.readBuf, bottom-to-top RGBA). Paint it into
+            // a 2D canvas, then draw that flipped vertically so the saved image is right-side up.
             var S = window.__msWebGLPreview;
-            if (S && S.active && S.canvas && S.canvas.width > 0) {
-                S.canvas.toBlob(upload, 'image/png');
+            if (S && S.active && S.readBuf && S.canvas && S.canvas.width > 0 &&
+                S.readBuf.length === S.canvas.width * S.canvas.height * 4) {
+                var w = S.canvas.width, h = S.canvas.height;
+                var src = document.createElement('canvas');
+                src.width = w; src.height = h;
+                var sctx = src.getContext('2d');
+                var imgData = sctx.createImageData(w, h);
+                imgData.data.set(S.readBuf);
+                sctx.putImageData(imgData, 0, 0);
+                var out = document.createElement('canvas');
+                out.width = w; out.height = h;
+                var octx = out.getContext('2d');
+                octx.translate(0, h);
+                octx.scale(1, -1);
+                octx.drawImage(src, 0, 0);
+                out.toBlob(upload, 'image/png');
                 return;
             }
             var video = document.getElementById('compose-video-preview');
