@@ -29,8 +29,9 @@ From those it must, on every recomposition:
 2. Composite all **visual** clips onto one aspect-constrained stage.
 3. Keep the **audio** pool (music / voice / sound effects) in sync.
 4. Draw **captions** for active voice clips.
-5. Offer transport controls (play/pause, timecode, save-frame, fullscreen) — hidden in the
-   distraction-free `fullscreen` playback mode.
+5. Offer transport controls (play/pause, timecode, save-frame, fullscreen and — on the web — the
+   Default/WebGL preview-method toggle) — hidden in the distraction-free `fullscreen` playback
+   mode.
 
 ---
 
@@ -174,9 +175,9 @@ Simultaneous images and text on other tracks still render normally.
 **Known layering limitation.** The `<video>` element is a DOM overlay drawn *above* the Compose
 canvas, so a playing video visually sits on top of canvas-drawn content (images, text, captions)
 regardless of `zIndex`. In practice the common cases work well — one video at a time, or images/text
-as the visual layer — and the exported FFmpeg render always layers strictly by `zIndex`. If true
-image/caption-over-video layering is required in-preview, `VideoPlayer` would need to become a
-canvas renderer (out of scope here).
+as the visual layer — and the exported FFmpeg render always layers strictly by `zIndex`. When true
+image-over-video layering (or several simultaneous videos) is needed in-preview, switch to the
+**WebGL preview method** (section 8), which is exactly such a canvas renderer.
 
 ### 5.3 Description-only card (no media yet)
 
@@ -233,7 +234,41 @@ masterpiece.
 
 ---
 
-## 8. Platform notes
+## 8. The WebGL preview method
+
+The transport row offers a preview-method toggle (`🎛 Default` / `🎛 WebGL`; the label shows the
+method in use). It is only shown where `isWebGLPreviewSupported()` is true (web targets with
+WebGL) and is stored as `AppViewModel.previewUseWebGL`. In the WebGL method the stage's media
+compositing moves off the DOM `<video>` + Compose path onto **one GPU canvas**
+(`WebGLPreview.kt` expect + the `WebGLPreview.js.kt` / `WebGLPreview.wasmJs.kt` actuals):
+
+- `PreviewPanel` converts every media-bearing visual clip under the playhead into a
+  `WebGLPreviewLayer` (bottom-to-top by `zIndex`) carrying the **same** transition-in state and
+  0-100 crop offsets the default renderer evaluates, then hands the stack to
+  `WebGLPreviewSurface`.
+- The platform actual maintains a `<canvas id="compose-webgl-preview">` overlay positioned over
+  the stage exactly like the shared `<video>` (absolute, DPI-corrected bounds from
+  `onGloballyPositioned`, pointer events off) and composites the layers with a WebGL shader:
+  cover-fit crop window (FFmpeg's `(iw-ow) * offset/100`), cross-fade alpha, slide translate and
+  the pixel-space circular reveal — all matching the default method and the FFmpeg export.
+- **Textures.** Still images are fetched once per URL (CORS) and cached for the session. Each
+  video layer gets a hidden, CORS-loaded `<video>` element (pooled by clip id) whose current
+  frame is re-uploaded to its texture every animation frame. Videos re-seek when they drift more
+  than 0.5 s and play/pause with the master clock; only the **top-most** video layer is audible
+  (parity with the default method's single shared element).
+- **Differences from the default method.** Several overlapping videos render simultaneously, and
+  layering is strictly by `zIndex` — the DOM-overlay limitation of 5.2 does not apply to media
+  layers. Sliding clips are inherently clipped to the stage (the transform happens inside the
+  canvas), like the FFmpeg render. Description cards and captions are still Compose-drawn, so
+  they sit under the canvas whenever media layers are present (the same class of limitation as
+  the DOM `<video>`).
+- **Save frame** captures the WebGL canvas directly (it is created with `preserveDrawingBuffer`)
+  when this method is active. With no media layers the canvas hides itself and stops its render
+  loop, so the Compose empty state / description cards show through.
+
+---
+
+## 9. Platform notes
 
 - **Images** render on **all** targets (web, desktop, Android) through Coil `AsyncImage`.
 - **Video and audio** use DOM `<video>`/`<audio>` bridges and are therefore fully functional on the

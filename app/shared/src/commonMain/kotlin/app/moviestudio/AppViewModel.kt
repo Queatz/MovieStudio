@@ -125,6 +125,13 @@ class AppViewModel : ViewModel() {
     var isFullscreenPlayback by mutableStateOf(false)
         private set
 
+    /**
+     * True while the preview stage renders through the WebGL compositor instead of the default
+     * (DOM `<video>` + Compose) method. Toggled from the transport controls; only offered on
+     * platforms where [isWebGLPreviewSupported] is true.
+     */
+    var previewUseWebGL by mutableStateOf(false)
+
     // ------------------------------------------------------------------------------------ jobs
     /** Active (PENDING/RUNNING) plus FAILED background jobs across the studio, newest first. */
     var activeJobs by mutableStateOf<List<Job>>(emptyList())

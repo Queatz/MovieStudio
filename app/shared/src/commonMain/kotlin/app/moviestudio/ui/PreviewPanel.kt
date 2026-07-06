@@ -45,6 +45,11 @@ import app.moviestudio.NO_TRANSITION
 import app.moviestudio.TrackType
 import app.moviestudio.TransitionVisual
 import app.moviestudio.VideoPlayer
+import app.moviestudio.WEBGL_LAYER_IMAGE
+import app.moviestudio.WEBGL_LAYER_VIDEO
+import app.moviestudio.WebGLPreviewLayer
+import app.moviestudio.WebGLPreviewSurface
+import app.moviestudio.isWebGLPreviewSupported
 import app.moviestudio.aspectRatioToFloat
 import app.moviestudio.calculatedDuration
 import app.moviestudio.parseEffectsConfig
@@ -162,33 +167,43 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                     // Render EVERY visual clip under the playhead, lowest zIndex first so overlay
                     // tracks (higher zIndex) stack on top: still images, the active video and
                     // description-only text cards all live together here.
-                    visualClips.forEach { active ->
-                        // Transition-in over whatever plays beneath this clip, evaluated at the
-                        // playhead from the SAME shared spec the FFmpeg export uses, so the preview
-                        // matches the render (fade / slide, honoring slide direction).
-                        val transitionVisual = active.transitionVisual(playhead)
-                        when {
-                            // A clip with no media yet is a description card: large centered text.
-                            active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
-                            // Still images: plain Compose AsyncImage, center-cropped + offset.
-                            active.asset.type == AssetType.IMAGE -> ClipImage(active, transitionVisual)
-                            // The single video that owns the shared <video> element.
-                            active === activeVideo -> {
-                                val mediaTime = active.asset.sourceOffsetSeconds.toFloat() +
-                                    active.clip.trimIn + (playhead - active.clip.timelineStart)
-                                VideoPlayer(
-                                    url = active.asset.ossUrl,
-                                    isPlaying = viewModel.isPlaying,
-                                    playhead = mediaTime,
-                                    onTimeUpdate = { /* the ticker is the master clock */ },
-                                    modifier = Modifier.fillMaxSize(),
-                                    alpha = transitionVisual.alpha,
-                                    offsetXFraction = transitionVisual.translateXFraction,
-                                    offsetYFraction = transitionVisual.translateYFraction,
-                                    revealRadiusFraction = transitionVisual.revealRadiusFraction
-                                )
+                    if (viewModel.previewUseWebGL && isWebGLPreviewSupported()) {
+                        // WebGL method: description cards are text and stay Compose-rendered
+                        // (below the canvas overlay, like they sit below the DOM <video> in the
+                        // default method); every media layer is composited on the GPU canvas.
+                        visualClips.forEach { active ->
+                            if (active.asset.isDescriptionOnly) DescriptionCard(active.asset)
+                        }
+                        WebGLStage(visualClips, playhead, viewModel.isPlaying)
+                    } else {
+                        visualClips.forEach { active ->
+                            // Transition-in over whatever plays beneath this clip, evaluated at the
+                            // playhead from the SAME shared spec the FFmpeg export uses, so the preview
+                            // matches the render (fade / slide, honoring slide direction).
+                            val transitionVisual = active.transitionVisual(playhead)
+                            when {
+                                // A clip with no media yet is a description card: large centered text.
+                                active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
+                                // Still images: plain Compose AsyncImage, center-cropped + offset.
+                                active.asset.type == AssetType.IMAGE -> ClipImage(active, transitionVisual)
+                                // The single video that owns the shared <video> element.
+                                active === activeVideo -> {
+                                    val mediaTime = active.asset.sourceOffsetSeconds.toFloat() +
+                                        active.clip.trimIn + (playhead - active.clip.timelineStart)
+                                    VideoPlayer(
+                                        url = active.asset.ossUrl,
+                                        isPlaying = viewModel.isPlaying,
+                                        playhead = mediaTime,
+                                        onTimeUpdate = { /* the ticker is the master clock */ },
+                                        modifier = Modifier.fillMaxSize(),
+                                        alpha = transitionVisual.alpha,
+                                        offsetXFraction = transitionVisual.translateXFraction,
+                                        offsetYFraction = transitionVisual.translateYFraction,
+                                        revealRadiusFraction = transitionVisual.revealRadiusFraction
+                                    )
+                                }
+                                // Any further simultaneous videos can't share the one <video> element.
                             }
-                            // Any further simultaneous videos can't share the one <video> element.
                         }
                     }
 
@@ -212,6 +227,37 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
             TransportControls(viewModel)
         }
     }
+}
+
+/**
+ * The WebGL rendering path of the stage: turns every media-bearing visual clip under the playhead
+ * into a [WebGLPreviewLayer] — transition-in state and 0-100 crop offsets evaluated exactly like
+ * the default renderer — and hands the bottom-to-top stack to the platform's [WebGLPreviewSurface]
+ * compositor. Unlike the default DOM path, several simultaneous videos render fine here, layered
+ * strictly by zIndex.
+ */
+@Composable
+private fun WebGLStage(visualClips: List<ActiveClip>, playhead: Float, isPlaying: Boolean) {
+    val layers = visualClips
+        .filter { !it.asset.isDescriptionOnly && it.asset.ossUrl.isNotBlank() }
+        .map { active ->
+            val transitionVisual = active.transitionVisual(playhead)
+            val effects = parseEffectsConfig(active.clip.effectsConfig)
+            WebGLPreviewLayer(
+                key = active.clip.id,
+                kind = if (active.asset.type == AssetType.IMAGE) WEBGL_LAYER_IMAGE else WEBGL_LAYER_VIDEO,
+                url = active.asset.ossUrl,
+                positionSeconds = active.asset.sourceOffsetSeconds + active.clip.trimIn +
+                    (playhead - active.clip.timelineStart).toDouble(),
+                alpha = transitionVisual.alpha,
+                translateXFraction = transitionVisual.translateXFraction,
+                translateYFraction = transitionVisual.translateYFraction,
+                revealRadiusFraction = transitionVisual.revealRadiusFraction,
+                offsetXPercent = effects.offsetX,
+                offsetYPercent = effects.offsetY
+            )
+        }
+    WebGLPreviewSurface(layers, isPlaying, Modifier.fillMaxSize())
 }
 
 /**
@@ -412,6 +458,15 @@ private fun TransportControls(viewModel: AppViewModel) {
         Spacer(Modifier.width(8.dp))
         // One-click fullscreen playback: all editor UI hides, ESC exits.
         GhostPillButton("⛶ Fullscreen", compact = true) { viewModel.enterFullscreenPlayback() }
+        if (isWebGLPreviewSupported()) {
+            Spacer(Modifier.width(8.dp))
+            // Toggles the stage between the Default (DOM <video> + Compose) and the WebGL
+            // compositor preview methods; the label shows the method currently in use.
+            GhostPillButton(
+                if (viewModel.previewUseWebGL) "🎛 WebGL" else "🎛 Default",
+                compact = true
+            ) { viewModel.previewUseWebGL = !viewModel.previewUseWebGL }
+        }
     }
 
     if (showSaveFrame) {

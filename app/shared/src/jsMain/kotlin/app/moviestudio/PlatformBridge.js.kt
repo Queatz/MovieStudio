@@ -95,6 +95,19 @@ actual fun updateAudioPlayback(items: List<AudioPlayItem>, playing: Boolean) {
 private fun jsCaptureFrameAndUpload(uploadUrl: String): Promise<Boolean> = js("""
     new Promise(function(resolve) {
         try {
+            var upload = function(blob) {
+                if (!blob) { resolve(false); return; }
+                fetch(uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/png' } })
+                    .then(function(resp) { resolve(resp.ok); })
+                    .catch(function(e) { resolve(false); });
+            };
+            // WebGL preview method: grab the frame straight off the compositor canvas (created
+            // with preserveDrawingBuffer, so toBlob sees the last rendered frame).
+            var glCanvas = document.getElementById('compose-webgl-preview');
+            if (glCanvas && glCanvas.style.display !== 'none' && glCanvas.width > 0) {
+                glCanvas.toBlob(upload, 'image/png');
+                return;
+            }
             var video = document.getElementById('compose-video-preview');
             if (!video || !video.videoWidth) { resolve(false); return; }
             var canvas = document.createElement('canvas');
@@ -102,12 +115,7 @@ private fun jsCaptureFrameAndUpload(uploadUrl: String): Promise<Boolean> = js(""
             canvas.height = video.videoHeight;
             var ctx = canvas.getContext('2d');
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            canvas.toBlob(function(blob) {
-                if (!blob) { resolve(false); return; }
-                fetch(uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/png' } })
-                    .then(function(resp) { resolve(resp.ok); })
-                    .catch(function(e) { resolve(false); });
-            }, 'image/png');
+            canvas.toBlob(upload, 'image/png');
         } catch (e) {
             resolve(false);
         }
