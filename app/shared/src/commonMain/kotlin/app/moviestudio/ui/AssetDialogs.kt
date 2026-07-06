@@ -226,6 +226,11 @@ fun AssetDetailsDialog(
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // Type icon: versions can differ from the asset's current type (regenerations
+                    // may convert image <-> video); older versions without a recorded type show
+                    // the asset's current type.
+                    Text(assetGlyph(version.type ?: asset.type), fontSize = 14.sp)
+                    Spacer(Modifier.width(8.dp))
                     Text("v${asset.history.size - index}", fontWeight = FontWeight.Bold, fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(10.dp))

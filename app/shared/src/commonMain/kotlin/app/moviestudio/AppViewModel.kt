@@ -1063,6 +1063,33 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Saves a finished microphone recording as a MUSIC asset in the global library, used by the
+     * "Record music..." flow.
+     */
+    fun createMusicRecordingAsset(name: String, recording: UploadedDeviceFile, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                val asset = Asset(
+                    id = generateId(),
+                    type = AssetType.MUSIC,
+                    ossUrl = recording.ossUrl,
+                    durationSeconds = recording.durationSeconds,
+                    movieId = currentMovie?.id,
+                    tags = listOf("recorded"),
+                    aiPrompt = null,
+                    description = name.ifBlank { "Music recording" }
+                )
+                NetworkService.createAsset(asset)
+                refreshLibrary()
+            } catch (e: Exception) {
+                errorMessage = "Failed to save recording: ${e.message}"
+            } finally {
+                onDone()
+            }
+        }
+    }
+
     fun updateAsset(asset: Asset, onDone: (Asset) -> Unit = {}) {
         viewModelScope.launch {
             try {

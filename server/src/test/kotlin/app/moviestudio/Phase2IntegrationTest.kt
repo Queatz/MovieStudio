@@ -259,7 +259,8 @@ class Phase2IntegrationTest {
             module()
         }
 
-        // Asset with media and one previous version in its history.
+        // Asset with media and one previous version in its history. The older version was an
+        // IMAGE before a regeneration converted the asset into a VIDEO.
         val assetId = UUID.randomUUID().toString()
         val asset = Asset(
             id = assetId,
@@ -270,7 +271,13 @@ class Phase2IntegrationTest {
             tags = emptyList(),
             aiPrompt = "current version",
             history = listOf(
-                AssetVersion(ossUrl = "https://oss.com/older.mp4", durationSeconds = 5.0, createdAt = 1L, prompt = "older")
+                AssetVersion(
+                    ossUrl = "https://oss.com/older.png",
+                    durationSeconds = 5.0,
+                    createdAt = 1L,
+                    prompt = "older",
+                    type = AssetType.IMAGE
+                )
             )
         )
         AssetRepository.insert(asset)
@@ -282,11 +289,14 @@ class Phase2IntegrationTest {
         }
         assertEquals(HttpStatusCode.OK, restoreResponse.status)
         val restored = json.decodeFromString(Asset.serializer(), restoreResponse.bodyAsText())
-        assertEquals("https://oss.com/older.mp4", restored.ossUrl)
+        assertEquals("https://oss.com/older.png", restored.ossUrl)
         assertEquals(5.0, restored.durationSeconds)
-        // The previously-current media went back onto the history stack.
+        // Restoring also restores the version's media type.
+        assertEquals(AssetType.IMAGE, restored.type)
+        // The previously-current media went back onto the history stack, with its type recorded.
         assertEquals(1, restored.history.size)
         assertEquals("https://oss.com/current.mp4", restored.history[0].ossUrl)
+        assertEquals(AssetType.VIDEO, restored.history[0].type)
     }
 
     @Test

@@ -198,11 +198,14 @@ fun Route.assetRoutes() {
                             ossUrl = asset.ossUrl,
                             durationSeconds = asset.durationSeconds,
                             createdAt = System.currentTimeMillis(),
-                            prompt = asset.aiPrompt
+                            prompt = asset.aiPrompt,
+                            type = asset.type
                         )
                     )
                 }
                 val restored = asset.copy(
+                    // Versions saved before types were recorded keep the asset's current type.
+                    type = version.type ?: asset.type,
                     ossUrl = version.ossUrl,
                     durationSeconds = version.durationSeconds,
                     history = newHistory

@@ -100,6 +100,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     var showTts by remember { mutableStateOf(false) }
     var showRecordVoice by remember { mutableStateOf(false) }
     var showRecordSoundEffect by remember { mutableStateOf(false) }
+    var showRecordMusic by remember { mutableStateOf(false) }
     var showDescribe by remember { mutableStateOf(false) }
     var characterEditor by remember { mutableStateOf<Character?>(null) }
     var showNewCharacter by remember { mutableStateOf(false) }
@@ -159,6 +160,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 onTts = { showTts = true },
                 onRecordVoice = { showRecordVoice = true },
                 onRecordSoundEffect = { showRecordSoundEffect = true },
+                onRecordMusic = { showRecordMusic = true },
                 onDescribe = { showDescribe = true },
                 onUpload = { type -> viewModel.uploadAsset(type) },
                 onNewCharacter = { showNewCharacter = true },
@@ -368,6 +370,9 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     if (showRecordSoundEffect) {
         RecordSoundEffectDialog(viewModel) { showRecordSoundEffect = false }
     }
+    if (showRecordMusic) {
+        RecordMusicDialog(viewModel) { showRecordMusic = false }
+    }
     if (showDescribe) {
         DescribeAssetDialog(viewModel) { showDescribe = false }
     }
@@ -395,6 +400,7 @@ private fun AddMenu(
     onTts: () -> Unit,
     onRecordVoice: () -> Unit,
     onRecordSoundEffect: () -> Unit,
+    onRecordMusic: () -> Unit,
     onDescribe: () -> Unit,
     onUpload: (AssetType) -> Unit,
     onNewCharacter: () -> Unit,
@@ -415,6 +421,7 @@ private fun AddMenu(
             item("🗣️ Text to speech...") { onTts() }
             item("🎙️ Record voice...") { onRecordVoice() }
             item("💥 Record sound effect...") { onRecordSoundEffect() }
+            item("🎵 Record music...") { onRecordMusic() }
             item("📝 Placeholder...") { onDescribe() }
             item("📤 Upload video") { onUpload(AssetType.VIDEO) }
             item("📤 Upload image") { onUpload(AssetType.IMAGE) }

@@ -197,13 +197,17 @@ object GenerationCommon {
                         ossUrl = existing.ossUrl,
                         durationSeconds = existing.durationSeconds,
                         createdAt = now,
-                        prompt = existing.aiPrompt
+                        prompt = existing.aiPrompt,
+                        type = existing.type
                     )
                 ) + existing.history
             } else {
                 existing.history
             }
             val updated = existing.copy(
+                // A regeneration can convert the asset between media types (e.g. editing an
+                // image into a video or vice versa), so the type always follows the payload.
+                type = assetTypeFor(payload),
                 ossUrl = ossUrl,
                 durationSeconds = durationSeconds,
                 aiPrompt = prompt.ifBlank { existing.aiPrompt },

@@ -546,7 +546,7 @@ private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieD
         FormatToggle("B", active = state.isBold) { state.toggleBold(); editorFocusRequester.requestFocus() }
         FormatToggle("I", active = state.isItalic) { state.toggleItalic(); editorFocusRequester.requestFocus() }
         FormatToggle("U", active = state.isUnderline) { state.toggleUnderline(); editorFocusRequester.requestFocus() }
-        FormatToggle("S̶", active = state.isStrikethrough) { state.toggleStrikethrough(); editorFocusRequester.requestFocus() }
+        FormatToggle("S", active = state.isStrikethrough) { state.toggleStrikethrough(); editorFocusRequester.requestFocus() }
         FormatToggle("H", active = state.isHeading) { state.toggleHeading(); editorFocusRequester.requestFocus() }
         FormatToggle("• List", active = state.isBulletList) { state.toggleBulletList(); editorFocusRequester.requestFocus() }
         FormatToggle("1. List", active = state.isNumberedList) { state.toggleNumberedList(); editorFocusRequester.requestFocus() }

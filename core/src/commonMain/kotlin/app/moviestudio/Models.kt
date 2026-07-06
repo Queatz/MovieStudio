@@ -75,7 +75,11 @@ data class AssetVersion(
     val ossUrl: String,
     val durationSeconds: Double,
     val createdAt: Long,
-    val prompt: String? = null
+    val prompt: String? = null,
+    // The asset's media type when this version was current. Regenerations may convert an asset
+    // between types (e.g. image -> video), so restoring a version restores its type too.
+    // Nullable for versions saved before this field existed (treated as the asset's current type).
+    val type: AssetType? = null
 )
 
 /**
