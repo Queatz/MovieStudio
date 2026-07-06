@@ -340,7 +340,14 @@ object QwenAIService : AIGenerationService {
      *        should be a valid list: input.media", a list of bare URL strings with the same
      *        message, and a `{ "image": <url> }` entry with "Field required: input.media.0.url &
      *        Field required: input.media.0.type".
-     * - r2v: up to four reference images under `ref_images_url`.
+     * - r2v: up to four reference images as a list of media objects under `input.media`, each
+     *        `{ "type": "reference_image", "url": <url> }`. Model Studio only accepts the media
+     *        types `reference_image` / `reference_video` / `first_frame` (a `reference` type is
+     *        rejected with "Input should be 'reference_image', 'reference_video' or 'first_frame':
+     *        input.media.0.type"), and sending references under the legacy `ref_images_url` is
+     *        rejected with "Field required: input.media". R2V also needs an explicit output
+     *        `size` — without it the task fails with "'NoneType' object has no attribute
+     *        'resolution'".
      * - videoedit: the base `video_url`, plus optional reference images and a guiding first frame.
      */
     internal fun buildVideoRequestBody(
@@ -364,8 +371,19 @@ object QwenAIService : AIGenerationService {
                         put("url", setup.imageUrl?.let(OssService::freshDownloadUrl) ?: "")
                     })
                 })
-                "r2v" -> put("ref_images_url", buildJsonArray {
-                    setup.referenceImages.take(4).forEach { add(JsonPrimitive(OssService.freshDownloadUrl(it))) }
+                // WAN 2.7 R2V expects the reference images as a list of media objects under
+                // `input.media`, each `{ "type": "reference_image", "url": <url> }`. Only the
+                // media types reference_image / reference_video / first_frame are accepted (a
+                // `reference` type is rejected with "Input should be 'reference_image',
+                // 'reference_video' or 'first_frame': input.media.0.type"), and the legacy
+                // `ref_images_url` field is rejected with "Field required: input.media".
+                "r2v" -> put("media", buildJsonArray {
+                    setup.referenceImages.take(4).forEach {
+                        add(buildJsonObject {
+                            put("type", "reference_image")
+                            put("url", OssService.freshDownloadUrl(it))
+                        })
+                    }
                 })
                 // Full wan2.7-videoedit support: the base video to edit, plus every optional
                 // guidance input the model accepts — reference images and a guiding first frame.
@@ -380,8 +398,10 @@ object QwenAIService : AIGenerationService {
             }
         }
         putJsonObject("parameters") {
-            // T2V and video-edit both accept an explicit output size; I2V/R2V infer it.
-            if (modelKind == "t2v" || modelKind == "videoedit") {
+            // T2V, R2V and video-edit need an explicit output size; only I2V infers it from its
+            // first-frame image. R2V without a size fails with "'NoneType' object has no
+            // attribute 'resolution'".
+            if (modelKind != "i2v") {
                 put("size", setup.resolution.ifBlank { "1280*720" })
             }
             val dur = setup.durationSeconds.toInt()

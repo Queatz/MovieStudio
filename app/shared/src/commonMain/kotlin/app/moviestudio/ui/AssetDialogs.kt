@@ -63,6 +63,7 @@ import app.moviestudio.WordTiming
 import app.moviestudio.loadAudioWaveform
 import app.moviestudio.totalCostUsd
 import app.moviestudio.totalTokens
+import app.moviestudio.triggerDownload
 import app.moviestudio.updateAudioPlayback
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
@@ -153,6 +154,13 @@ fun AssetDetailsDialog(
             GhostPillButton("➕ Add to timeline", compact = true) {
                 viewModel.addAssetToTimeline(asset)
                 onDismiss()
+            }
+            GhostPillButton(
+                "⬇ Download",
+                compact = true,
+                enabled = !asset.isDescriptionOnly && asset.ossUrl.isNotBlank()
+            ) {
+                triggerDownload(asset.ossUrl, downloadFileNameFor(asset))
             }
             if (asset.type == AssetType.IMAGE && !asset.isDescriptionOnly) {
                 GhostPillButton("🖼 Set as cover", compact = true) {
@@ -292,6 +300,33 @@ fun AssetDetailsDialog(
             onDismiss = { showDeleteConfirm = false }
         )
     }
+}
+
+/**
+ * Builds a friendly file name for downloading [asset]'s media: the asset's own description (or
+ * prompt) sanitized into a safe file name, falling back to its type, with the extension taken
+ * from its media URL when present (or a sensible per-type default otherwise).
+ */
+private fun downloadFileNameFor(asset: Asset): String {
+    val typeName = asset.type.name.lowercase()
+    val urlExtension = asset.ossUrl.substringAfterLast('.', "")
+        .substringBefore('?')
+        .takeIf { it.isNotBlank() && it.length in 1..5 }
+    val extension = urlExtension ?: when (asset.type) {
+        AssetType.VIDEO -> "mp4"
+        AssetType.IMAGE -> "png"
+        AssetType.AUDIO, AssetType.MUSIC, AssetType.VOICE -> "mp3"
+        AssetType.TEXT -> "txt"
+    }
+    val baseName = (asset.description ?: asset.aiPrompt)
+        ?.take(40)
+        ?.map { c -> if (c.isLetterOrDigit() || c == '-' || c == '_' || c == ' ') c else ' ' }
+        ?.joinToString("")
+        ?.trim()
+        ?.replace(Regex("\\s+"), "-")
+        ?.takeIf { it.isNotBlank() }
+        ?: typeName
+    return "$baseName.$extension"
 }
 
 /**

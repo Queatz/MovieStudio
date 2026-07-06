@@ -29,6 +29,12 @@ class QwenVideoRequestTest {
             .filter { it.getValue("type").jsonPrimitive.content == "first_frame" }
             .map { it.getValue("url").jsonPrimitive.content }
 
+    /** The `url` values of each `reference_image` media object in the `input.media` list. */
+    private fun JsonObject.referenceUrls(): List<String> =
+        getValue("media").jsonArray.map { it.jsonObject }
+            .filter { it.getValue("type").jsonPrimitive.content == "reference_image" }
+            .map { it.getValue("url").jsonPrimitive.content }
+
     private fun ossUrl(objectKey: String): String {
         val endpointHost = OssService.endpoint.removePrefix("http://").removePrefix("https://").removeSuffix("/")
         return "https://${OssService.bucketName}.$endpointHost/$objectKey?Expires=1&Signature=old"
@@ -61,16 +67,21 @@ class QwenVideoRequestTest {
     }
 
     @Test
-    fun r2vSendsReferenceImagesUnderRefImagesUrl() {
+    fun r2vSendsReferenceImagesAsInputMediaList() {
         val refs = listOf("https://oss/a.png", "https://oss/b.png")
         val setup = GenerationSetup(kind = "video", prompt = "A hero", referenceImages = refs)
         assertEquals("r2v", setup.resolveVideoModelKind())
 
         val body = QwenAIService.buildVideoRequestBody(setup, "A hero, cinematic", "r2v", "wan2.7-r2v")
-        val urls = body.input().getValue("ref_images_url").jsonArray.map { it.jsonPrimitive.content }
+        val input = body.input()
 
-        assertEquals(refs, urls)
-        assertNull(body.input()["media"])
+        assertEquals(refs, input.referenceUrls(), "R2V must send reference images as reference_image media objects under input.media")
+        assertNull(input["ref_images_url"], "R2V must not send the legacy ref_images_url field")
+        assertEquals(
+            "1280*720",
+            body.getValue("parameters").jsonObject.str("size"),
+            "R2V must send an explicit output size, otherwise the task fails with a missing 'resolution' error",
+        )
     }
 
     @Test
