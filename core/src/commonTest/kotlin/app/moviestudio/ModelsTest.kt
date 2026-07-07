@@ -236,6 +236,57 @@ class ModelsTest {
     }
 
     @Test
+    fun textAssetsDistinguishPlaceholdersFromRenderedTextElements() {
+        val text = Asset(
+            id = "t", type = AssetType.TEXT, ossUrl = "", durationSeconds = 5.0,
+            movieId = null, tags = emptyList(), aiPrompt = null, description = "Chapter One"
+        )
+        // Defaults to a placeholder (backward compatible with dropped/described text).
+        assertTrue(text.isPlaceholder)
+        assertTrue(text.isPlaceholderAsset)
+        assertFalse(text.isTextElement)
+        // Turning the placeholder flag off makes it a first-class, rendered text element.
+        val element = text.copy(isPlaceholder = false)
+        assertFalse(element.isPlaceholderAsset)
+        assertTrue(element.isTextElement)
+        // Non-text description-only assets are always placeholders, never text elements.
+        val imagePlaceholder = text.copy(type = AssetType.IMAGE, isPlaceholder = false)
+        assertFalse(imagePlaceholder.isTextElement)
+        assertTrue(imagePlaceholder.isDescriptionOnly)
+    }
+
+    @Test
+    fun textConfigRoundTripsInEffectsAndLegacyClipsDecodeWithoutIt() {
+        val config = EffectsConfig(
+            text = TextConfig(color = "#FF0000", fontFamily = "Serif", fontSizeSp = 60, backgroundColor = "#8000FF00")
+        )
+        assertEquals(config, parseEffectsConfig(encodeEffectsConfig(config)))
+        // Clips saved before text styling existed parse with no text config (null).
+        assertNull(parseEffectsConfig("""{"volume":1.0}""").text)
+        // A brand-new text config carries sensible, fully-transparent-background defaults.
+        assertEquals(TRANSPARENT_COLOR, TextConfig().backgroundColor)
+    }
+
+    @Test
+    fun assetPlaceholderFlagRoundTripsAndLegacyAssetsDefaultToPlaceholder() {
+        val json = Json { ignoreUnknownKeys = true }
+        val element = Asset(
+            id = "t1", type = AssetType.TEXT, ossUrl = "", durationSeconds = 5.0,
+            movieId = "m1", tags = listOf("text"), aiPrompt = "Title", description = "Title",
+            isPlaceholder = false
+        )
+        val decoded = json.decodeFromString(Asset.serializer(), json.encodeToString(Asset.serializer(), element))
+        assertEquals(element, decoded)
+        assertFalse(decoded.isPlaceholder)
+        // Assets saved before the placeholder flag existed decode as placeholders (no crash).
+        val legacy = json.decodeFromString(
+            Asset.serializer(),
+            """{"id":"t2","type":"TEXT","ossUrl":"","durationSeconds":0.0,"movieId":null,"tags":[],"aiPrompt":null}"""
+        )
+        assertTrue(legacy.isPlaceholder)
+    }
+
+    @Test
     fun movieStatusesCoverTheProductionLifecycle() {
         // The user can move a movie from DRAFT into several other statuses.
         val names = MovieStatus.entries.map { it.name }

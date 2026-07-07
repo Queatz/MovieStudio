@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -50,12 +51,14 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
+import app.moviestudio.AssetType
 import app.moviestudio.Clip
 import app.moviestudio.MovieTimeline
 import app.moviestudio.MovingClip
@@ -497,6 +500,29 @@ private fun RenameTrackDialog(track: Track, onRename: (String) -> Unit, onDismis
     }
 }
 
+/**
+ * A pending "＋ Add" menu opened by clicking blank space on a track: where on the canvas it was
+ * opened ([offset], for positioning the menu popup), the resolved drop position ([seconds] +
+ * [trackId]) and the asset types this track can host ([allowedTypes], driving the menu's filter).
+ */
+private data class TimelineAddRequest(
+    val offset: Offset,
+    val seconds: Float,
+    val trackId: String?,
+    val allowedTypes: Set<AssetType>
+)
+
+/**
+ * The asset types a track of [type] can host — the inverse of [AppViewModel.compatibleTrackType].
+ * Drives the blank-track add menu's filter (the Placeholder flow is always offered on top of these).
+ */
+private fun assetTypesForTrack(type: TrackType): Set<AssetType> = when (type) {
+    TrackType.VIDEO -> setOf(AssetType.VIDEO, AssetType.IMAGE, AssetType.TEXT)
+    TrackType.MUSIC -> setOf(AssetType.MUSIC, AssetType.AUDIO)
+    TrackType.VOICE -> setOf(AssetType.VOICE)
+    TrackType.EFFECTS -> emptySet()
+}
+
 @Composable
 private fun TimelineCanvas(
     viewModel: AppViewModel,
@@ -504,6 +530,21 @@ private fun TimelineCanvas(
     modifier: Modifier = Modifier
 ) {
     val textMeasurer = rememberTextMeasurer()
+
+    // A blank-track click opens the "＋ Add" menu here, and the creation flow it starts hosts its
+    // own dialog. The freshly created asset is dropped onto the timeline at the click position via
+    // the view model's armed placement (see AppViewModel.armTimelinePlacement).
+    var addRequest by remember { mutableStateOf<TimelineAddRequest?>(null) }
+    var showGenerateMedia by remember { mutableStateOf(false) }
+    var showGenerateMusic by remember { mutableStateOf(false) }
+    var showNewSequence by remember { mutableStateOf(false) }
+    var showSfx by remember { mutableStateOf(false) }
+    var showTts by remember { mutableStateOf(false) }
+    var showRecordVoice by remember { mutableStateOf(false) }
+    var showRecordSoundEffect by remember { mutableStateOf(false) }
+    var showRecordMusic by remember { mutableStateOf(false) }
+    var showDescribe by remember { mutableStateOf(false) }
+    var showNewText by remember { mutableStateOf(false) }
 
     // Latest state, readable from inside the long-lived pointerInput(Unit) handlers. The
     // timeline itself is read straight off `viewModel` (a stable reference) rather than through
@@ -572,8 +613,10 @@ private fun TimelineCanvas(
         }
     }
 
+    Box(modifier) {
     Canvas(
-        modifier = modifier
+        modifier = Modifier
+            .fillMaxSize()
             .onGloballyPositioned { coords ->
                 val bounds = coords.boundsInRoot()
                 LibraryDragState.timelineBounds = bounds
@@ -645,7 +688,24 @@ private fun TimelineCanvas(
                             // whole group can be dragged. Clicking empty space clears it.
                             val clip = clipHit(offset)?.first
                             when {
-                                clip == null -> if (!KeyModifierState.shiftDown) viewModel.selectedClipId = null
+                                clip == null -> {
+                                    if (!KeyModifierState.shiftDown) viewModel.selectedClipId = null
+                                    // Clicking blank space on a track opens the add menu at the
+                                    // pointer, filtered to the asset types that track can host.
+                                    val tracks = viewModel.timeline?.tracks ?: emptyList()
+                                    val twc = tracks.getOrNull(trackIndexAt(offset.y))
+                                    if (twc != null && !KeyModifierState.shiftDown) {
+                                        var seconds = timeAt(offset.x).coerceAtLeast(0f)
+                                        // Holding Ctrl snaps the drop to the nearest whole second.
+                                        if (KeyModifierState.ctrlDown) seconds = seconds.roundToInt().toFloat()
+                                        addRequest = TimelineAddRequest(
+                                            offset = offset,
+                                            seconds = seconds,
+                                            trackId = twc.track.id,
+                                            allowedTypes = assetTypesForTrack(twc.track.type)
+                                        )
+                                    }
+                                }
                                 KeyModifierState.shiftDown -> viewModel.toggleClipSelection(clip.id)
                                 clip.id in viewModel.selectedClipIds -> {}
                                 else -> viewModel.selectedClipId = clip.id
@@ -828,6 +888,70 @@ private fun TimelineCanvas(
                 strokeWidth = 2f
             )
         }
+    }
+
+        // Blank-track click opened the add menu here: filtered to this track's asset types (plus
+        // Placeholder), popped up at the click. Choosing a flow arms a one-shot timeline placement
+        // (AppViewModel.armTimelinePlacement) so the created asset lands at this exact position.
+        addRequest?.let { req ->
+            val density = LocalDensity.current
+            val menuOffset = with(density) { DpOffset(req.offset.x.toDp(), req.offset.y.toDp()) }
+            fun arm() = viewModel.armTimelinePlacement(req.seconds, req.trackId)
+            Box {
+                AddMenu(
+                    expanded = true,
+                    onDismissRequest = { addRequest = null },
+                    allowedTypes = req.allowedTypes,
+                    showLibraryItems = false,
+                    offset = menuOffset,
+                    onGenerateMedia = { arm(); showGenerateMedia = true },
+                    onGenerateMusic = { arm(); showGenerateMusic = true },
+                    onSequencer = { arm(); showNewSequence = true },
+                    onSoundEffect = { arm(); showSfx = true },
+                    onTts = { arm(); showTts = true },
+                    onRecordVoice = { arm(); showRecordVoice = true },
+                    onRecordSoundEffect = { arm(); showRecordSoundEffect = true },
+                    onRecordMusic = { arm(); showRecordMusic = true },
+                    onDescribe = { arm(); showDescribe = true },
+                    onNewText = { arm(); showNewText = true },
+                    onUpload = { type -> arm(); viewModel.uploadAsset(type) }
+                )
+            }
+        }
+    }
+
+    // Add-media dialogs for the flows started from the blank-track add menu. Hosted here (rather
+    // than passed up) so they survive the menu closing; each created asset is dropped onto the
+    // timeline at the click via the placement armed above.
+    if (showGenerateMedia) {
+        GenerateMediaDialog(viewModel, initialAsset = null) { showGenerateMedia = false }
+    }
+    if (showGenerateMusic) {
+        GenerateMusicDialog(viewModel) { showGenerateMusic = false }
+    }
+    if (showNewSequence) {
+        SequencerDialog(viewModel, null) { showNewSequence = false }
+    }
+    if (showSfx) {
+        SoundEffectDialog(viewModel) { showSfx = false }
+    }
+    if (showTts) {
+        TtsDialog(viewModel) { showTts = false }
+    }
+    if (showRecordVoice) {
+        RecordVoiceDialog(viewModel) { showRecordVoice = false }
+    }
+    if (showRecordSoundEffect) {
+        RecordSoundEffectDialog(viewModel) { showRecordSoundEffect = false }
+    }
+    if (showRecordMusic) {
+        RecordMusicDialog(viewModel) { showRecordMusic = false }
+    }
+    if (showDescribe) {
+        DescribeAssetDialog(viewModel) { showDescribe = false }
+    }
+    if (showNewText) {
+        NewTextAssetDialog(viewModel) { showNewText = false }
     }
 }
 

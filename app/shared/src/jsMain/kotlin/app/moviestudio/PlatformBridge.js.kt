@@ -252,6 +252,24 @@ actual fun triggerDownload(url: String, fileName: String) {
     jsTriggerDownload(url, fileName)
 }
 
+private fun jsDownloadTextFile(content: String, fileName: String): Unit = js("""
+    (function(content, fileName) {
+        var blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+    })(content, fileName)
+""")
+
+actual fun downloadTextFile(content: String, fileName: String) {
+    jsDownloadTextFile(content, fileName)
+}
+
 // ------------------------------------------------------------------------------------ fullscreen
 
 private fun jsRequestVideoFullscreen(): Unit = js("""

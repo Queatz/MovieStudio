@@ -19,6 +19,10 @@ actual fun triggerDownload(url: String, fileName: String) {
     // No-op on desktop.
 }
 
+actual fun downloadTextFile(content: String, fileName: String) {
+    // No-op on desktop.
+}
+
 actual fun requestVideoFullscreen() {
     // No-op on desktop: the preview video element is a browser feature.
 }

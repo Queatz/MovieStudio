@@ -19,8 +19,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -128,6 +126,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     var showRecordSoundEffect by remember { mutableStateOf(false) }
     var showRecordMusic by remember { mutableStateOf(false) }
     var showDescribe by remember { mutableStateOf(false) }
+    var showNewText by remember { mutableStateOf(false) }
     var characterEditor by remember { mutableStateOf<Character?>(null) }
     var showNewCharacter by remember { mutableStateOf(false) }
     var sceneEditor by remember { mutableStateOf<Scene?>(null) }
@@ -193,7 +192,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 if (!searchOpen) searchQuery = ""
             }
             Spacer(Modifier.width(6.dp))
-            AddMenu(
+            AddMenuButton(
                 onGenerateMedia = { showGenerateMedia = true },
                 onGenerateMusic = { showGenerateMusic = true },
                 onSequencer = { sequencerAsset = null; showSequencer = true },
@@ -203,6 +202,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 onRecordSoundEffect = { showRecordSoundEffect = true },
                 onRecordMusic = { showRecordMusic = true },
                 onDescribe = { showDescribe = true },
+                onNewText = { showNewText = true },
                 onUpload = { type -> viewModel.uploadAsset(type) },
                 onNewCharacter = { showNewCharacter = true },
                 onNewScene = { showNewScene = true }
@@ -420,6 +420,9 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     if (showDescribe) {
         DescribeAssetDialog(viewModel) { showDescribe = false }
     }
+    if (showNewText) {
+        NewTextAssetDialog(viewModel) { showNewText = false }
+    }
     if (showNewCharacter) {
         CharacterEditorDialog(viewModel, existing = null) { showNewCharacter = false }
     }
@@ -431,50 +434,6 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     }
     sceneEditor?.let { scene ->
         SceneEditorDialog(viewModel, existing = scene) { sceneEditor = null }
-    }
-}
-
-/** The "＋ Add" menu: all the ways media enters the studio. */
-@Composable
-private fun AddMenu(
-    onGenerateMedia: () -> Unit,
-    onGenerateMusic: () -> Unit,
-    onSequencer: () -> Unit,
-    onSoundEffect: () -> Unit,
-    onTts: () -> Unit,
-    onRecordVoice: () -> Unit,
-    onRecordSoundEffect: () -> Unit,
-    onRecordMusic: () -> Unit,
-    onDescribe: () -> Unit,
-    onUpload: (AssetType) -> Unit,
-    onNewCharacter: () -> Unit,
-    onNewScene: () -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        PillButton("＋", compact = true) { expanded = true }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            @Composable
-            fun item(label: String, action: () -> Unit) {
-                DropdownMenuItem(text = { Text(label) }, onClick = { expanded = false; action() })
-            }
-            item("✨ Generate visual...") { onGenerateMedia() }
-            item("🎵 Generate music...") { onGenerateMusic() }
-            item("🎹 Music sequencer...") { onSequencer() }
-            item("💥 Generate sound effect...") { onSoundEffect() }
-            item("🗣️ Text to speech...") { onTts() }
-            item("🎙️ Record voice...") { onRecordVoice() }
-            item("💥 Record sound effect...") { onRecordSoundEffect() }
-            item("🎵 Record music...") { onRecordMusic() }
-            item("📝 Placeholder...") { onDescribe() }
-            item("📤 Upload video") { onUpload(AssetType.VIDEO) }
-            item("📤 Upload image") { onUpload(AssetType.IMAGE) }
-            item("📤 Upload music") { onUpload(AssetType.MUSIC) }
-            item("📤 Upload sound effect") { onUpload(AssetType.AUDIO) }
-            item("📤 Upload voice recording") { onUpload(AssetType.VOICE) }
-            item("👤 New character") { onNewCharacter() }
-            item("🏞️ New scene") { onNewScene() }
-        }
     }
 }
 
@@ -543,7 +502,13 @@ private fun AssetCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (asset.isDescriptionOnly) {
+                // A media placeholder shows "Placeholder"; a rendered text element shows "Text".
+                val badge = when {
+                    asset.isTextElement -> "Text"
+                    asset.isPlaceholderAsset -> "Placeholder"
+                    else -> null
+                }
+                if (badge != null) {
                     Spacer(Modifier.width(6.dp))
                     Box(
                         Modifier
@@ -552,7 +517,7 @@ private fun AssetCard(
                             .padding(horizontal = 7.dp, vertical = 1.dp)
                     ) {
                         Text(
-                            "Placeholder",
+                            badge,
                             fontSize = 10.sp,
                             color = MaterialTheme.colorScheme.onTertiaryContainer,
                             fontWeight = FontWeight.SemiBold

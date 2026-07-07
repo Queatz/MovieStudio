@@ -35,6 +35,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -43,6 +44,9 @@ import app.moviestudio.AssetType
 import app.moviestudio.CAPTION_FONT_FAMILIES
 import app.moviestudio.CaptionConfig
 import app.moviestudio.Clip
+import app.moviestudio.TextConfig
+import app.moviestudio.TEXT_FONT_FAMILIES
+import app.moviestudio.TRANSPARENT_COLOR
 import app.moviestudio.EffectsConfig
 import app.moviestudio.MAX_CLIP_VOLUME
 import app.moviestudio.SlideDirection
@@ -69,6 +73,7 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
     val clipLength = (clip.trimOut - clip.trimIn).coerceAtLeast(0.25f)
     var showCaptionEditor by remember { mutableStateOf(false) }
     var showVolumeEditor by remember { mutableStateOf(false) }
+    var showTextEditor by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -191,6 +196,40 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
             Spacer(Modifier.width(16.dp))
         }
 
+        // Text element controls (TEXT assets): toggle placeholder vs. rendered text, and — when
+        // rendered — open the style editor (color / font / size / background).
+        if (asset?.type == AssetType.TEXT) {
+            Column(Modifier.width(220.dp)) {
+                Text(
+                    "Text",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                // A placeholder is a plain card awaiting generated media; turning it off makes
+                // this a first-class, styled text element that renders on the stage.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = !asset.isPlaceholder,
+                        onCheckedChange = { rendered ->
+                            viewModel.updateAsset(asset.copy(isPlaceholder = !rendered))
+                        }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (asset.isPlaceholder) "Placeholder" else "Rendered text",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                GhostPillButton("\uD83C\uDFA8 Text style", compact = true, enabled = !asset.isPlaceholder) {
+                    showTextEditor = true
+                }
+            }
+            Spacer(Modifier.width(16.dp))
+        }
+
         // Volume (audio-carrying clips): every clip on an audio track, plus video clips on the
         // video track whose media carries an audio stream. Flat slider, or the volume-over-time
         // envelope once keyframes exist — with the advanced editor a click away in both cases.
@@ -270,11 +309,185 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
             }
         )
     }
+
+    if (showTextEditor) {
+        TextEditorDialog(
+            initial = effects.text ?: TextConfig(),
+            onDismiss = { showTextEditor = false },
+            onSave = { config ->
+                viewModel.updateClipEffects(clip, effects.copy(text = config))
+                showTextEditor = false
+            }
+        )
+    }
 }
 
 private fun formatSeconds(value: Double): String {
     val rounded = (value * 10).roundToInt() / 10.0
     return rounded.toString()
+}
+
+/**
+ * Text style editor for a first-class TEXT element: font, size, text color and a background color
+ * (with transparency). Both colors reuse the preset swatches + [CustomColorPickerDialog] the
+ * caption editor uses; the background offers a fully-transparent option so lower clips / the black
+ * stage show through.
+ */
+@Composable
+fun TextEditorDialog(
+    initial: TextConfig,
+    onDismiss: () -> Unit,
+    onSave: (TextConfig) -> Unit
+) {
+    var config by remember { mutableStateOf(initial) }
+    // Which color the custom picker is currently editing: "text", "background" or null (closed).
+    var editing by remember { mutableStateOf<String?>(null) }
+
+    StudioDialog(title = "Text style", onDismiss = onDismiss, width = 480.dp) {
+        // Live preview strip (always dark, like the movie stage), filled with the chosen background.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF121016)),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(parseHexColor(config.backgroundColor)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "Text looks like this",
+                    color = parseHexColor(config.color),
+                    fontSize = (config.fontSizeSp * 0.5).sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = textFontFamily(config.fontFamily),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        DropdownSelector(
+            label = "Font",
+            options = TEXT_FONT_FAMILIES,
+            selected = config.fontFamily,
+            display = { it }
+        ) { config = config.copy(fontFamily = it) }
+        Spacer(Modifier.height(8.dp))
+
+        LabeledSlider(
+            label = "Size",
+            value = config.fontSizeSp.toFloat(),
+            valueRange = 16f..160f,
+            valueText = "${config.fontSizeSp}",
+            onValueChange = { config = config.copy(fontSizeSp = it.roundToInt()) }
+        )
+
+        SectionLabel("Text color")
+        ColorSwatchRow(
+            selectedHex = config.color,
+            presets = listOf("#FFFFFF", "#000000", "#FFE45E", "#7FE0A7", "#7FC6FF", "#FF6B5E"),
+            includeTransparent = false,
+            onSelect = { config = config.copy(color = it) },
+            onCustom = { editing = "text" }
+        )
+
+        SectionLabel("Background color")
+        ColorSwatchRow(
+            selectedHex = config.backgroundColor,
+            presets = listOf("#000000", "#FFFFFF", "#B3000000", "#992A2140"),
+            includeTransparent = true,
+            onSelect = { config = config.copy(backgroundColor = it) },
+            onCustom = { editing = "background" }
+        )
+
+        DialogActions {
+            GhostPillButton("Cancel") { onDismiss() }
+            ActionSpacer()
+            PillButton("Save text") { onSave(config) }
+        }
+    }
+
+    editing?.let { which ->
+        CustomColorPickerDialog(
+            initialHex = if (which == "text") config.color else config.backgroundColor,
+            onDismiss = { editing = null },
+            onPick = { hex ->
+                config = if (which == "text") config.copy(color = hex) else config.copy(backgroundColor = hex)
+                editing = null
+            }
+        )
+    }
+}
+
+/**
+ * A row of round color swatches for [presets] — the active [selectedHex] shows a check. When
+ * [includeTransparent] is set a fully-transparent swatch (∅) leads the row; a trailing "+" swatch
+ * opens the custom picker via [onCustom] and shows the current color when it is neither a preset
+ * nor transparent.
+ */
+@Composable
+private fun ColorSwatchRow(
+    selectedHex: String,
+    presets: List<String>,
+    includeTransparent: Boolean,
+    onSelect: (String) -> Unit,
+    onCustom: () -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (includeTransparent) {
+            val transparentSelected = parseHexColor(selectedHex).alpha == 0f
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape) // clip BEFORE clickable: round hover
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { onSelect(TRANSPARENT_COLOR) },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    if (transparentSelected) "✓" else "∅",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+        presets.forEach { hex ->
+            val selected = selectedHex.equals(hex, ignoreCase = true)
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape) // clip BEFORE clickable: round hover
+                    .background(parseHexColor(hex))
+                    .clickable { onSelect(hex) },
+                contentAlignment = Alignment.Center
+            ) {
+                if (selected) Text("✓", color = Color.Black, fontWeight = FontWeight.Bold)
+            }
+        }
+        // Custom color: opens the hex/HSVA picker; shows the active color once it's non-preset.
+        val isCustom = parseHexColor(selectedHex).alpha != 0f &&
+            presets.none { it.equals(selectedHex, ignoreCase = true) }
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(CircleShape) // clip BEFORE clickable: round hover
+                .background(if (isCustom) parseHexColor(selectedHex) else MaterialTheme.colorScheme.surfaceVariant)
+                .clickable { onCustom() },
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                if (isCustom) "✓" else "+",
+                color = if (isCustom) Color.Black else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
 }
 
 /** Advanced caption editor: font chooser (incl. "my fonts"), size, color and placement. */

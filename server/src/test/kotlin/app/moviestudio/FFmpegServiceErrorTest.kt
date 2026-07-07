@@ -72,4 +72,25 @@ class FFmpegServiceErrorTest {
         val comparisons = Regex("""lt\(ld\(5\),ld\(0\)\)""").findAll(expr).count()
         assertEquals(9, comparisons, "should evaluate all 9 cells of the 3x3 neighbourhood")
     }
+
+    @Test
+    fun textColorHelpersConvertHexToFfmpegColorAndAlpha() {
+        // #RRGGBB is opaque; the FFmpeg literal drops the leading '#' and adds a 0x prefix.
+        assertEquals("0xFF0000", FFmpegService.ffmpegColorHex("#FF0000"))
+        assertEquals(1.0, FFmpegService.ffmpegColorAlpha("#FF0000"))
+        // #AARRGGBB: the alpha byte is split out (0..1) and only the RGB survives in the literal.
+        assertEquals("0x00FF00", FFmpegService.ffmpegColorHex("#8000FF00"))
+        assertEquals(0x80 / 255.0, FFmpegService.ffmpegColorAlpha("#8000FF00"))
+        // Fully transparent background (the TextConfig default) -> alpha 0, so lower video shows.
+        assertEquals(0.0, FFmpegService.ffmpegColorAlpha("#00000000"))
+        // Malformed input falls back to white rather than producing an invalid FFmpeg color.
+        assertEquals("0xFFFFFF", FFmpegService.ffmpegColorHex("nonsense"))
+    }
+
+    @Test
+    fun drawtextColorAppendsAlphaOnlyWhenNotOpaque() {
+        // Opaque colors need no @alpha suffix; translucent ones carry it so drawtext blends the text.
+        assertEquals("0xFFFFFF", FFmpegService.ffmpegDrawtextColor("#FFFFFF"))
+        assertTrue(FFmpegService.ffmpegDrawtextColor("#80FF0000").startsWith("0xFF0000@"))
+    }
 }

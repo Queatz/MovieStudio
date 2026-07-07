@@ -143,10 +143,29 @@ data class Asset(
     val ledger: List<AiLedgerEntry> = emptyList(),
     // For VOICE assets: the preset or cloned voice used for TTS.
     val voice: String? = null,
+    // For TEXT assets: whether this text is a media placeholder (rendered as a plain description
+    // card and fillable with generated media) rather than a first-class text element rendered with
+    // its own styling. Ignored for non-TEXT assets. Defaults true so existing dropped/described
+    // text (and any other description-only placeholder) keeps behaving as a placeholder.
+    val isPlaceholder: Boolean = true,
     val createdAt: Long = 0
 ) {
     /** True when this asset has no media yet — it exists as a textual description only. */
     val isDescriptionOnly: Boolean get() = ossUrl.isBlank()
+
+    /**
+     * True when this asset is a media placeholder awaiting generation: it has no media yet AND is
+     * still flagged as a placeholder. A TEXT asset whose placeholder flag is turned off is a
+     * first-class text element (see [isTextElement]) rather than a placeholder.
+     */
+    val isPlaceholderAsset: Boolean get() = isDescriptionOnly && isPlaceholder
+
+    /**
+     * True when this is a TEXT asset rendered as a styled text element — its own color, font, size
+     * and background (see [TextConfig]) — rather than a media placeholder. Such an asset has no
+     * media of its own; its text comes from [description]/[aiPrompt].
+     */
+    val isTextElement: Boolean get() = type == AssetType.TEXT && isDescriptionOnly && !isPlaceholder
 }
 
 enum class TrackType {
@@ -621,6 +640,38 @@ val CAPTION_FONT_FAMILIES: List<String> = listOf(
 )
 
 /**
+ * Font families offered by the text-asset font chooser. Same set as the caption chooser plus the
+ * generic families, so a first-class text element can pick a serif/monospace look too.
+ */
+val TEXT_FONT_FAMILIES: List<String> = listOf(
+    "Default", "Serif", "Sans serif", "Monospace", "Cursive", "Asap", "Yuyu"
+)
+
+/** Fully-transparent color, the default [TextConfig.backgroundColor] so nothing is drawn behind text. */
+const val TRANSPARENT_COLOR: String = "#00000000"
+
+/**
+ * Rendering settings for a first-class TEXT element, stored inside [Clip.effectsConfig] under the
+ * `"text"` key and edited in the `ClipInspector`. The text content itself comes from the asset's
+ * description/prompt; this only styles it.
+ *
+ * [color] is the text color (`#RRGGBB` / `#AARRGGBB`), [fontFamily] one of [TEXT_FONT_FAMILIES],
+ * [fontSizeSp] the size relative to a 480px-tall reference canvas (scaled to the preview stage and
+ * the render height so the preview matches the export), and [backgroundColor] the fill drawn behind
+ * the text — transparent by default, so lower clips / the black stage show through.
+ */
+@Serializable
+data class TextConfig(
+    val color: String = "#FFFFFF",
+    val fontFamily: String = "Default",
+    val fontSizeSp: Int = 48,
+    val backgroundColor: String = TRANSPARENT_COLOR
+)
+
+/** The reference canvas height (px) [TextConfig.fontSizeSp] and [CaptionConfig.fontSizeSp] are relative to. */
+const val TEXT_REFERENCE_HEIGHT: Double = 480.0
+
+/**
  * One keyframe of a clip's volume-over-time envelope (the advanced volume editor).
  * [time] is in seconds from the start of the clip (0 = clip start); [volume] is the gain at that
  * moment (0.0 = silent, 1.0 = 100%, up to [MAX_CLIP_VOLUME]).
@@ -650,6 +701,8 @@ private val effectsJson = Json { ignoreUnknownKeys = true }
 data class EffectsConfig(
     val transition: TransitionSpec? = null,
     val captions: CaptionConfig? = null,
+    // Styling for a first-class TEXT element (color/font/size/background); null for non-text clips.
+    val text: TextConfig? = null,
     val volume: Double = 1.0,
     val volumeKeyframes: List<VolumePoint> = emptyList(),
     val offsetX: Double = 50.0,

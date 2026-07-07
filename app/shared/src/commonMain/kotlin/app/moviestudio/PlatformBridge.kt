@@ -100,6 +100,13 @@ expect suspend fun captureVideoFrameAndUpload(uploadUrl: String): Boolean
 expect fun triggerDownload(url: String, fileName: String)
 
 /**
+ * Downloads the given text [content] as a file with the suggested [fileName]. Used to export a
+ * TEXT asset's text as a `.txt` file (it has no media URL to hand to [triggerDownload]). On web
+ * targets a `text/plain` Blob is created and downloaded; no-op on platforms without a DOM.
+ */
+expect fun downloadTextFile(content: String, fileName: String)
+
+/**
  * Requests native fullscreen playback for the movie preview's video element (the same shared
  * `<video>` the [app.moviestudio.VideoPlayer] drives). Used to watch a finished render
  * distraction-free. No-op on platforms without a fullscreen-capable video element.

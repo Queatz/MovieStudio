@@ -66,6 +66,7 @@ import app.moviestudio.loadAudioWaveform
 import app.moviestudio.totalCostUsd
 import app.moviestudio.totalTokens
 import app.moviestudio.triggerDownload
+import app.moviestudio.downloadTextFile
 import app.moviestudio.updateAudioPlayback
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
@@ -87,6 +88,7 @@ fun AssetDetailsDialog(
 ) {
     var description by remember(asset.id) { mutableStateOf(asset.description ?: "") }
     var showGenerate by remember { mutableStateOf(false) }
+    var showGenerateVoice by remember { mutableStateOf(false) }
     var showTweak by remember { mutableStateOf(false) }
     var showClipAudio by remember { mutableStateOf(false) }
     var showTimings by remember { mutableStateOf(false) }
@@ -150,6 +152,10 @@ fun AssetDetailsDialog(
                 if (asset.isDescriptionOnly) "✨ Generate media..." else "🔄 Regenerate...",
                 compact = true
             ) { showGenerate = true }
+            // Text assets can be turned into a voiceover in one click (a brand-new VOICE asset).
+            if (asset.type == AssetType.TEXT) {
+                GhostPillButton("🗣️ Generate voice...", compact = true) { showGenerateVoice = true }
+            }
             if (asset.type == AssetType.VIDEO || asset.type == AssetType.IMAGE) {
                 GhostPillButton("✏ Edit", compact = true) { showTweak = true }
             }
@@ -157,12 +163,19 @@ fun AssetDetailsDialog(
                 viewModel.addAssetToTimeline(asset)
                 onDismiss()
             }
+            // Media assets download their file; TEXT assets download their text as a .txt file.
+            val textForDownload = (asset.description ?: asset.aiPrompt).orEmpty()
+            val canDownloadText = asset.type == AssetType.TEXT && textForDownload.isNotBlank()
             GhostPillButton(
                 "⬇ Download",
                 compact = true,
-                enabled = !asset.isDescriptionOnly && asset.ossUrl.isNotBlank()
+                enabled = (!asset.isDescriptionOnly && asset.ossUrl.isNotBlank()) || canDownloadText
             ) {
-                triggerDownload(asset.ossUrl, downloadFileNameFor(asset))
+                if (asset.ossUrl.isNotBlank()) {
+                    triggerDownload(asset.ossUrl, downloadFileNameFor(asset))
+                } else {
+                    downloadTextFile(textForDownload, downloadFileNameFor(asset))
+                }
             }
             if (asset.type == AssetType.IMAGE && !asset.isDescriptionOnly) {
                 GhostPillButton("🖼 Set as cover", compact = true) {
@@ -279,6 +292,14 @@ fun AssetDetailsDialog(
             AssetType.VOICE -> TtsDialog(viewModel, initialAsset = asset) { showGenerate = false }
             else -> GenerateMediaDialog(viewModel, initialAsset = asset) { showGenerate = false }
         }
+    }
+    if (showGenerateVoice) {
+        // A voiceover spun off from a text asset: opens TTS pre-filled with the text, saving the
+        // result as a brand-new VOICE asset (the text asset is left unchanged).
+        TtsDialog(
+            viewModel,
+            initialText = (asset.description ?: asset.aiPrompt).orEmpty()
+        ) { showGenerateVoice = false }
     }
     if (showTweak) {
         // Tweaking edits the current asset in place, pushing its previous media onto the asset's

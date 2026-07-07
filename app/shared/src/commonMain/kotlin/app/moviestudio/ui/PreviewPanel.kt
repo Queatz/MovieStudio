@@ -3,6 +3,7 @@ package app.moviestudio.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,6 +32,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -45,6 +47,8 @@ import app.moviestudio.CircleRevealShape
 import app.moviestudio.Clip
 import app.moviestudio.NO_TRANSITION
 import app.moviestudio.TrackType
+import app.moviestudio.TextConfig
+import app.moviestudio.TEXT_REFERENCE_HEIGHT
 import app.moviestudio.TransitionVisual
 import app.moviestudio.VideoPlayer
 import app.moviestudio.WEBGL_LAYER_IMAGE
@@ -201,7 +205,12 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                         // overlay — dialogs, cards and captions all layer over the preview correctly.
                         WebGLStage(visualClips, playhead, viewModel.isPlaying)
                         visualClips.forEach { active ->
-                            if (active.asset.isDescriptionOnly) DescriptionCard(active.asset)
+                            when {
+                                // Styled text elements render (with transitions) on top of the GPU
+                                // composite, just like description cards do.
+                                active.asset.isTextElement -> TextClip(active, active.transitionVisual(playhead))
+                                active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
+                            }
                         }
                     } else {
                         visualClips.forEach { active ->
@@ -210,6 +219,9 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                             // matches the render (fade / slide, honoring slide direction).
                             val transitionVisual = active.transitionVisual(playhead)
                             when {
+                                // A first-class text element: styled text over its own background,
+                                // fading / sliding in like any other visual clip.
+                                active.asset.isTextElement -> TextClip(active, transitionVisual)
                                 // A clip with no media yet is a description card: large centered text.
                                 active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
                                 // Still images: plain Compose AsyncImage, center-cropped + offset.
@@ -343,6 +355,52 @@ private fun ClipImage(active: ActiveClip, transitionVisual: TransitionVisual) {
     )
 }
 
+/**
+ * A first-class TEXT element: its [TextConfig]-styled text (color / font / size) centered over its
+ * own [TextConfig.backgroundColor] fill (transparent by default, so lower clips / the black stage
+ * show through). The size is relative to a [TEXT_REFERENCE_HEIGHT] canvas and scaled to the actual
+ * stage height so the preview matches the FFmpeg render. The [transitionVisual] fades / slides /
+ * circle-reveals it in over whatever plays beneath, exactly like [ClipImage].
+ */
+@Composable
+private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual) {
+    val config = parseEffectsConfig(active.clip.effectsConfig).text ?: TextConfig()
+    val text = (active.asset.description ?: active.asset.aiPrompt).orEmpty()
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                alpha = transitionVisual.alpha
+                translationX = transitionVisual.translateXFraction * size.width
+                translationY = transitionVisual.translateYFraction * size.height
+            }
+            // Circular reveal (CIRCLE transition): clip to the growing circle, matching FFmpeg.
+            .then(
+                if (transitionVisual.revealRadiusFraction < 1f)
+                    Modifier.clip(CircleRevealShape(transitionVisual.revealRadiusFraction))
+                else Modifier
+            )
+            .background(parseHexColor(config.backgroundColor)),
+        contentAlignment = Alignment.Center
+    ) {
+        // Font size is authored relative to a TEXT_REFERENCE_HEIGHT-tall canvas; scale it to the
+        // real stage height so the same config looks identical in the preview and the export.
+        val fontSizeSp = with(LocalDensity.current) {
+            (config.fontSizeSp / TEXT_REFERENCE_HEIGHT * constraints.maxHeight).toFloat().toSp()
+        }
+        Text(
+            text,
+            color = parseHexColor(config.color),
+            fontSize = fontSizeSp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = textFontFamily(config.fontFamily),
+            textAlign = TextAlign.Center,
+            lineHeight = fontSizeSp * 1.2f,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
+        )
+    }
+}
+
 /** A description-only clip (no media yet) rendered as large, centered white text. */
 @Composable
 private fun DescriptionCard(asset: Asset) {
@@ -445,6 +503,23 @@ fun captionFontFamily(name: String): FontFamily = when (name) {
     "Cursive" -> FontFamily.Cursive
     "Asap (my font)" -> FontFamily(Font(Res.font.asap))
     "Yuyu (my font)" -> FontFamily(Font(Res.font.yuyu))
+    else -> FontFamily.Default
+}
+
+/**
+ * Maps a TEXT-asset font-family display name (one of [app.moviestudio.TEXT_FONT_FAMILIES]) to a
+ * usable [FontFamily], including the app-bundled "Asap"/"Yuyu" fonts. Used by the text style editor
+ * preview and the text-element renderer so the preview matches the export as closely as the
+ * platform fonts allow.
+ */
+@Composable
+fun textFontFamily(name: String): FontFamily = when (name) {
+    "Serif" -> FontFamily.Serif
+    "Sans serif" -> FontFamily.SansSerif
+    "Monospace" -> FontFamily.Monospace
+    "Cursive" -> FontFamily.Cursive
+    "Asap" -> FontFamily(Font(Res.font.asap))
+    "Yuyu" -> FontFamily(Font(Res.font.yuyu))
     else -> FontFamily.Default
 }
 

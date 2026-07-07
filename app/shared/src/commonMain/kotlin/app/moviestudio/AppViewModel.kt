@@ -550,6 +550,42 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    // A one-shot timeline placement armed by the timeline's "＋ Add" menu (a blank-track click):
+    // the next asset created by a creation flow is dropped onto the timeline at this position
+    // instead of only landing in the library. Covers both synchronous flows (text, placeholder,
+    // uploads, recordings, sequencer) and asynchronous generation, which resolves later once the
+    // freshly generated asset appears.
+    private var pendingPlacementSeconds: Float? = null
+    private var pendingPlacementTrackId: String? = null
+
+    /**
+     * Arms a one-shot timeline placement at [seconds] on the track identified by [trackId] (a
+     * blank-track click in the timeline's add menu). The next asset produced by a creation flow is
+     * added to the timeline there; see [consumePendingPlacement].
+     */
+    fun armTimelinePlacement(seconds: Float, trackId: String?) {
+        pendingPlacementSeconds = seconds
+        pendingPlacementTrackId = trackId
+    }
+
+    /** Disarms a pending timeline placement (e.g. the add menu was dismissed without a choice). */
+    fun cancelTimelinePlacement() {
+        pendingPlacementSeconds = null
+        pendingPlacementTrackId = null
+    }
+
+    /**
+     * If a timeline placement is armed (see [armTimelinePlacement]), drops the freshly created
+     * [asset] onto the timeline at that position and disarms it; otherwise does nothing.
+     */
+    private fun consumePendingPlacement(asset: Asset) {
+        val seconds = pendingPlacementSeconds ?: return
+        val trackId = pendingPlacementTrackId
+        pendingPlacementSeconds = null
+        pendingPlacementTrackId = null
+        addAssetToTimeline(asset, seconds, trackId)
+    }
+
     /**
      * Applies [clip] to the local timeline state, re-homing it when its trackId changed (clips
      * can be dragged vertically onto another track of the same type).
@@ -993,6 +1029,8 @@ class AppViewModel : ViewModel() {
         if (newAsset != null) {
             generatedAssetSeq += 1
             generatedAssetSignal = GeneratedAssetSignal(newAsset, generatedAssetSeq)
+            // A generation kicked off from the timeline's add menu is dropped where it was armed.
+            consumePendingPlacement(newAsset)
         }
     }
 
@@ -1048,6 +1086,35 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Adds a first-class TEXT element (no media, rendered as styled text — not a placeholder) to
+     * the global library. The [text] is stored as both the description and prompt.
+     */
+    fun addTextAsset(text: String, onDone: (Asset) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                val asset = Asset(
+                    id = generateId(),
+                    type = AssetType.TEXT,
+                    ossUrl = "",
+                    durationSeconds = 5.0,
+                    movieId = currentMovie?.id,
+                    tags = listOf("text"),
+                    aiPrompt = text,
+                    description = text,
+                    // A first-class text element that renders, rather than a media placeholder.
+                    isPlaceholder = false
+                )
+                val saved = NetworkService.createAsset(asset)
+                refreshLibrary()
+                consumePendingPlacement(saved)
+                onDone(saved)
+            } catch (e: Exception) {
+                errorMessage = "Failed to add text: ${e.message}"
+            }
+        }
+    }
+
     /** Adds a description-only asset (no media yet) to the global library. */
     fun addAssetByDescription(type: AssetType, description: String, onDone: (Asset) -> Unit = {}) {
         viewModelScope.launch {
@@ -1064,6 +1131,7 @@ class AppViewModel : ViewModel() {
                 )
                 val saved = NetworkService.createAsset(asset)
                 refreshLibrary()
+                consumePendingPlacement(saved)
                 onDone(saved)
             } catch (e: Exception) {
                 errorMessage = "Failed to add asset: ${e.message}"
@@ -1092,7 +1160,7 @@ class AppViewModel : ViewModel() {
                                 NetworkService.createAsset(
                                     Asset(
                                         id = generateId(),
-                                        type = AssetType.VOICE,
+                                        type = AssetType.TEXT,
                                         ossUrl = "",
                                         durationSeconds = 5.0,
                                         movieId = currentMovie?.id,
@@ -1159,6 +1227,7 @@ class AppViewModel : ViewModel() {
                     saved = NetworkService.generateTranscript(saved.id)
                 }
                 refreshLibrary()
+                consumePendingPlacement(saved)
             } catch (e: Exception) {
                 errorMessage = "Upload failed: ${e.message}"
             }
@@ -1186,6 +1255,7 @@ class AppViewModel : ViewModel() {
                 // Voice media auto-generates a transcript with word timings.
                 NetworkService.generateTranscript(saved.id)
                 refreshLibrary()
+                consumePendingPlacement(saved)
             } catch (e: Exception) {
                 errorMessage = "Failed to save recording: ${e.message}"
             } finally {
@@ -1211,8 +1281,9 @@ class AppViewModel : ViewModel() {
                     aiPrompt = null,
                     description = name.ifBlank { "Sound effect recording" }
                 )
-                NetworkService.createAsset(asset)
+                val saved = NetworkService.createAsset(asset)
                 refreshLibrary()
+                consumePendingPlacement(saved)
             } catch (e: Exception) {
                 errorMessage = "Failed to save recording: ${e.message}"
             } finally {
@@ -1238,8 +1309,9 @@ class AppViewModel : ViewModel() {
                     aiPrompt = null,
                     description = name.ifBlank { "Music recording" }
                 )
-                NetworkService.createAsset(asset)
+                val saved = NetworkService.createAsset(asset)
                 refreshLibrary()
+                consumePendingPlacement(saved)
             } catch (e: Exception) {
                 errorMessage = "Failed to save recording: ${e.message}"
             } finally {
@@ -1314,6 +1386,7 @@ class AppViewModel : ViewModel() {
             try {
                 val asset = NetworkService.createMusicSequence(currentMovie?.id, sequence)
                 refreshLibrary()
+                consumePendingPlacement(asset)
                 onDone(asset)
             } catch (e: Exception) {
                 errorMessage = "Failed to render sequence: ${e.message}"

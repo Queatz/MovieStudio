@@ -1226,7 +1226,14 @@ fun SoundEffectDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDi
  * yet) is filled in place.
  */
 @Composable
-fun TtsDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: () -> Unit) {
+fun TtsDialog(
+    viewModel: AppViewModel,
+    initialAsset: Asset? = null,
+    // Pre-fills the narration text when opening the dialog without an [initialAsset] (e.g.
+    // "Generate voice" from a text element). The generated voiceover is saved as a new asset.
+    initialText: String = "",
+    onDismiss: () -> Unit
+) {
     val initialSetup = remember(initialAsset) {
         initialAsset?.generationConfig?.let {
             runCatching { setupJson.decodeFromString(GenerationSetup.serializer(), it) }.getOrNull()
@@ -1237,6 +1244,7 @@ fun TtsDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: (
             initialSetup?.prompt?.ifBlank { null }
                 ?: initialAsset?.transcript
                 ?: initialAsset?.description
+                ?: initialText.ifBlank { null }
                 ?: ""
         )
     }
@@ -2135,6 +2143,43 @@ fun DescribeAssetDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
             ActionSpacer()
             PillButton("Add placeholder", enabled = description.isNotBlank()) {
                 viewModel.addAssetByDescription(type, description.trim())
+                onDismiss()
+            }
+        }
+    }
+}
+
+/**
+ * Creates a first-class TEXT element (rendered as styled text on the timeline, not a placeholder).
+ * The text can be styled — color, font, size, background — from the clip inspector once it is
+ * placed. A one-click voiceover can also be generated from it in the asset details.
+ */
+@Composable
+fun NewTextAssetDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
+    var text by remember { mutableStateOf("") }
+
+    StudioDialog(title = "New text", onDismiss = onDismiss, width = 500.dp) {
+        Text(
+            "Creates a text element that renders on the timeline. Style its color, font, size and " +
+                "background from the clip inspector, add transitions, or generate a voiceover from it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        StudioTextField(
+            value = text,
+            onValueChange = { text = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Text",
+            placeholder = "The End",
+            minLines = 2,
+            maxLines = 6
+        )
+        DialogActions {
+            GhostPillButton("Cancel") { onDismiss() }
+            ActionSpacer()
+            PillButton("Add text", enabled = text.isNotBlank()) {
+                viewModel.addTextAsset(text.trim())
                 onDismiss()
             }
         }

@@ -144,7 +144,18 @@ object FFmpegService {
                 }
 
                 if (asset.ossUrl.isBlank()) {
-                    // Description-only item: large centered white text over the current video.
+                    if (asset.isTextElement) {
+                        // A first-class text element: styled text (color / font size / background)
+                        // composited over the current video with the clip's transition — the exact
+                        // analog of the styled TextClip in the preview. Built as its own canvas-sized
+                        // layer (a color source + drawtext) so transitions apply to it like any clip.
+                        currentVideoTag = renderTextElementLayer(
+                            filters, currentVideoTag, clip, asset, effects,
+                            start, end, duration, canvasWidth, canvasHeight
+                        )
+                        continue
+                    }
+                    // Placeholder (description-only) item: large centered white text over the video.
                     val text = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "Untitled scene" }
                     val nextTag = "v_text_${chain++}"
                     val lines = wrapText(text, 34, 4)
@@ -197,82 +208,9 @@ object FFmpegService {
                 // Transition-in over whatever is underneath (clip-local time 0..transition).
                 val transition = effects.transition
                 val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
-                var overlayExtra = ""
-                if (transition != null && transition.type != TransitionType.NONE) {
-                    // How the incoming clip is composited over the accumulated video. The signs and
-                    // window math mirror the shared TransitionSpec.visualAt(...) in core/Models.kt so
-                    // the export matches the live preview.
-                    when (transition.type) {
-                        TransitionType.SLIDE -> {
-                            // Slide the clip in from the chosen edge across the transition window.
-                            // progress p = (t-start)/dur; the off-screen offset is W|H*(1-p).
-                            // FROM_RIGHT enters from +W and moves to 0.
-                            val p = "(t-$start)/$transitionDur"
-                            overlayExtra = when (transition.direction) {
-                                SlideDirection.FROM_RIGHT ->
-                                    ":x='if(lt(t-$start,$transitionDur),W-W*$p,0)'"
-                                SlideDirection.FROM_LEFT ->
-                                    ":x='if(lt(t-$start,$transitionDur),-W+W*$p,0)'"
-                                SlideDirection.FROM_TOP ->
-                                    ":y='if(lt(t-$start,$transitionDur),-H+H*$p,0)'"
-                                SlideDirection.FROM_BOTTOM ->
-                                    ":y='if(lt(t-$start,$transitionDur),H-H*$p,0)'"
-                            }
-                        }
-                        TransitionType.CIRCLE -> {
-                            // Growing circular reveal: an alpha mask that is opaque inside a centered
-                            // circle whose radius grows from 0 to the corner distance over the window
-                            // (matches TransitionVisual.revealRadiusFraction = progress). No fade.
-                            videoFilters.add("format=yuva420p")
-                            videoFilters.add(
-                                "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':" +
-                                    "a='if(lte(hypot(X-W/2,Y-H/2),hypot(W/2,H/2)*min(T/$transitionDur,1)),255,0)'"
-                            )
-                        }
-                        TransitionType.VORONOI -> {
-                            // Resolve the clip out of animated voronoi cells (cells shrink to
-                            // per-pixel as the window ends) while it cross-fades in — the exact
-                            // analog of the WebGL preview's voronoi shader. The displacement is a
-                            // per-pixel geq over the (full-res) RGB planes, so it runs on gbrp;
-                            // yuva420p + the alpha fade are re-applied afterwards for the cross-fade.
-                            videoFilters.add("format=gbrp")
-                            val voronoiExpr = voronoiGeqExpression(transitionDur)
-                            videoFilters.add(
-                                "geq=r='$voronoiExpr':g='$voronoiExpr':b='$voronoiExpr':" +
-                                    "enable='between(t,0,$transitionDur)'"
-                            )
-                            videoFilters.add("format=yuva420p")
-                            videoFilters.add("fade=t=in:st=0:d=$transitionDur:alpha=1")
-                        }
-                        else -> {
-                            // ALPHA / NOISE / PIXELATE all cross-fade in.
-                            videoFilters.add("format=yuva420p")
-                            videoFilters.add("fade=t=in:st=0:d=$transitionDur:alpha=1")
-                        }
-                    }
-                    // Grain / mosaic layered on top of the fade for the textured transitions.
-                    when (transition.type) {
-                        TransitionType.NOISE ->
-                            // Noise only the alpha plane (component 3 of yuva420p) so the reveal
-                            // itself is grainy/dissolve-like, without speckling the clip's RGB
-                            // colors (that used to happen with "alls", which noises every plane).
-                            videoFilters.add("noise=c3s=48:c3f=t:enable='between(t,0,$transitionDur)'")
-                        TransitionType.PIXELATE -> {
-                            // Animate the mosaic: downscale (nearest-neighbor) to a time-varying tiny
-                            // size, then scale back up, so the blocks start large (maxBlock px at
-                            // t=0) and shrink to 1px (crisp) as the window ends — this is the real
-                            // animation of pixelateFraction = 1 - progress.
-                            val maxBlock = 48.0
-                            val blockPx = "max(1,$maxBlock*(1-min(t/$transitionDur,1)))"
-                            videoFilters.add(
-                                "scale=w='max(2,2*floor($canvasWidth/($blockPx)/2))':" +
-                                    "h='max(2,2*floor($canvasHeight/($blockPx)/2))':eval=frame:flags=neighbor"
-                            )
-                            videoFilters.add("scale=$canvasWidth:$canvasHeight:flags=neighbor")
-                        }
-                        else -> {}
-                    }
-                }
+                val overlayExtra = buildTransitionFilters(
+                    videoFilters, transition, transitionDur, start, canvasWidth, canvasHeight
+                )
 
                 // Shift PTS so content plays in sync with its position on the timeline.
                 videoFilters.add("setpts=PTS+$start/TB")
@@ -523,6 +461,163 @@ object FFmpegService {
         }
         fun even(v: Int) = (if (v % 2 == 0) v else v + 1).coerceAtLeast(2)
         return even(w) to even(h)
+    }
+
+    /**
+     * Appends the FFmpeg filters that composite the incoming layer over the accumulated video for
+     * [transition] (running clip-local 0..[transitionDur] from the clip's [start]) and returns the
+     * extra `overlay=...` arguments (slide x/y). Shared by media clips and text elements so both
+     * use identical transition math, mirroring `TransitionSpec.visualAt(...)` in core/Models.kt so
+     * the export matches the live preview. Returns "" (and adds nothing) when there is no transition.
+     */
+    private fun buildTransitionFilters(
+        videoFilters: MutableList<String>,
+        transition: TransitionSpec?,
+        transitionDur: Double,
+        start: Double,
+        canvasWidth: Int,
+        canvasHeight: Int
+    ): String {
+        var overlayExtra = ""
+        if (transition == null || transition.type == TransitionType.NONE) return overlayExtra
+        when (transition.type) {
+            TransitionType.SLIDE -> {
+                // Slide the clip in from the chosen edge across the transition window.
+                val p = "(t-$start)/$transitionDur"
+                overlayExtra = when (transition.direction) {
+                    SlideDirection.FROM_RIGHT -> ":x='if(lt(t-$start,$transitionDur),W-W*$p,0)'"
+                    SlideDirection.FROM_LEFT -> ":x='if(lt(t-$start,$transitionDur),-W+W*$p,0)'"
+                    SlideDirection.FROM_TOP -> ":y='if(lt(t-$start,$transitionDur),-H+H*$p,0)'"
+                    SlideDirection.FROM_BOTTOM -> ":y='if(lt(t-$start,$transitionDur),H-H*$p,0)'"
+                }
+            }
+            TransitionType.CIRCLE -> {
+                // Growing centered circular reveal (an alpha mask), no fade.
+                videoFilters.add("format=yuva420p")
+                videoFilters.add(
+                    "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':" +
+                        "a='if(lte(hypot(X-W/2,Y-H/2),hypot(W/2,H/2)*min(T/$transitionDur,1)),255,0)'"
+                )
+            }
+            TransitionType.VORONOI -> {
+                // Resolve out of animated voronoi cells while cross-fading in.
+                videoFilters.add("format=gbrp")
+                val voronoiExpr = voronoiGeqExpression(transitionDur)
+                videoFilters.add(
+                    "geq=r='$voronoiExpr':g='$voronoiExpr':b='$voronoiExpr':" +
+                        "enable='between(t,0,$transitionDur)'"
+                )
+                videoFilters.add("format=yuva420p")
+                videoFilters.add("fade=t=in:st=0:d=$transitionDur:alpha=1")
+            }
+            else -> {
+                // ALPHA / NOISE / PIXELATE all cross-fade in.
+                videoFilters.add("format=yuva420p")
+                videoFilters.add("fade=t=in:st=0:d=$transitionDur:alpha=1")
+            }
+        }
+        // Grain / mosaic layered on top of the fade for the textured transitions.
+        when (transition.type) {
+            TransitionType.NOISE ->
+                videoFilters.add("noise=c3s=48:c3f=t:enable='between(t,0,$transitionDur)'")
+            TransitionType.PIXELATE -> {
+                val maxBlock = 48.0
+                val blockPx = "max(1,$maxBlock*(1-min(t/$transitionDur,1)))"
+                videoFilters.add(
+                    "scale=w='max(2,2*floor($canvasWidth/($blockPx)/2))':" +
+                        "h='max(2,2*floor($canvasHeight/($blockPx)/2))':eval=frame:flags=neighbor"
+                )
+                videoFilters.add("scale=$canvasWidth:$canvasHeight:flags=neighbor")
+            }
+            else -> {}
+        }
+        return overlayExtra
+    }
+
+    /**
+     * Builds the FFmpeg filter chain for a first-class TEXT element and overlays it over
+     * [currentVideoTag], returning the new current video tag. The element is its own canvas-sized
+     * layer: a color source painted with the [TextConfig.backgroundColor] (fully transparent by
+     * default, so lower video shows through), the text drawn (wrapped, centered) in the configured
+     * color / font size, then the clip's transition applied via [buildTransitionFilters] and the
+     * whole layer PTS-shifted to [start] and overlaid between [start] and [end] — mirroring the
+     * styled text preview so the export matches it.
+     */
+    private fun renderTextElementLayer(
+        filters: MutableList<String>,
+        currentVideoTag: String,
+        clip: Clip,
+        asset: Asset,
+        effects: EffectsConfig,
+        start: Double,
+        end: Double,
+        duration: Double,
+        canvasWidth: Int,
+        canvasHeight: Int
+    ): String {
+        val textCfg = effects.text ?: TextConfig()
+        val rawText = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "Text" }
+        // Font size is authored relative to a TEXT_REFERENCE_HEIGHT-tall canvas (same as the preview).
+        val fontSize = (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(8, canvasHeight)
+        // Wrap to roughly the canvas width for the chosen font size (avg glyph advance ~0.55em).
+        val wrapWidth = (canvasWidth * 1.8 / fontSize).toInt().coerceIn(8, 80)
+        val lines = wrapText(rawText, wrapWidth, 8)
+        val fontColor = ffmpegDrawtextColor(textCfg.color)
+        val bgColor = ffmpegColorHex(textCfg.backgroundColor)
+        val bgAlpha = ffmpegColorAlpha(textCfg.backgroundColor)
+
+        val layer = mutableListOf<String>()
+        // Draw each wrapped line, centered, stacking symmetrically around the vertical center.
+        lines.forEachIndexed { index, line ->
+            val yExpr = "(h-text_h)/2+${(index - (lines.size - 1) / 2.0) * (fontSize * 1.25)}"
+            layer.add(
+                "drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
+                    "fontcolor=$fontColor:fontsize=$fontSize:x=(w-text_w)/2:y=$yExpr"
+            )
+        }
+        // Transition-in over whatever plays beneath (clip-local 0..transitionDur).
+        val transition = effects.transition
+        val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
+        val overlayExtra = buildTransitionFilters(layer, transition, transitionDur, start, canvasWidth, canvasHeight)
+        // Shift the layer's PTS so it appears at the clip's timeline position.
+        layer.add("setpts=PTS+$start/TB")
+
+        // A canvas-sized color source is this layer's background (transparent when bgAlpha = 0).
+        val head = "color=c=$bgColor@$bgAlpha:s=${canvasWidth}x${canvasHeight}:r=30:d=${duration + 1.0},format=yuva420p"
+        val layerTag = "v_text_layer_${clip.id}"
+        filters.add("$head,${layer.joinToString(",")}[$layerTag]")
+
+        val nextVideoTag = "v_overlaid_text_${clip.id}"
+        filters.add(
+            "[$currentVideoTag][$layerTag]overlay=eof_action=pass:enable='between(t,$start,$end)'$overlayExtra[$nextVideoTag]"
+        )
+        return nextVideoTag
+    }
+
+    /** FFmpeg `0xRRGGBB` color literal from a `#RRGGBB`/`#AARRGGBB` hex (defaults to white). */
+    internal fun ffmpegColorHex(hex: String): String {
+        val cleaned = hex.removePrefix("#")
+        val isHex = cleaned.isNotEmpty() && cleaned.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+        val rgb = when {
+            isHex && cleaned.length == 8 -> cleaned.substring(2) // AARRGGBB -> RRGGBB
+            isHex && cleaned.length == 6 -> cleaned
+            else -> "FFFFFF"
+        }
+        return "0x$rgb"
+    }
+
+    /** Alpha (0..1) from a `#RRGGBB`/`#AARRGGBB` hex; opaque (1.0) when there is no alpha channel. */
+    internal fun ffmpegColorAlpha(hex: String): Double {
+        val cleaned = hex.removePrefix("#")
+        val isHex = cleaned.length == 8 && cleaned.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+        return if (isHex) (cleaned.substring(0, 2).toIntOrNull(16) ?: 255) / 255.0 else 1.0
+    }
+
+    /** A `drawtext` fontcolor argument (`0xRRGGBB`, plus `@alpha` when the color isn't opaque). */
+    internal fun ffmpegDrawtextColor(hex: String): String {
+        val alpha = ffmpegColorAlpha(hex)
+        val base = ffmpegColorHex(hex)
+        return if (alpha >= 0.999) base else "$base@$alpha"
     }
 
     /**
