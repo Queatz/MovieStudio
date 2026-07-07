@@ -17,6 +17,9 @@ enum class Screen {
     EDITOR
 }
 
+/** Audio-playback pool key used for Voice Library voice previews ("sample" buttons). */
+private const val VOICE_SAMPLE_KEY = "voice-library-sample"
+
 /**
  * Live progress of a device upload in flight.
  *
@@ -92,6 +95,10 @@ class AppViewModel : ViewModel() {
     var scenes by mutableStateOf<List<Scene>>(emptyList())
         private set
     var voiceOptions by mutableStateOf(VoiceOptions())
+        private set
+
+    /** The voice whose preview is currently loading/playing in the Voice Library (null = none). */
+    var samplingVoiceId by mutableStateOf<String?>(null)
         private set
     var renders by mutableStateOf<List<RenderRecord>>(emptyList())
         private set
@@ -1582,6 +1589,64 @@ class AppViewModel : ViewModel() {
                 errorMessage = "Failed to delete voice: ${e.message}"
             }
         }
+    }
+
+    /** Designs a new voice from a natural-language description (CosyVoice Voice Design). */
+    fun createVoiceDesign(name: String, description: String, onDone: (VoiceDesign?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val design = NetworkService.createVoiceDesign(name, description)
+                refreshVoices()
+                onDone(design)
+            } catch (e: Exception) {
+                errorMessage = "Voice design failed: ${e.message}"
+                onDone(null)
+            }
+        }
+    }
+
+    fun deleteVoiceDesign(id: String) {
+        viewModelScope.launch {
+            try {
+                NetworkService.deleteVoiceDesign(id)
+                refreshVoices()
+            } catch (e: Exception) {
+                errorMessage = "Failed to delete voice: ${e.message}"
+            }
+        }
+    }
+
+    /**
+     * Plays a short spoken preview of [voiceId] (samples the voice). Fetches a freshly synthesized
+     * clip from the server and plays it through the shared audio-playback pool. A blank preview
+     * URL (e.g. when AI is not configured) surfaces a friendly message instead.
+     */
+    fun sampleVoice(voiceId: String, text: String = "") {
+        stopVoiceSample()
+        samplingVoiceId = voiceId
+        viewModelScope.launch {
+            try {
+                val url = NetworkService.sampleVoice(voiceId, text)
+                // A newer sample may have been requested (or playback stopped) while we waited.
+                if (samplingVoiceId != voiceId) return@launch
+                if (url.isBlank()) {
+                    samplingVoiceId = null
+                    errorMessage = "Voice preview is unavailable (AI is not configured)."
+                    return@launch
+                }
+                updateAudioPlayback(listOf(AudioPlayItem(VOICE_SAMPLE_KEY, url, 0.0, 1.0)), playing = true)
+            } catch (e: Exception) {
+                if (samplingVoiceId == voiceId) samplingVoiceId = null
+                errorMessage = "Voice preview failed: ${e.message}"
+            }
+        }
+    }
+
+    /** Stops any in-progress voice preview playback. */
+    fun stopVoiceSample() {
+        if (samplingVoiceId == null) return
+        samplingVoiceId = null
+        updateAudioPlayback(emptyList(), playing = false)
     }
 
     /**

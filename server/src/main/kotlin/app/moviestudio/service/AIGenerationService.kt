@@ -9,7 +9,10 @@ import app.moviestudio.AssetVersion
 import app.moviestudio.GenerationSetup
 import app.moviestudio.Job
 import app.moviestudio.JobStatus
+import app.moviestudio.QWEN_VOICE_CATALOG
 import app.moviestudio.VoiceClone
+import app.moviestudio.VoiceDesign
+import app.moviestudio.VoicePreset
 import app.moviestudio.WordTiming
 import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.ClipRepository
@@ -66,6 +69,26 @@ interface AIGenerationService {
      */
     suspend fun createVoiceClone(name: String, audioUrl: String): VoiceClone
 
+    /**
+     * Creates a new designed voice (CosyVoice Voice Design) from a natural-language [description]
+     * and persists it. Returns the stored [VoiceDesign]. The default rejects the request for
+     * backends without voice-design support.
+     */
+    suspend fun createVoiceDesign(name: String, description: String): VoiceDesign =
+        throw UnsupportedOperationException("Voice design is not supported by this AI service")
+
+    /**
+     * The built-in ("default") voices offered by the studio, with their spoken languages. The
+     * default returns the static [QWEN_VOICE_CATALOG].
+     */
+    suspend fun listVoicePresets(): List<VoicePreset> = QWEN_VOICE_CATALOG
+
+    /**
+     * Synthesizes a short spoken preview of [voiceId] (using [text], or a default line when blank)
+     * and returns a temporary audio URL to play. The default returns an empty string (no preview).
+     */
+    suspend fun sampleVoice(voiceId: String, text: String): String = ""
+
     suspend fun executeAiGenerationJob(job: Job, onProgress: suspend (progress: Int, message: String) -> Unit)
 
     companion object : AIGenerationService {
@@ -86,6 +109,15 @@ interface AIGenerationService {
 
         override suspend fun createVoiceClone(name: String, audioUrl: String): VoiceClone =
             delegate.createVoiceClone(name, audioUrl)
+
+        override suspend fun createVoiceDesign(name: String, description: String): VoiceDesign =
+            delegate.createVoiceDesign(name, description)
+
+        override suspend fun listVoicePresets(): List<VoicePreset> =
+            delegate.listVoicePresets()
+
+        override suspend fun sampleVoice(voiceId: String, text: String): String =
+            delegate.sampleVoice(voiceId, text)
 
         override suspend fun executeAiGenerationJob(job: Job, onProgress: suspend (progress: Int, message: String) -> Unit) =
             delegate.executeAiGenerationJob(job, onProgress)

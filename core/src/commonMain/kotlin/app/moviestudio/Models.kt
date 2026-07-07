@@ -278,6 +278,22 @@ data class VoiceClone(
 )
 
 /**
+ * A user-created "designed" voice (CosyVoice Voice Design): instead of supplying an audio sample
+ * like a [VoiceClone], the user describes the voice in natural language (e.g. "a warm, gravelly
+ * old storyteller") and the model synthesizes a matching custom voice. The [qwenVoiceId] is the
+ * enrolled voice id TTS requests reference; [description] is the natural-language prompt used to
+ * design it.
+ */
+@Serializable
+data class VoiceDesign(
+    val id: String,
+    val name: String,
+    val description: String,
+    val qwenVoiceId: String,
+    val createdAt: Long = 0
+)
+
+/**
  * A completed render of a movie. Every render is kept so the user can replay or download any
  * past render at any time.
  */
@@ -360,19 +376,74 @@ data class Tip(
 )
 
 /**
- * The Qwen TTS preset voices available out of the box. Cloned voices from the user's voice
- * library are offered alongside these.
+ * A built-in ("default") voice that ships with the studio — one of the Qwen3-TTS preset voices.
+ * [id] is the value TTS requests send as the `voice`, [name] is the display name, [languages] are
+ * the spoken languages the voice supports (Qwen3-TTS is multilingual and also covers several
+ * Chinese dialects), [description] is a short human blurb and [gender] is "female"/"male"/"".
+ * Cloned and designed voices from the user's Voice Library are offered alongside these.
  */
-val QWEN_VOICE_PRESETS: List<String> = listOf(
-    "Cherry", "Serena", "Ethan", "Chelsie", "Dylan", "Jada", "Sunny"
+@Serializable
+data class VoicePreset(
+    val id: String,
+    val name: String,
+    val languages: List<String> = emptyList(),
+    val description: String = "",
+    val gender: String = ""
 )
 
-/** All selectable voices: Qwen presets plus the user's cloned voices. */
+/** The languages the standard (non-dialect) Qwen3-TTS voices can speak. */
+private val QWEN_TTS_MULTILINGUAL: List<String> = listOf(
+    "Chinese", "English", "Spanish", "French", "German",
+    "Italian", "Portuguese", "Japanese", "Korean", "Russian"
+)
+
+/**
+ * The full catalog of Qwen3-TTS default voices with their spoken languages — the studio's
+ * built-in Voice Library "Default Voices". The seven standard voices are multilingual; the rest
+ * are Chinese-dialect voices best used in their dialect (they still speak Mandarin and English).
+ * This mirrors Qwen3-TTS's documented voice list (the models are an enumerated set rather than a
+ * queryable endpoint); [AIGenerationService.listVoicePresets] returns it.
+ */
+val QWEN_VOICE_CATALOG: List<VoicePreset> = listOf(
+    VoicePreset("Cherry", "Cherry", QWEN_TTS_MULTILINGUAL, "Warm, friendly female voice", "female"),
+    VoicePreset("Ethan", "Ethan", QWEN_TTS_MULTILINGUAL, "Bright, upbeat male voice", "male"),
+    VoicePreset("Nofish", "Nofish", QWEN_TTS_MULTILINGUAL, "Relaxed, casual male voice", "male"),
+    VoicePreset("Jennifer", "Jennifer", QWEN_TTS_MULTILINGUAL, "Poised, professional female voice", "female"),
+    VoicePreset("Ryan", "Ryan", QWEN_TTS_MULTILINGUAL, "Smooth, mellow male voice", "male"),
+    VoicePreset("Katerina", "Katerina", QWEN_TTS_MULTILINGUAL, "Elegant, expressive female voice", "female"),
+    VoicePreset("Elias", "Elias", QWEN_TTS_MULTILINGUAL, "Measured, lecturer-style male voice", "male"),
+    VoicePreset("Jada", "Jada", listOf("Shanghainese", "Chinese", "English"), "Shanghai dialect, female", "female"),
+    VoicePreset("Dylan", "Dylan", listOf("Beijing dialect", "Chinese", "English"), "Beijing dialect, male", "male"),
+    VoicePreset("Sunny", "Sunny", listOf("Sichuanese", "Chinese", "English"), "Sichuan dialect, female", "female"),
+    VoicePreset("Li", "Li", listOf("Nanjing dialect", "Chinese", "English"), "Nanjing dialect, male", "male"),
+    VoicePreset("Marcus", "Marcus", listOf("Shaanxi dialect", "Chinese", "English"), "Shaanxi dialect, male", "male"),
+    VoicePreset("Roy", "Roy", listOf("Minnan", "Chinese", "English"), "Minnan (Hokkien) dialect, male", "male"),
+    VoicePreset("Peter", "Peter", listOf("Tianjin dialect", "Chinese", "English"), "Tianjin dialect, male", "male"),
+    VoicePreset("Rocky", "Rocky", listOf("Cantonese", "Chinese", "English"), "Cantonese, male", "male"),
+    VoicePreset("Kiki", "Kiki", listOf("Cantonese", "Chinese", "English"), "Cantonese, female", "female"),
+    VoicePreset("Eric", "Eric", listOf("Sichuanese", "Chinese", "English"), "Sichuan dialect, male", "male"),
+)
+
+/**
+ * Voice ids of the built-in Qwen presets, kept as a plain list for defaults/fallbacks (e.g. the
+ * default narration voice). Derived from [QWEN_VOICE_CATALOG].
+ */
+val QWEN_VOICE_PRESETS: List<String> = QWEN_VOICE_CATALOG.map { it.id }
+
+/**
+ * All selectable voices in the Voice Library: the built-in Qwen [presets] (Default Voices), the
+ * user's [clones] (Cloned Voices) and their [designs] (Voice Design voices).
+ */
 @Serializable
 data class VoiceOptions(
-    val presets: List<String> = emptyList(),
-    val clones: List<VoiceClone> = emptyList()
+    val presets: List<VoicePreset> = emptyList(),
+    val clones: List<VoiceClone> = emptyList(),
+    val designs: List<VoiceDesign> = emptyList()
 )
+
+/** A short, friendly line spoken when the user previews ("samples") a voice. */
+const val VOICE_SAMPLE_TEXT: String =
+    "Hi there! This is a preview of how I sound. Let's make a great movie together."
 
 // ---------------------------------------------------------------------------------------------
 // Transitions (clip overlap effects)

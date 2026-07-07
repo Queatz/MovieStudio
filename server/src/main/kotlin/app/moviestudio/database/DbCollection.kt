@@ -14,6 +14,7 @@ enum class DbCollection(val collectionName: String) {
     CHARACTERS("characters"),
     SCENES("scenes"),
     VOICE_CLONES("voiceclones"),
+    VOICE_DESIGNS("voicedesigns"),
     RENDERS("renders"),
     NOTES("notes"),
     DOCUMENTS("documents"),

@@ -5,6 +5,7 @@ import app.moviestudio.RenderRecord
 import app.moviestudio.Scene
 import app.moviestudio.Tip
 import app.moviestudio.VoiceClone
+import app.moviestudio.VoiceDesign
 import com.arangodb.util.RawJson
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
@@ -80,6 +81,8 @@ object CharacterRepository : SimpleCrudRepository<Character>(DbCollection.CHARAC
 object SceneRepository : SimpleCrudRepository<Scene>(DbCollection.SCENES, Scene.serializer(), { it.id })
 
 object VoiceCloneRepository : SimpleCrudRepository<VoiceClone>(DbCollection.VOICE_CLONES, VoiceClone.serializer(), { it.id })
+
+object VoiceDesignRepository : SimpleCrudRepository<VoiceDesign>(DbCollection.VOICE_DESIGNS, VoiceDesign.serializer(), { it.id })
 
 object RenderRepository : SimpleCrudRepository<RenderRecord>(DbCollection.RENDERS, RenderRecord.serializer(), { it.id }) {
     fun queryByMovieId(movieId: String): List<RenderRecord> = queryByField("movieId", movieId)

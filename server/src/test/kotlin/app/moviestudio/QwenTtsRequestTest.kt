@@ -8,6 +8,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class QwenTtsRequestTest {
 
@@ -62,5 +63,33 @@ class QwenTtsRequestTest {
             .input()
 
         assertNull(input["instruct"])
+    }
+
+    @Test
+    fun voiceDesignEnrollsFromDescriptionNotAudioUrl() {
+        val body = QwenAIService.buildVoiceDesignRequestBody(
+            prefix = "seacaptain",
+            description = "A warm, gravelly older man with a slow storyteller's cadence."
+        )
+        val input = body.input()
+
+        // Voice Design enrolls against CosyVoice via the natural-language `text` input, and unlike
+        // voice cloning does NOT carry a reference audio `url`.
+        assertEquals("create_voice", input.str("action"))
+        assertEquals("cosyvoice-v3.5-plus", input.str("target_model"))
+        assertEquals("seacaptain", input.str("prefix"))
+        assertEquals("A warm, gravelly older man with a slow storyteller's cadence.", input.str("text"))
+        assertNull(input["url"])
+    }
+
+    @Test
+    fun defaultVoiceCatalogCoversQwen3VoicesWithLanguages() {
+        // The default Voice Library exposes the full Qwen3-TTS voice list, each with its spoken
+        // languages — not just a handful of names.
+        assertEquals(QWEN_VOICE_CATALOG.map { it.id }, QWEN_VOICE_PRESETS)
+        assertTrue(QWEN_VOICE_CATALOG.size >= 15)
+        val cherry = QWEN_VOICE_CATALOG.first { it.id == "Cherry" }
+        assertTrue(cherry.languages.contains("English"))
+        assertTrue(QWEN_VOICE_CATALOG.all { it.languages.isNotEmpty() })
     }
 }

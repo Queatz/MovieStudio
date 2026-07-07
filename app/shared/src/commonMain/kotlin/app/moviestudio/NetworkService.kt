@@ -406,6 +406,33 @@ object NetworkService {
         client.delete(url("/api/voice/clones/$id"))
     }
 
+    /** Designs a new voice (CosyVoice Voice Design) from a natural-language description. */
+    suspend fun createVoiceDesign(name: String, description: String): VoiceDesign {
+        val body = buildJsonObject {
+            put("name", name)
+            put("description", description)
+        }.toString()
+        val responseText = client.post(url("/api/voice/designs"), body)
+        return json.decodeFromString(VoiceDesign.serializer(), responseText)
+    }
+
+    suspend fun deleteVoiceDesign(id: String) {
+        client.delete(url("/api/voice/designs/$id"))
+    }
+
+    /**
+     * Requests a short spoken preview of [voiceId] and returns a playable audio URL (empty when
+     * the backend has no preview, e.g. AI is not configured).
+     */
+    suspend fun sampleVoice(voiceId: String, text: String = ""): String {
+        val body = buildJsonObject {
+            put("voiceId", voiceId)
+            put("text", text)
+        }.toString()
+        val responseText = client.post(url("/api/voice/sample"), body)
+        return json.parseToJsonElement(responseText).jsonObject["url"]?.jsonPrimitive?.content.orEmpty()
+    }
+
     // ---------------------------------------------------------------------------------- jobs
 
     suspend fun createJob(job: Job): Job {

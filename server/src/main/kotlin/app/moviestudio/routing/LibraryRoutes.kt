@@ -1,12 +1,12 @@
 package app.moviestudio.routing
 
 import app.moviestudio.Character
-import app.moviestudio.QWEN_VOICE_PRESETS
 import app.moviestudio.Scene
-import app.moviestudio.VoiceClone
+import app.moviestudio.VoiceOptions
 import app.moviestudio.database.CharacterRepository
 import app.moviestudio.database.SceneRepository
 import app.moviestudio.database.VoiceCloneRepository
+import app.moviestudio.database.VoiceDesignRepository
 import app.moviestudio.service.AIGenerationService
 import io.ktor.http.*
 import io.ktor.server.request.*
@@ -16,10 +16,16 @@ import kotlinx.serialization.Serializable
 import java.util.UUID
 
 @Serializable
-data class VoiceOptionsResponse(val presets: List<String>, val clones: List<VoiceClone>)
+data class CreateVoiceCloneRequest(val name: String, val audioUrl: String)
 
 @Serializable
-data class CreateVoiceCloneRequest(val name: String, val audioUrl: String)
+data class CreateVoiceDesignRequest(val name: String, val description: String)
+
+@Serializable
+data class SampleVoiceRequest(val voiceId: String, val text: String = "")
+
+@Serializable
+data class SampleVoiceResponse(val url: String)
 
 fun Route.libraryRoutes() {
     // ---------------------------------------------------------------- saved characters library
@@ -122,10 +128,30 @@ fun Route.libraryRoutes() {
 
     // --------------------------------------------------------------------------- voice library
     route("/api/voice") {
-        // All selectable voices: Qwen presets plus the user's cloned voices.
+        // The full Voice Library: built-in default voices (with spoken languages) plus the
+        // user's cloned and designed voices.
         get("/options") {
             try {
-                call.respond(VoiceOptionsResponse(QWEN_VOICE_PRESETS, VoiceCloneRepository.listAll()))
+                call.respond(
+                    VoiceOptions(
+                        presets = AIGenerationService.listVoicePresets(),
+                        clones = VoiceCloneRepository.listAll(),
+                        designs = VoiceDesignRepository.listAll()
+                    )
+                )
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+        // Synthesizes a short spoken preview ("sample") of a voice and returns a playable URL.
+        post("/sample") {
+            try {
+                val request = call.receive<SampleVoiceRequest>()
+                if (request.voiceId.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, "voiceId is required")
+                }
+                val url = AIGenerationService.sampleVoice(request.voiceId, request.text)
+                call.respond(SampleVoiceResponse(url))
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
             }
@@ -147,6 +173,28 @@ fun Route.libraryRoutes() {
             try {
                 val id = call.parameters["id"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing id")
                 VoiceCloneRepository.delete(id)
+                call.respond(HttpStatusCode.OK, mapOf("deleted" to true))
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+        // Designs a new voice from a natural-language description (CosyVoice Voice Design).
+        post("/designs") {
+            try {
+                val request = call.receive<CreateVoiceDesignRequest>()
+                if (request.name.isBlank() || request.description.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, "Name and description are required")
+                }
+                val design = AIGenerationService.createVoiceDesign(request.name, request.description)
+                call.respond(HttpStatusCode.Created, design)
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+        delete("/designs/{id}") {
+            try {
+                val id = call.parameters["id"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing id")
+                VoiceDesignRepository.delete(id)
                 call.respond(HttpStatusCode.OK, mapOf("deleted" to true))
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")

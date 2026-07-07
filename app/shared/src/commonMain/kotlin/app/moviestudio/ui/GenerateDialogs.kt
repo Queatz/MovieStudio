@@ -55,6 +55,8 @@ import app.moviestudio.SequencerNote
 import app.moviestudio.UploadedDeviceFile
 import app.moviestudio.VOICE_INSTRUCTION_PRESETS
 import app.moviestudio.VoiceClone
+import app.moviestudio.VoiceDesign
+import app.moviestudio.VoiceOptions
 import app.moviestudio.cancelMicRecording
 import app.moviestudio.closestSizeForAspect
 import app.moviestudio.isPitchInScale
@@ -1242,15 +1244,11 @@ fun TtsDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: (
         mutableStateOf(
             initialSetup?.voice?.ifBlank { null }
                 ?: initialAsset?.voice
-                ?: viewModel.voiceOptions.presets.firstOrNull() ?: "Cherry"
+                ?: viewModel.voiceOptions.presets.firstOrNull()?.id ?: "Cherry"
         )
     }
     var instructions by remember { mutableStateOf(initialSetup?.instructions ?: "") }
-    var showCreateVoice by remember { mutableStateOf(false) }
-
-    val voiceEntries: List<Pair<String, String>> =
-        viewModel.voiceOptions.presets.map { it to "🔊 $it" } +
-            viewModel.voiceOptions.clones.map { it.qwenVoiceId to "🧬 ${it.name} (cloned)" }
+    var showVoiceLibrary by remember { mutableStateOf(false) }
 
     // Placeholder assets (description only, no media yet) generate rather than regenerate.
     val regenerating = initialAsset != null && !initialAsset.isDescriptionOnly
@@ -1271,16 +1269,22 @@ fun TtsDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: (
             showAiButton = true
         )
         Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            DropdownSelector(
-                label = "Voice",
-                options = voiceEntries,
-                selected = voiceEntries.firstOrNull { it.first == voice } ?: voiceEntries.firstOrNull() ?: (voice to voice),
-                display = { it.second },
-                modifier = Modifier.weight(1f)
-            ) { voice = it.first }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Voice",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    voiceDisplayLabel(viewModel.voiceOptions, voice),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
             Spacer(Modifier.width(8.dp))
-            GhostPillButton("➕ Create voice", compact = true) { showCreateVoice = true }
+            GhostPillButton("🎙 Voice Library", compact = true) { showVoiceLibrary = true }
         }
         Spacer(Modifier.height(10.dp))
 
@@ -1327,10 +1331,291 @@ fun TtsDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDismiss: (
         }
     }
 
-    if (showCreateVoice) {
+    if (showVoiceLibrary) {
+        VoiceLibraryDialog(
+            viewModel = viewModel,
+            selectedVoice = voice,
+            onSelect = { voice = it },
+            onDismiss = { showVoiceLibrary = false }
+        )
+    }
+}
+
+private enum class VoiceLibraryTab(val label: String) {
+    DEFAULT("🔊 Default"),
+    CLONED("🧬 Cloned"),
+    DESIGN("🎨 Voice Design")
+}
+
+/**
+ * Human-readable label for the currently selected voice [voiceId], resolved against the Voice
+ * Library ([options]): built-in presets, the user's cloned voices and their designed voices.
+ */
+private fun voiceDisplayLabel(options: VoiceOptions, voiceId: String): String {
+    options.presets.firstOrNull { it.id == voiceId }?.let { return "🔊 ${it.name}" }
+    options.clones.firstOrNull { it.qwenVoiceId == voiceId }?.let { return "🧬 ${it.name} (cloned)" }
+    options.designs.firstOrNull { it.qwenVoiceId == voiceId }?.let { return "🎨 ${it.name} (designed)" }
+    return voiceId
+}
+
+/**
+ * The Voice Library: pick and preview ("sample") any voice across three tabs — the built-in
+ * Default Voices (every Qwen3-TTS preset, with its spoken languages), the user's Cloned Voices
+ * (Qwen voice cloning) and their Voice Design voices (CosyVoice, designed from a text
+ * description). Selecting a voice hands its id back through [onSelect] and closes the dialog.
+ */
+@Composable
+fun VoiceLibraryDialog(
+    viewModel: AppViewModel,
+    selectedVoice: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var tab by remember { mutableStateOf(VoiceLibraryTab.DEFAULT) }
+    var showCreateClone by remember { mutableStateOf(false) }
+    var deleteClone by remember { mutableStateOf<VoiceClone?>(null) }
+    var deleteDesign by remember { mutableStateOf<VoiceDesign?>(null) }
+
+    // Voice Design create form.
+    var designName by remember { mutableStateOf("") }
+    var designPrompt by remember { mutableStateOf("") }
+    var designing by remember { mutableStateOf(false) }
+
+    // Any in-progress preview stops when the library closes.
+    DisposableEffect(Unit) { onDispose { viewModel.stopVoiceSample() } }
+
+    fun choose(voiceId: String) {
+        viewModel.stopVoiceSample()
+        onSelect(voiceId)
+        onDismiss()
+    }
+
+    StudioDialog(title = "Voice Library", onDismiss = onDismiss, width = 560.dp) {
+        Text(
+            "Pick a voice for narration and preview any of them. Say \"Movie\" — never \"Film\".",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            VoiceLibraryTab.entries.forEach { entry ->
+                if (entry == tab) {
+                    PillButton(entry.label, compact = true) { tab = entry }
+                } else {
+                    GhostPillButton(entry.label, compact = true) { tab = entry }
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+
+        when (tab) {
+            VoiceLibraryTab.DEFAULT -> {
+                viewModel.voiceOptions.presets.forEach { preset ->
+                    VoiceRow(
+                        emoji = "🔊",
+                        title = preset.name,
+                        subtitle = listOfNotNull(
+                            preset.description.ifBlank { null },
+                            preset.languages.takeIf { it.isNotEmpty() }?.joinToString(", ")
+                        ).joinToString(" • "),
+                        selected = preset.id == selectedVoice,
+                        sampling = viewModel.samplingVoiceId == preset.id,
+                        onSample = { toggleSample(viewModel, preset.id) },
+                        onSelect = { choose(preset.id) }
+                    )
+                }
+            }
+
+            VoiceLibraryTab.CLONED -> {
+                if (viewModel.voiceOptions.clones.isEmpty()) {
+                    EmptyVoiceHint("No cloned voices yet. Clone your own voice from a recording or an audio sample.")
+                }
+                viewModel.voiceOptions.clones.forEach { clone ->
+                    VoiceRow(
+                        emoji = "🧬",
+                        title = clone.name,
+                        subtitle = "Cloned voice",
+                        selected = clone.qwenVoiceId == selectedVoice,
+                        sampling = viewModel.samplingVoiceId == clone.qwenVoiceId,
+                        onSample = { toggleSample(viewModel, clone.qwenVoiceId) },
+                        onSelect = { choose(clone.qwenVoiceId) },
+                        onDelete = { deleteClone = clone }
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                GhostPillButton("➕ Clone a voice", compact = true) { showCreateClone = true }
+            }
+
+            VoiceLibraryTab.DESIGN -> {
+                Text(
+                    "Describe the voice you want and CosyVoice designs it — no recording needed.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                StudioTextField(
+                    value = designName,
+                    onValueChange = { designName = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "Voice name",
+                    placeholder = "Old sea captain",
+                    singleLine = true
+                )
+                Spacer(Modifier.height(8.dp))
+                StudioTextField(
+                    value = designPrompt,
+                    onValueChange = { designPrompt = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "Voice description",
+                    placeholder = "A warm, gravelly older man with a slow, weathered storyteller's cadence.",
+                    minLines = 2,
+                    maxLines = 4
+                )
+                Spacer(Modifier.height(8.dp))
+                PillButton(
+                    if (designing) "Designing..." else "🎨 Design voice",
+                    compact = true,
+                    enabled = designName.isNotBlank() && designPrompt.isNotBlank() && !designing
+                ) {
+                    designing = true
+                    viewModel.createVoiceDesign(designName.trim(), designPrompt.trim()) { design ->
+                        designing = false
+                        if (design != null) {
+                            designName = ""
+                            designPrompt = ""
+                            choose(design.qwenVoiceId)
+                        }
+                    }
+                }
+
+                if (viewModel.voiceOptions.designs.isNotEmpty()) {
+                    SectionLabel("Your designed voices")
+                    viewModel.voiceOptions.designs.forEach { design ->
+                        VoiceRow(
+                            emoji = "🎨",
+                            title = design.name,
+                            subtitle = design.description,
+                            selected = design.qwenVoiceId == selectedVoice,
+                            sampling = viewModel.samplingVoiceId == design.qwenVoiceId,
+                            onSample = { toggleSample(viewModel, design.qwenVoiceId) },
+                            onSelect = { choose(design.qwenVoiceId) },
+                            onDelete = { deleteDesign = design }
+                        )
+                    }
+                }
+            }
+        }
+
+        DialogActions {
+            GhostPillButton("Close") { onDismiss() }
+        }
+    }
+
+    if (showCreateClone) {
         CreateVoiceCloneDialog(viewModel) { created ->
-            showCreateVoice = false
-            if (created != null) voice = created.qwenVoiceId
+            showCreateClone = false
+            if (created != null) choose(created.qwenVoiceId)
+        }
+    }
+    deleteClone?.let { clone ->
+        ConfirmDialog(
+            title = "Delete cloned voice?",
+            message = "\"${clone.name}\" will no longer be available for narration.",
+            confirmLabel = "Delete voice",
+            onConfirm = { viewModel.deleteVoiceClone(clone.id) },
+            onDismiss = { deleteClone = null }
+        )
+    }
+    deleteDesign?.let { design ->
+        ConfirmDialog(
+            title = "Delete designed voice?",
+            message = "\"${design.name}\" will no longer be available for narration.",
+            confirmLabel = "Delete voice",
+            onConfirm = { viewModel.deleteVoiceDesign(design.id) },
+            onDismiss = { deleteDesign = null }
+        )
+    }
+}
+
+/** Toggles a voice preview: stops it if this voice is already playing, otherwise starts it. */
+private fun toggleSample(viewModel: AppViewModel, voiceId: String) {
+    if (viewModel.samplingVoiceId == voiceId) viewModel.stopVoiceSample() else viewModel.sampleVoice(voiceId)
+}
+
+/** Muted hint shown when a Voice Library tab has no user voices yet. */
+@Composable
+private fun EmptyVoiceHint(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(vertical = 6.dp)
+    )
+}
+
+/**
+ * A single selectable voice in the [VoiceLibraryDialog]: an emoji, its name + [subtitle]
+ * (description / languages), a ▶/⏸ preview toggle and an optional delete affordance. The whole
+ * row is clickable to select the voice; per the project guidelines it is clipped to its rounded
+ * shape BEFORE the clickable so the hover/press highlight keeps rounded corners.
+ */
+@Composable
+private fun VoiceRow(
+    emoji: String,
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    sampling: Boolean,
+    onSample: () -> Unit,
+    onSelect: () -> Unit,
+    onDelete: (() -> Unit)? = null
+) {
+    val shape = RoundedCornerShape(12.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(shape) // clip BEFORE clickable so the hover/press highlight has rounded corners
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            )
+            .clickable { onSelect() }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(emoji, fontSize = 18.sp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onSurface
+            )
+            if (subtitle.isNotBlank()) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        if (selected) {
+            Text("✓", fontSize = 14.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Spacer(Modifier.width(6.dp))
+        }
+        RoundIconButton(
+            glyph = if (sampling) "⏸" else "▶",
+            contentDescription = if (sampling) "Stop preview" else "Play preview",
+            size = 28.dp,
+            onClick = onSample
+        )
+        if (onDelete != null) {
+            Spacer(Modifier.width(2.dp))
+            RoundIconButton("🗑", size = 24.dp, onClick = onDelete)
         }
     }
 }

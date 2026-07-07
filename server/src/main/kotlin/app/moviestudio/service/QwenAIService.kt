@@ -7,10 +7,15 @@ import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.GenerationSetup
 import app.moviestudio.Job
+import app.moviestudio.QWEN_VOICE_CATALOG
+import app.moviestudio.VOICE_SAMPLE_TEXT
 import app.moviestudio.VoiceClone
+import app.moviestudio.VoiceDesign
+import app.moviestudio.VoicePreset
 import app.moviestudio.WordTiming
 import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.VoiceCloneRepository
+import app.moviestudio.database.VoiceDesignRepository
 import app.moviestudio.storage.OssService
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -272,6 +277,110 @@ object QwenAIService : AIGenerationService {
         logger.info("Created Qwen voice clone {} ({})", clone.id, voiceId)
         return clone
     }
+
+    /**
+     * Creates a "designed" voice (CosyVoice Voice Design). Unlike [createVoiceClone], which enrolls
+     * a voice from a reference audio sample, Voice Design synthesizes a brand-new voice from a
+     * natural-language [description] (e.g. "a warm, gravelly old storyteller with a slow pace").
+     * The enrolled voice targets the CosyVoice family ([QwenConfig.voiceCloneTargetModel]) so it is
+     * synthesized through the same path as cloned voices (see [executeClonedVoiceTts]).
+     */
+    override suspend fun createVoiceDesign(name: String, description: String): VoiceDesign {
+        // Graceful degradation: design an offline mock voice when Qwen is not configured.
+        if (!QwenConfig.isConfigured) {
+            logger.warn("Qwen not configured; designing offline mock voice for '{}'.", name)
+            val design = VoiceDesign(
+                id = UUID.randomUUID().toString(),
+                name = name,
+                description = description,
+                qwenVoiceId = "mock-design-${name.lowercase().replace(Regex("[^a-z0-9]+"), "-")}",
+                createdAt = System.currentTimeMillis()
+            )
+            VoiceDesignRepository.insert(design)
+            return design
+        }
+        val prefix = name.lowercase().replace(Regex("[^a-z0-9]"), "").take(9).ifBlank { "design" }
+        val response = postJson(
+            "${QwenConfig.dashScopeBaseUrl}/services/audio/tts/customization",
+            buildVoiceDesignRequestBody(prefix, description),
+            async = false
+        )
+        val voiceId = response["output"]?.jsonObject?.get("voice_id")?.jsonPrimitive?.contentOrNull
+            ?: throw IllegalStateException("Voice design response missing voice_id: $response")
+        val design = VoiceDesign(
+            id = UUID.randomUUID().toString(),
+            name = name,
+            description = description,
+            qwenVoiceId = voiceId,
+            createdAt = System.currentTimeMillis()
+        )
+        VoiceDesignRepository.insert(design)
+        logger.info("Created Qwen voice design {} ({})", design.id, voiceId)
+        return design
+    }
+
+    /**
+     * Builds the CosyVoice Voice Design enrollment request body. It mirrors the voice-cloning
+     * enrollment ([createVoiceClone]) but describes the desired voice in natural language via the
+     * `text` input instead of supplying a reference audio `url`. Pure and network-free so its
+     * shape can be unit-tested.
+     */
+    internal fun buildVoiceDesignRequestBody(prefix: String, description: String): JsonObject =
+        buildJsonObject {
+            put("model", QwenConfig.voiceEnrollModel)
+            putJsonObject("input") {
+                put("action", "create_voice")
+                put("target_model", QwenConfig.voiceCloneTargetModel)
+                put("prefix", prefix)
+                put("text", description)
+            }
+        }
+
+    /**
+     * The studio's built-in ("default") voices with their spoken languages — the Voice Library's
+     * Default Voices. Qwen3-TTS exposes its voices as a fixed, documented catalog rather than a
+     * queryable endpoint, so this returns [QWEN_VOICE_CATALOG].
+     */
+    override suspend fun listVoicePresets(): List<VoicePreset> = QWEN_VOICE_CATALOG
+
+    /**
+     * Synthesizes a short spoken preview ("sample") of [voiceId] and returns a temporary audio URL
+     * the client can play. Preset voices go through the qwen-tts endpoint; cloned/designed voices
+     * (CosyVoice) go through the async speech-synthesis endpoint. Samples are ephemeral previews,
+     * so the returned DashScope URL is used directly (not re-hosted on OSS). Returns an empty
+     * string when Qwen is not configured so the caller can degrade gracefully.
+     */
+    override suspend fun sampleVoice(voiceId: String, text: String): String {
+        if (!QwenConfig.isConfigured) return ""
+        val sampleText = text.ifBlank { VOICE_SAMPLE_TEXT }
+        val setup = GenerationSetup(kind = "tts", prompt = sampleText, voice = voiceId)
+        if (isCosyVoiceVoice(voiceId)) {
+            return runAsyncGenerationTask(
+                submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/audio/tts/generation",
+                requestBody = buildClonedVoiceTtsRequestBody(setup, voiceId, QwenConfig.voiceCloneTargetModel),
+                mediaUrlKeys = listOf("audio_url", "url"),
+            ) { /* no-op progress */ }
+        }
+        val response = postJson(
+            "${QwenConfig.dashScopeBaseUrl}/services/aigc/multimodal-generation/generation",
+            buildTtsRequestBody(setup, voiceId, QwenConfig.ttsModel, instructions = ""),
+            async = false,
+            timeoutSeconds = 120
+        )
+        val output = response["output"]?.jsonObject
+        return output?.get("audio")?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull
+            ?: extractMediaUrl(output ?: buildJsonObject {}, listOf("audio_url", "url"))
+            ?: throw IllegalStateException("Qwen TTS sample response missing audio url: $response")
+    }
+
+    /**
+     * True when [voiceId] is a user cloned or designed voice — both enrolled against the CosyVoice
+     * family ([QwenConfig.voiceCloneTargetModel]) and therefore synthesized through the async
+     * speech-synthesis endpoint rather than the qwen-tts `multimodal-generation` endpoint.
+     */
+    private fun isCosyVoiceVoice(voiceId: String): Boolean =
+        VoiceCloneRepository.listAll().any { it.qwenVoiceId == voiceId } ||
+            VoiceDesignRepository.listAll().any { it.qwenVoiceId == voiceId }
 
     // ------------------------------------------------------------------------------------------
     // Job execution
@@ -545,8 +654,8 @@ object QwenAIService : AIGenerationService {
     private suspend fun executeTts(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val voice = setup.voice.ifBlank { "Cherry" }
-        val isClonedVoice = VoiceCloneRepository.listAll().any { it.qwenVoiceId == voice }
-        if (isClonedVoice) {
+        // Cloned and designed voices are both CosyVoice voices and share the async synthesis path.
+        if (isCosyVoiceVoice(voice)) {
             executeClonedVoiceTts(job, payload, voice, ledger, onProgress)
             return
         }

@@ -345,7 +345,8 @@ class Phase5IntegrationTest {
         val optionsRes = client.get("/api/voice/options")
         assertEquals(HttpStatusCode.OK, optionsRes.status)
         val options = json.decodeFromString(VoiceOptions.serializer(), optionsRes.bodyAsText())
-        assertEquals(QWEN_VOICE_PRESETS, options.presets)
+        assertEquals(QWEN_VOICE_CATALOG, options.presets)
+        assertTrue(options.presets.any { it.id == "Cherry" && it.languages.isNotEmpty() })
         assertTrue(options.clones.any { it.name == "My Voice" })
     }
 
