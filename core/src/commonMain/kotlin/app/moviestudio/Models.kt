@@ -398,11 +398,16 @@ private val QWEN_TTS_MULTILINGUAL: List<String> = listOf(
 )
 
 /**
- * The full catalog of Qwen3-TTS default voices with their spoken languages — the studio's
- * built-in Voice Library "Default Voices". The seven standard voices are multilingual; the rest
- * are Chinese-dialect voices best used in their dialect (they still speak Mandarin and English).
- * This mirrors Qwen3-TTS's documented voice list (the models are an enumerated set rather than a
- * queryable endpoint); [AIGenerationService.listVoicePresets] returns it.
+ * The catalog of Qwen3-TTS default voices with their spoken languages — the studio's built-in
+ * Voice Library "Default Voices". These are the standard, multilingual Qwen3-TTS voices, which are
+ * the ones the hosted qwen3-tts endpoint actually accepts. This mirrors Qwen3-TTS's documented
+ * voice list (the models are an enumerated set rather than a queryable endpoint);
+ * [AIGenerationService.listVoicePresets] returns it.
+ *
+ * The region-specific Chinese-dialect voices (e.g. "Kiki", "Rocky", "Dylan") are intentionally NOT
+ * listed here: the hosted qwen3-tts model rejects them with HTTP 400
+ * `InternalError.Algo.InvalidParameter: Voice '<name>' is not supported`, so surfacing them in the
+ * Voice Library only produced failed voiceover jobs. Only voices the endpoint supports are offered.
  */
 val QWEN_VOICE_CATALOG: List<VoicePreset> = listOf(
     VoicePreset("Cherry", "Cherry", QWEN_TTS_MULTILINGUAL, "Warm, friendly female voice", "female"),
@@ -412,16 +417,6 @@ val QWEN_VOICE_CATALOG: List<VoicePreset> = listOf(
     VoicePreset("Ryan", "Ryan", QWEN_TTS_MULTILINGUAL, "Smooth, mellow male voice", "male"),
     VoicePreset("Katerina", "Katerina", QWEN_TTS_MULTILINGUAL, "Elegant, expressive female voice", "female"),
     VoicePreset("Elias", "Elias", QWEN_TTS_MULTILINGUAL, "Measured, lecturer-style male voice", "male"),
-    VoicePreset("Jada", "Jada", listOf("Shanghainese", "Chinese", "English"), "Shanghai dialect, female", "female"),
-    VoicePreset("Dylan", "Dylan", listOf("Beijing dialect", "Chinese", "English"), "Beijing dialect, male", "male"),
-    VoicePreset("Sunny", "Sunny", listOf("Sichuanese", "Chinese", "English"), "Sichuan dialect, female", "female"),
-    VoicePreset("Li", "Li", listOf("Nanjing dialect", "Chinese", "English"), "Nanjing dialect, male", "male"),
-    VoicePreset("Marcus", "Marcus", listOf("Shaanxi dialect", "Chinese", "English"), "Shaanxi dialect, male", "male"),
-    VoicePreset("Roy", "Roy", listOf("Minnan", "Chinese", "English"), "Minnan (Hokkien) dialect, male", "male"),
-    VoicePreset("Peter", "Peter", listOf("Tianjin dialect", "Chinese", "English"), "Tianjin dialect, male", "male"),
-    VoicePreset("Rocky", "Rocky", listOf("Cantonese", "Chinese", "English"), "Cantonese, male", "male"),
-    VoicePreset("Kiki", "Kiki", listOf("Cantonese", "Chinese", "English"), "Cantonese, female", "female"),
-    VoicePreset("Eric", "Eric", listOf("Sichuanese", "Chinese", "English"), "Sichuan dialect, male", "male"),
 )
 
 /**

@@ -346,36 +346,35 @@ object QwenAIService : AIGenerationService {
     /**
      * Synthesizes a short spoken preview ("sample") of [voiceId] and returns a temporary audio URL
      * the client can play. Preset voices go through the qwen-tts endpoint; cloned/designed voices
-     * (CosyVoice) go through the async speech-synthesis endpoint. Samples are ephemeral previews,
-     * so the returned DashScope URL is used directly (not re-hosted on OSS). Returns an empty
-     * string when Qwen is not configured so the caller can degrade gracefully.
+     * (CosyVoice) go through the speech-synthesis endpoint. Both are synchronous calls (the hosted
+     * account rejects asynchronous calls with HTTP 403 "current user api does not support
+     * asynchronous calls"). Samples are ephemeral previews, so the returned DashScope URL is used
+     * directly (not re-hosted on OSS). Returns an empty string when Qwen is not configured so the
+     * caller can degrade gracefully.
      */
     override suspend fun sampleVoice(voiceId: String, text: String): String {
         if (!QwenConfig.isConfigured) return ""
         val sampleText = text.ifBlank { VOICE_SAMPLE_TEXT }
         val setup = GenerationSetup(kind = "tts", prompt = sampleText, voice = voiceId)
-        if (isCosyVoiceVoice(voiceId)) {
-            return runAsyncGenerationTask(
-                submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/audio/tts/generation",
-                requestBody = buildClonedVoiceTtsRequestBody(setup, voiceId, QwenConfig.voiceCloneTargetModel),
-                mediaUrlKeys = listOf("audio_url", "url"),
-            ) { /* no-op progress */ }
+        val cosyVoice = isCosyVoiceVoice(voiceId)
+        val url = if (cosyVoice) {
+            "${QwenConfig.dashScopeBaseUrl}/services/audio/tts/generation"
+        } else {
+            "${QwenConfig.dashScopeBaseUrl}/services/aigc/multimodal-generation/generation"
         }
-        val response = postJson(
-            "${QwenConfig.dashScopeBaseUrl}/services/aigc/multimodal-generation/generation",
-            buildTtsRequestBody(setup, voiceId, QwenConfig.ttsModel, instructions = ""),
-            async = false,
-            timeoutSeconds = 120
-        )
-        val output = response["output"]?.jsonObject
-        return output?.get("audio")?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull
-            ?: extractMediaUrl(output ?: buildJsonObject {}, listOf("audio_url", "url"))
+        val requestBody = if (cosyVoice) {
+            buildClonedVoiceTtsRequestBody(setup, voiceId, QwenConfig.voiceCloneTargetModel)
+        } else {
+            buildTtsRequestBody(setup, voiceId, QwenConfig.ttsModel, instructions = "")
+        }
+        val response = postJson(url, requestBody, async = false, timeoutSeconds = 120)
+        return extractSyncTtsAudioUrl(response)
             ?: throw IllegalStateException("Qwen TTS sample response missing audio url: $response")
     }
 
     /**
      * True when [voiceId] is a user cloned or designed voice — both enrolled against the CosyVoice
-     * family ([QwenConfig.voiceCloneTargetModel]) and therefore synthesized through the async
+     * family ([QwenConfig.voiceCloneTargetModel]) and therefore synthesized through the CosyVoice
      * speech-synthesis endpoint rather than the qwen-tts `multimodal-generation` endpoint.
      */
     private fun isCosyVoiceVoice(voiceId: String): Boolean =
@@ -654,7 +653,7 @@ object QwenAIService : AIGenerationService {
     private suspend fun executeTts(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val voice = setup.voice.ifBlank { "Cherry" }
-        // Cloned and designed voices are both CosyVoice voices and share the async synthesis path.
+        // Cloned and designed voices are both CosyVoice voices and share the synthesis path below.
         if (isCosyVoiceVoice(voice)) {
             executeClonedVoiceTts(job, payload, voice, ledger, onProgress)
             return
@@ -670,9 +669,7 @@ object QwenAIService : AIGenerationService {
             async = false,
             timeoutSeconds = 180
         )
-        val output = response["output"]?.jsonObject
-        val mediaUrl = output?.get("audio")?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull
-            ?: extractMediaUrl(output ?: buildJsonObject {}, listOf("audio_url", "url"))
+        val mediaUrl = extractSyncTtsAudioUrl(response)
             ?: throw IllegalStateException("Qwen TTS response missing audio url: $response")
         ledger.recordCall("Synthesized speech ($model)", model, response)
 
@@ -682,10 +679,14 @@ object QwenAIService : AIGenerationService {
 
     /**
      * Cloned-voice (Qwen voice replication) speech synthesis. The enrolled voice targets the
-     * CosyVoice family ([QwenConfig.voiceCloneTargetModel]), whose synthesis is asynchronous and
-     * lives under the DashScope `audio/tts` namespace (the sibling of the `audio/tts/customization`
-     * enrollment endpoint used by [createVoiceClone]) - not the qwen-tts
-     * `multimodal-generation/generation` endpoint. The enrolled `voice_id` rides in `input.voice`.
+     * CosyVoice family ([QwenConfig.voiceCloneTargetModel]) and lives under the DashScope
+     * `audio/tts` namespace (the sibling of the `audio/tts/customization` enrollment endpoint used
+     * by [createVoiceClone]) - not the qwen-tts `multimodal-generation/generation` endpoint. The
+     * enrolled `voice_id` rides in `input.voice`.
+     *
+     * The call is synchronous: the hosted account rejects asynchronous CosyVoice calls with HTTP
+     * 403 "current user api does not support asynchronous calls", so the audio URL is read straight
+     * from the response (see [extractSyncTtsAudioUrl]) rather than submitted as a polled task.
      */
     private suspend fun executeClonedVoiceTts(
         job: Job,
@@ -698,17 +699,29 @@ object QwenAIService : AIGenerationService {
         val model = QwenConfig.voiceCloneTargetModel
         onProgress(20, "Synthesizing speech with cloned voice ($model)...")
 
-        val mediaUrl = runAsyncGenerationTask(
-            submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/audio/tts/generation",
-            requestBody = buildClonedVoiceTtsRequestBody(setup, voice, model),
-            mediaUrlKeys = listOf("audio_url", "url"),
-            ledger = ledger,
-            ledgerModel = model,
-            ledgerDescription = "Synthesized speech ($model)",
-        ) { pct -> onProgress((20 + pct * 0.5).toInt().coerceIn(20, 70), "Synthesizing speech... $pct%") }
+        val response = postJson(
+            "${QwenConfig.dashScopeBaseUrl}/services/audio/tts/generation",
+            buildClonedVoiceTtsRequestBody(setup, voice, model),
+            async = false,
+            timeoutSeconds = 180
+        )
+        val mediaUrl = extractSyncTtsAudioUrl(response)
+            ?: throw IllegalStateException("Qwen cloned-voice TTS response missing audio url: $response")
+        ledger.recordCall("Synthesized speech ($model)", model, response)
 
         onProgress(75, "Uploading voiceover to Alibaba OSS...")
         finalizeVoiceover(job, payload, setup, mediaUrl, ledger, onProgress)
+    }
+
+    /**
+     * Pulls the synthesized audio URL out of a synchronous DashScope TTS response, checking the
+     * qwen-tts `output.audio.url` shape first and then the flatter `audio_url` / `url` keys used by
+     * the CosyVoice speech-synthesis endpoint. Shared by the preset, cloned-voice and sample paths.
+     */
+    private fun extractSyncTtsAudioUrl(response: JsonObject): String? {
+        val output = response["output"]?.jsonObject ?: return null
+        return output["audio"]?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull
+            ?: extractMediaUrl(output, listOf("audio_url", "url"))
     }
 
     /** Re-hosts the synthesized audio, derives transcript timings and finalizes the voice asset. */

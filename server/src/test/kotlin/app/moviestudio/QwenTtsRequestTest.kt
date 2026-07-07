@@ -83,13 +83,21 @@ class QwenTtsRequestTest {
     }
 
     @Test
-    fun defaultVoiceCatalogCoversQwen3VoicesWithLanguages() {
-        // The default Voice Library exposes the full Qwen3-TTS voice list, each with its spoken
-        // languages — not just a handful of names.
+    fun defaultVoiceCatalogExposesSupportedVoicesWithLanguages() {
+        // The default Voice Library exposes the standard, multilingual Qwen3-TTS voices, each with
+        // its spoken languages — not just a handful of names.
         assertEquals(QWEN_VOICE_CATALOG.map { it.id }, QWEN_VOICE_PRESETS)
-        assertTrue(QWEN_VOICE_CATALOG.size >= 15)
+        assertTrue(QWEN_VOICE_CATALOG.size >= 5)
         val cherry = QWEN_VOICE_CATALOG.first { it.id == "Cherry" }
         assertTrue(cherry.languages.contains("English"))
         assertTrue(QWEN_VOICE_CATALOG.all { it.languages.isNotEmpty() })
+    }
+
+    @Test
+    fun defaultVoiceCatalogOmitsUnsupportedDialectVoices() {
+        // The region-specific Chinese-dialect voices are rejected by the hosted qwen3-tts endpoint
+        // with HTTP 400 "Voice '<name>' is not supported", so they must not be offered.
+        val unsupported = setOf("Kiki", "Rocky", "Dylan", "Jada", "Sunny", "Li", "Marcus", "Roy", "Peter", "Eric")
+        assertTrue(QWEN_VOICE_CATALOG.none { it.id in unsupported })
     }
 }

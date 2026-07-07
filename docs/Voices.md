@@ -23,15 +23,16 @@ gets picked and previewed, and how narration is finally synthesized. It ties tog
 | Voice Design  | Synthesized from a natural-language **description**  | CosyVoice               | `VoiceDesign`  |
 
 - **Default Voices** are a fixed, documented catalog — Qwen3-TTS exposes voices as an enumerated
-  set, not a queryable endpoint — so they are shipped as data (see `QWEN_VOICE_CATALOG`). Seven are
-  multilingual; the rest are Chinese-dialect voices.
+  set, not a queryable endpoint — so they are shipped as data (see `QWEN_VOICE_CATALOG`). Only the
+  standard multilingual voices are listed; the region-specific Chinese-dialect voices are omitted
+  because the hosted qwen3-tts endpoint rejects them (HTTP 400 "Voice '<name>' is not supported").
 - **Cloned Voices** enroll a real voice from a reference recording (Qwen voice cloning, China
   mainland) and reference the enrolled `qwenVoiceId` at synthesis time.
 - **Voice Design voices** are brand-new voices *invented* from a text prompt (e.g. "a warm,
   gravelly old storyteller with a slow pace") via CosyVoice Voice Design.
 
 Cloned and designed voices are **both CosyVoice voices** — they enroll against
-`QwenConfig.voiceCloneTargetModel` and are synthesized through the same async path (§5).
+`QwenConfig.voiceCloneTargetModel` and are synthesized through the same (synchronous) path (§5).
 
 ---
 
@@ -76,8 +77,9 @@ data class VoiceOptions(
 
 Related constants in the same file:
 
-- `QWEN_VOICE_CATALOG: List<VoicePreset>` — the full Default Voices catalog (17 voices with their
-  spoken languages). This is the single source of truth for the presets.
+- `QWEN_VOICE_CATALOG: List<VoicePreset>` — the Default Voices catalog (the standard multilingual
+  Qwen3-TTS voices, each with their spoken languages). This is the single source of truth for the
+  presets. Dialect voices the hosted endpoint rejects are intentionally excluded.
 - `QWEN_VOICE_PRESETS: List<String>` — just the ids, derived from the catalog, kept for
   defaults/fallbacks (e.g. the default narration voice `"Cherry"`).
 - `VOICE_INSTRUCTION_PRESETS` — quick mood chips ("Happy", "Sad", "Excited", …) for instruct TTS.
@@ -153,10 +155,12 @@ private fun isCosyVoiceVoice(voiceId: String): Boolean =
   built by `buildTtsRequestBody(...)`. Voice **instructions** ("happy", "whispering", …) switch the
   model to `QwenConfig.ttsInstructModel` and add an `instruct` field.
 - **Cloned or designed voice** (`isCosyVoiceVoice`) → **CosyVoice** at
-  `services/audio/tts/generation` (async, polled), built by `buildClonedVoiceTtsRequestBody(...)`.
+  `services/audio/tts/generation` (**synchronous**), built by `buildClonedVoiceTtsRequestBody(...)`.
   This request sends the enrolled `voice_id` and omits the unsupported `instruct` field — routing
   here is what fixed the earlier HTTP 400 "url error" the qwen-tts endpoint returned for
-  `cosyvoice-*` models.
+  `cosyvoice-*` models. The call is intentionally **not** asynchronous: the hosted account rejects
+  async CosyVoice calls with HTTP 403 "current user api does not support asynchronous calls", so the
+  audio URL is read straight from the response (`extractSyncTtsAudioUrl`) instead of being polled.
 
 `executeTts(...)` picks the path (falling back to `"Cherry"` when no voice is set); the request
 builders are pure/network-free so their shape is unit-tested. Enrollment for designs uses
