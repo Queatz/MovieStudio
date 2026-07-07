@@ -529,33 +529,35 @@ object QwenAIService : AIGenerationService {
 
     /**
      * Qwen TTS with a preset or cloned voice. The input text becomes the stored transcript.
-     * When the setup carries voice instructions ("happy", "sad", "excited"...), the
-     * instruction-following model ([QwenConfig.ttsInstructModel]) is used and the instructions
-     * ride along as the `instruct` input, steering how the line is delivered.
+     *
+     * Two distinct backends are used depending on the voice:
+     * - Preset voices (and the instruction-following variant when the setup carries voice
+     *   instructions like "happy"/"sad"/"excited") use the qwen-tts family on the synchronous
+     *   `multimodal-generation/generation` endpoint, with the instructions riding along as the
+     *   `instruct` input.
+     * - Cloned voices are enrolled against the CosyVoice family ([QwenConfig.voiceCloneTargetModel]),
+     *   which is NOT exposed through `multimodal-generation/generation` - that endpoint rejects
+     *   CosyVoice model names with HTTP 400 "url error, please check url！" (the same model
+     *   name / API endpoint mismatch documented for the qwen-image family in [executeImage]).
+     *   They are synthesized through the DashScope speech-synthesis endpoint instead
+     *   (see [executeClonedVoiceTts]).
      */
     private suspend fun executeTts(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val voice = setup.voice.ifBlank { "Cherry" }
-        val instructions = setup.instructions.trim()
         val isClonedVoice = VoiceCloneRepository.listAll().any { it.qwenVoiceId == voice }
-        val model = when {
-            isClonedVoice -> QwenConfig.voiceCloneTargetModel
-            instructions.isNotBlank() -> QwenConfig.ttsInstructModel
-            else -> QwenConfig.ttsModel
+        if (isClonedVoice) {
+            executeClonedVoiceTts(job, payload, voice, ledger, onProgress)
+            return
         }
+
+        val instructions = setup.instructions.trim()
+        val model = if (instructions.isNotBlank()) QwenConfig.ttsInstructModel else QwenConfig.ttsModel
         onProgress(20, "Synthesizing speech with $model (voice: $voice)...")
 
-        val requestBody = buildJsonObject {
-            put("model", model)
-            putJsonObject("input") {
-                put("text", setup.prompt)
-                put("voice", voice)
-                if (instructions.isNotBlank()) put("instruct", instructions)
-            }
-        }
         val response = postJson(
             "${QwenConfig.dashScopeBaseUrl}/services/aigc/multimodal-generation/generation",
-            requestBody,
+            buildTtsRequestBody(setup, voice, model, instructions),
             async = false,
             timeoutSeconds = 180
         )
@@ -566,6 +568,49 @@ object QwenAIService : AIGenerationService {
         ledger.recordCall("Synthesized speech ($model)", model, response)
 
         onProgress(75, "Uploading voiceover to Alibaba OSS...")
+        finalizeVoiceover(job, payload, setup, mediaUrl, ledger, onProgress)
+    }
+
+    /**
+     * Cloned-voice (Qwen voice replication) speech synthesis. The enrolled voice targets the
+     * CosyVoice family ([QwenConfig.voiceCloneTargetModel]), whose synthesis is asynchronous and
+     * lives under the DashScope `audio/tts` namespace (the sibling of the `audio/tts/customization`
+     * enrollment endpoint used by [createVoiceClone]) - not the qwen-tts
+     * `multimodal-generation/generation` endpoint. The enrolled `voice_id` rides in `input.voice`.
+     */
+    private suspend fun executeClonedVoiceTts(
+        job: Job,
+        payload: AiJobPayload,
+        voice: String,
+        ledger: MutableList<AiLedgerEntry>,
+        onProgress: suspend (Int, String) -> Unit
+    ) {
+        val setup = payload.setup
+        val model = QwenConfig.voiceCloneTargetModel
+        onProgress(20, "Synthesizing speech with cloned voice ($model)...")
+
+        val mediaUrl = runAsyncGenerationTask(
+            submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/audio/tts/generation",
+            requestBody = buildClonedVoiceTtsRequestBody(setup, voice, model),
+            mediaUrlKeys = listOf("audio_url", "url"),
+            ledger = ledger,
+            ledgerModel = model,
+            ledgerDescription = "Synthesized speech ($model)",
+        ) { pct -> onProgress((20 + pct * 0.5).toInt().coerceIn(20, 70), "Synthesizing speech... $pct%") }
+
+        onProgress(75, "Uploading voiceover to Alibaba OSS...")
+        finalizeVoiceover(job, payload, setup, mediaUrl, ledger, onProgress)
+    }
+
+    /** Re-hosts the synthesized audio, derives transcript timings and finalizes the voice asset. */
+    private suspend fun finalizeVoiceover(
+        job: Job,
+        payload: AiJobPayload,
+        setup: GenerationSetup,
+        mediaUrl: String,
+        ledger: MutableList<AiLedgerEntry>,
+        onProgress: suspend (Int, String) -> Unit
+    ) {
         val fallback = (setup.prompt.split(Regex("\\s+")).count { it.isNotBlank() } * 0.42).coerceAtLeast(2.0)
         val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "voice", "mp3", fallback)
 
@@ -574,6 +619,39 @@ object QwenAIService : AIGenerationService {
         val timings = TranscriptUtil.buildWordTimings(transcript, duration)
         GenerationCommon.finalize(job, payload, ossUrl, duration, transcript, timings, ledgerEntries = ledger)
     }
+
+    /**
+     * Builds the qwen-tts request body for a preset voice. When [instructions] are supplied they
+     * ride along as the `instruct` input (used with [QwenConfig.ttsInstructModel]). Pure and
+     * network-free so its `input` shape can be unit-tested.
+     */
+    internal fun buildTtsRequestBody(setup: GenerationSetup, voice: String, model: String, instructions: String): JsonObject =
+        buildJsonObject {
+            put("model", model)
+            putJsonObject("input") {
+                put("text", setup.prompt)
+                put("voice", voice)
+                if (instructions.isNotBlank()) put("instruct", instructions)
+            }
+        }
+
+    /**
+     * Builds the CosyVoice (cloned-voice) speech-synthesis request body. The enrolled `voice_id`
+     * rides in `input.voice`; CosyVoice does not support the qwen-tts `instruct` steering input,
+     * so voice instructions are intentionally omitted here. Pure and network-free so its shape can
+     * be unit-tested.
+     */
+    internal fun buildClonedVoiceTtsRequestBody(setup: GenerationSetup, voice: String, model: String): JsonObject =
+        buildJsonObject {
+            put("model", model)
+            putJsonObject("input") {
+                put("text", setup.prompt)
+                put("voice", voice)
+            }
+            putJsonObject("parameters") {
+                put("format", "mp3")
+            }
+        }
 
     /**
      * Sound-effect generation. The mode is picked by [GenerationSetup.sfxModel], both DashScope
