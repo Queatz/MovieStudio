@@ -229,8 +229,23 @@ object FFmpegService {
                                     "a='if(lte(hypot(X-W/2,Y-H/2),hypot(W/2,H/2)*min(T/$transitionDur,1)),255,0)'"
                             )
                         }
+                        TransitionType.VORONOI -> {
+                            // Resolve the clip out of animated voronoi cells (cells shrink to
+                            // per-pixel as the window ends) while it cross-fades in — the exact
+                            // analog of the WebGL preview's voronoi shader. The displacement is a
+                            // per-pixel geq over the (full-res) RGB planes, so it runs on gbrp;
+                            // yuva420p + the alpha fade are re-applied afterwards for the cross-fade.
+                            videoFilters.add("format=gbrp")
+                            val voronoiExpr = voronoiGeqExpression(transitionDur)
+                            videoFilters.add(
+                                "geq=r='$voronoiExpr':g='$voronoiExpr':b='$voronoiExpr':" +
+                                    "enable='between(t,0,$transitionDur)'"
+                            )
+                            videoFilters.add("format=yuva420p")
+                            videoFilters.add("fade=t=in:st=0:d=$transitionDur:alpha=1")
+                        }
                         else -> {
-                            // ALPHA / NOISE / VORONOI / PIXELATE all cross-fade in.
+                            // ALPHA / NOISE / PIXELATE all cross-fade in.
                             videoFilters.add("format=yuva420p")
                             videoFilters.add("fade=t=in:st=0:d=$transitionDur:alpha=1")
                         }
@@ -242,8 +257,6 @@ object FFmpegService {
                             // itself is grainy/dissolve-like, without speckling the clip's RGB
                             // colors (that used to happen with "alls", which noises every plane).
                             videoFilters.add("noise=c3s=48:c3f=t:enable='between(t,0,$transitionDur)'")
-                        TransitionType.VORONOI ->
-                            videoFilters.add("pixelize=width=42:height=42:enable='between(t,0,$transitionDur)'")
                         TransitionType.PIXELATE -> {
                             // Animate the mosaic: downscale (nearest-neighbor) to a time-varying tiny
                             // size, then scale back up, so the blocks start large (maxBlock px at
@@ -510,6 +523,56 @@ object FFmpegService {
         }
         fun even(v: Int) = (if (v % 2 == 0) v else v + 1).coerceAtLeast(2)
         return even(w) to even(h)
+    }
+
+    /**
+     * The per-pixel `geq` expression that reproduces the WebGL preview's VORONOI transition (see the
+     * fragment shader in `WebGLPreview.wasmJs.kt`): each pixel is sampled at the nearest random cell
+     * seed found over a 3x3 grid of cells whose size shrinks from 60px to 1px as the transition
+     * completes, so the clip resolves out of voronoi cells. It mirrors the shader exactly:
+     *
+     * - `cellPx = max(1, 60 * voronoiFraction)` with `voronoiFraction = 1 - progress` and
+     *   `progress = T / transitionDur` (T is clip-local here — the chain runs before the PTS shift).
+     * - grid coord `g = pixel / cellPx`; over the 3x3 neighbourhood of `floor(g)` the seed of a cell
+     *   is `cell + hash22(cell)` (the same Dave-Hoskins `hash22`), and the nearest seed's position
+     *   (in pixels, `seed * cellPx`) is where the frame is sampled — a true voronoi displacement.
+     *
+     * FFmpeg's expression evaluator only exposes 10 `st()`/`ld()` slots (indices 0-9, higher indices
+     * are clamped), so cheap values (cellPx, the grid coord) are recomputed inline instead of stored:
+     * slot 0 holds the nearest squared distance, slots 1/2 the nearest seed (in cell units), and
+     * slots 3-9 are per-neighbour scratch. The whole chain is gated to the transition window with the
+     * caller's `enable='between(t,0,dur)'`, so the clip plays crisp afterwards.
+     */
+    internal fun voronoiGeqExpression(transitionDur: Double): String {
+        val cell = "max(1,60*(1-min(T/$transitionDur,1)))"
+        val sb = StringBuilder()
+        // 0 = best (nearest) squared distance, 1/2 = nearest seed X/Y in cell units (default = g).
+        sb.append("st(0,100000);st(1,X/($cell));st(2,Y/($cell))")
+        for (dy in -1..1) {
+            for (dx in -1..1) {
+                // The candidate cell (grid coord of this neighbour): 3 = cellX, 4 = cellY.
+                sb.append(";st(3,floor(X/($cell))+($dx));st(4,floor(Y/($cell))+($dy))")
+                // hash22(cell): p3 = fract(cell.xyx * (0.1031, 0.1030, 0.0973)) -> slots 5,6,7.
+                sb.append(";st(5,ld(3)*0.1031);st(5,ld(5)-floor(ld(5)))")
+                sb.append(";st(6,ld(4)*0.1030);st(6,ld(6)-floor(ld(6)))")
+                sb.append(";st(7,ld(3)*0.0973);st(7,ld(7)-floor(ld(7)))")
+                // p3 += dot(p3, p3.yzx + 33.33) -> a/b/c reuse slots 5/6/7.
+                sb.append(";st(8,ld(5)*(ld(6)+33.33)+ld(6)*(ld(7)+33.33)+ld(7)*(ld(5)+33.33))")
+                sb.append(";st(5,ld(5)+ld(8));st(6,ld(6)+ld(8));st(7,ld(7)+ld(8))")
+                // seed = cell + fract((a+b)*c, (a+c)*b) -> seedX in slot 8, seedY in slot 9.
+                sb.append(";st(8,ld(3)+((ld(5)+ld(6))*ld(7)-floor((ld(5)+ld(6))*ld(7))))")
+                sb.append(";st(9,ld(4)+((ld(5)+ld(7))*ld(6)-floor((ld(5)+ld(7))*ld(6))))")
+                // Squared distance from g to this seed -> slot 5; keep it when it is the new nearest.
+                sb.append(";st(5,(X/($cell)-ld(8))*(X/($cell)-ld(8))+(Y/($cell)-ld(9))*(Y/($cell)-ld(9)))")
+                sb.append(";st(6,lt(ld(5),ld(0)))")
+                sb.append(";st(1,ld(6)*ld(8)+(1-ld(6))*ld(1))")
+                sb.append(";st(2,ld(6)*ld(9)+(1-ld(6))*ld(2))")
+                sb.append(";st(0,ld(6)*ld(5)+(1-ld(6))*ld(0))")
+            }
+        }
+        // Sample the (already cover-cropped) frame at the nearest seed, converted back to pixels.
+        sb.append(";p(clip(ld(1)*($cell),0,W-1),clip(ld(2)*($cell),0,H-1))")
+        return sb.toString()
     }
 
     /** The `fontfile=...:` prefix for drawtext when a usable system font is found, else empty. */

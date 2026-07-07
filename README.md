@@ -62,33 +62,33 @@ is no need to `source` it or export anything manually — just run:
 
 Recognized variables:
 
-| Variable | Purpose |
-| --- | --- |
-| `ARANGO_HOST` | ArangoDB host (default `127.0.0.1`). |
-| `ARANGO_PORT` | ArangoDB port (default `8539`). |
-| `ARANGO_USER` / `ARANGO_PASSWORD` | ArangoDB credentials (default `root` / `password`). |
-| `ARANGO_DB_NAME` | ArangoDB database name (default `moviestudio`). |
-| `ALIBABA_ACCOUNT_ID` | Alibaba Cloud account id (reference only). |
-| `OSS_ENDPOINT` | OSS region endpoint (e.g. `oss-ap-southeast-1.aliyuncs.com`). |
-| `OSS_BUCKET_NAME` | OSS bucket name. |
-| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | RAM user credentials for OSS. |
-| `QWEN_API_KEY` | Alibaba Model Studio (Qwen) API key. |
-| `QWEN_API_HOST` | Model Studio API host. |
-| `QWEN_OPENAI_BASE_URL` | OpenAI-compatible endpoint (`<host>/compatible-mode/v1`). |
-| `QWEN_DASHSCOPE_BASE_URL` | DashScope endpoint (`<host>/api/v1`). |
+| Variable | Purpose                                                                               |
+| --- |---------------------------------------------------------------------------------------|
+| `ARANGO_HOST` | ArangoDB host (default `127.0.0.1`).                                                  |
+| `ARANGO_PORT` | ArangoDB port (default `8539`).                                                       |
+| `ARANGO_USER` / `ARANGO_PASSWORD` | ArangoDB credentials (default `root` / `password`).                                   |
+| `ARANGO_DB_NAME` | ArangoDB database name (default `moviestudio`).                                       |
+| `ALIBABA_ACCOUNT_ID` | Alibaba Cloud account id (reference only).                                            |
+| `OSS_ENDPOINT` | OSS region endpoint (e.g. `oss-ap-southeast-1.aliyuncs.com`).                         |
+| `OSS_BUCKET_NAME` | OSS bucket name.                                                                      |
+| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | RAM user credentials for OSS.                                                         |
+| `QWEN_API_KEY` | Alibaba Model Studio (Qwen) API key.                                                  |
+| `QWEN_API_HOST` | Model Studio API host.                                                                |
+| `QWEN_OPENAI_BASE_URL` | OpenAI-compatible endpoint (`<host>/compatible-mode/v1`).                             |
+| `QWEN_DASHSCOPE_BASE_URL` | DashScope endpoint (`<host>/api/v1`).                                                 |
 | `QWEN_CHAT_MODEL` | LLM for prompt refinement, lyrics/themes and skeleton planning (default `qwen-plus`). |
-| `QWEN_VIDEO_MODEL_T2V` | WAN text-to-video model (default `wan2.7-t2v`). |
-| `QWEN_VIDEO_MODEL_I2V` | WAN image-to-video model (default `wan2.7-i2v`). |
-| `QWEN_VIDEO_MODEL_R2V` | WAN reference-to-video model (default `wan2.7-r2v`). |
-| `QWEN_IMAGE_MODEL` | Text-to-image model (default `qwen-image-max`). |
-| `QWEN_MUSIC_MODEL` | Music generation model (default `fun-music-v1`). |
-| `QWEN_AUDIO_MODEL` | Sound-effect model (text-to-audio and video-driven, default `fun-audiogen-v1`). |
-| `QWEN_TTS_MODEL` | Text-to-speech model (default `qwen-tts`). |
-| `QWEN_VOICE_ENROLL_MODEL` | Voice cloning enrollment model (default `voice-enrollment`). |
-| `QWEN_VOICE_CLONE_TARGET` | TTS model cloned voices target (default `cosyvoice-v3.5-plus`). |
-| `QWEN_TRANSCRIPTION_MODEL` | Speech-to-text model for transcripts (default `paraformer-v2`). |
-| `QWEN_POLL_INTERVAL_MS` | Async task poll interval in ms (default `3000`). |
-| `QWEN_POLL_TIMEOUT_MS` | Async task max wait in ms (default `300000`). |
+| `QWEN_VIDEO_MODEL_T2V` | WAN text-to-video model (default `wan2.7-t2v`).                                       |
+| `QWEN_VIDEO_MODEL_I2V` | WAN image-to-video model (default `wan2.7-i2v`).                                      |
+| `QWEN_VIDEO_MODEL_R2V` | WAN reference-to-video model (default `wan2.7-r2v`).                                  |
+| `QWEN_IMAGE_MODEL` | Text-to-image model (default `qwen-image-max`).                                       |
+| `QWEN_MUSIC_MODEL` | Music generation model (default `fun-music-v1`).                                      |
+| `QWEN_AUDIO_MODEL` | Sound-effect model (text-to-audio and video-driven, default `fun-audiogen-v1`).       |
+| `QWEN_TTS_MODEL` | Text-to-speech model (default `qwen3-tts`).                                           |
+| `QWEN_VOICE_ENROLL_MODEL` | Voice cloning enrollment model (default `voice-enrollment`).                          |
+| `QWEN_VOICE_CLONE_TARGET` | TTS model cloned voices target (default `cosyvoice-v3.5-plus`).                       |
+| `QWEN_TRANSCRIPTION_MODEL` | Speech-to-text model for transcripts (default `paraformer-v2`).                       |
+| `QWEN_POLL_INTERVAL_MS` | Async task poll interval in ms (default `3000`).                                      |
+| `QWEN_POLL_TIMEOUT_MS` | Async task max wait in ms (default `300000`).                                         |
 
 The server always uses `QwenAIService`, which calls the real Alibaba Model Studio (Qwen / DashScope) APIs to generate media, re-hosts the results on OSS, and persists them as `Asset`s. Set `QWEN_API_KEY` (and the other `QWEN_*` variables) in `.env` before running the server.
 

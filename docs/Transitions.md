@@ -144,12 +144,23 @@ and applied as follows (clip-local time `0..transitionDur`):
 | `SLIDE`          | Overlay `x`/`y` slides the clip in from `direction` (e.g. FROM_RIGHT: `x='if(lt(t-start,dur), W-W*p, 0)'`, FROM_TOP: `y='...-H+H*p...'`), `p=(t-start)/dur` |
 | `ALPHA`          | `format=yuva420p`, `fade=t=in:st=0:d=dur:alpha=1` (alpha fade-in)                                        |
 | `NOISE`          | alpha fade-in **+** `noise=c3s=48:c3f=t:enable='between(t,0,dur)'` (grain on the alpha plane only)       |
-| `VORONOI`        | alpha fade-in **+** `pixelize=width=42:height=42:enable='between(t,0,dur)'`                              |
+| `VORONOI`        | alpha fade-in **+** **animated voronoi cells** via `geq` (see below)                                    |
 | `PIXELATE`       | alpha fade-in **+** **animated mosaic** (see below)                                                     |
 | `CIRCLE`         | `format=yuva420p` **+** growing circular alpha mask via `geq` (see below) — no fade                     |
 
-The two textured/masked transitions now have real, animated implementations:
+The textured/masked transitions now have real, animated implementations:
 
+- **`VORONOI` — animated voronoi cells.** On `format=gbrp` (full-res RGB planes), a per-pixel `geq`
+  samples the frame at the nearest random cell seed over a 3×3 grid of cells whose size shrinks from
+  60px to 1px as the window ends, then `format=yuva420p` + the alpha fade cross-fade it in:
+  ```
+  geq=r='<voronoi>':g='<voronoi>':b='<voronoi>':enable='between(t,0,dur)'
+  // cellPx = max(1, 60 * (1 - min(T/dur, 1)));  seed = cell + hash22(cell);
+  // sample the nearest seed's pixel — the exact analog of the WebGL voronoi shader
+  ```
+  The `geq` expression (`FFmpegService.voronoiGeqExpression`) replicates the shader's `hash22` and
+  nearest-seed search within FFmpeg's 10 `st()`/`ld()` slots, so preview and export match. It is
+  `enable`-gated to the window, so the clip plays crisp afterwards.
 - **`CIRCLE` — growing circular reveal.** After `format=yuva420p`, a `geq` sets the alpha plane to
   opaque only inside a centered circle whose radius grows over the window:
   ```

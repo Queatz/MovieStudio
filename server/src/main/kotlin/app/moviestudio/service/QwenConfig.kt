@@ -59,7 +59,7 @@ object QwenConfig {
     val imageModel: String = Env.get("QWEN_IMAGE_MODEL", "qwen-image-max")
     val imageEditModel: String = Env.get("QWEN_IMAGE_EDIT_MODEL", "qwen-image-edit-max-2026-01-16")
     val musicModel: String = Env.get("QWEN_MUSIC_MODEL", "fun-music-v1")
-    val ttsModel: String = Env.get("QWEN_TTS_MODEL", "qwen-tts")
+    val ttsModel: String = Env.get("QWEN_TTS_MODEL", "qwen3-tts-flash")
     // Instruction-following TTS (Qwen instruct): selected when the generation setup carries voice
     // instructions describing how the line should be delivered (e.g. "happy", "sad", "excited").
     val ttsInstructModel: String = Env.get("QWEN_TTS_INSTRUCT_MODEL", "qwen3-tts-instruct-flash")
