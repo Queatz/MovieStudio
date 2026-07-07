@@ -93,4 +93,28 @@ class FFmpegServiceErrorTest {
         assertEquals("0xFFFFFF", FFmpegService.ffmpegDrawtextColor("#FFFFFF"))
         assertTrue(FFmpegService.ffmpegDrawtextColor("#80FF0000").startsWith("0xFF0000@"))
     }
+
+    @Test
+    fun ffFormatsNumbersAsPlainDecimalsNotScientificNotation() = with(FFmpegService) {
+        // The exact value from the crash report: float drift (2^-16) that Kotlin's toString() renders
+        // as "1.52587890625E-5", which FFmpeg rejects ("Unable to parse option value ... as duration").
+        val tiny = (1.52587890625E-5).ff()
+        assertFalse(tiny.contains("E", ignoreCase = true), "must not use scientific notation, got: $tiny")
+        assertTrue(tiny.startsWith("0.0000"), "should be a plain fixed-point decimal, got: $tiny")
+        // Ordinary values stay readable; whole numbers collapse to a bare integer.
+        assertEquals("30", 30.0.ff())
+        assertEquals("2.5", 2.5.ff())
+        assertEquals("0", 0.0.ff())
+        // A Float carrying the same drift (as clip trim/timeline values do) is handled too.
+        assertFalse((1.52587890625E-5f).ff().contains("E", ignoreCase = true))
+    }
+
+    @Test
+    fun volumeEnvelopeExpressionAvoidsScientificNotation() {
+        // A keyframe time with float drift must not leak scientific notation into the volume filter.
+        val expr = FFmpegService.volumeEnvelopeExpression(
+            listOf(VolumePoint(time = 1.52587890625E-5, volume = 0.0), VolumePoint(time = 3.0, volume = 1.0))
+        )
+        assertFalse(expr.contains("E-", ignoreCase = true), "volume expression must be FFmpeg-parseable, got: $expr")
+    }
 }

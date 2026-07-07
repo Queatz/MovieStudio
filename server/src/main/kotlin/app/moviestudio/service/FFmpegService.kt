@@ -94,9 +94,9 @@ object FFmpegService {
 
             // Input 0: black canvas; input 1: silence.
             args.add("-f"); args.add("lavfi"); args.add("-i")
-            args.add("color=c=black:s=${canvasWidth}x${canvasHeight}:r=30:d=$totalDuration")
+            args.add("color=c=black:s=${canvasWidth}x${canvasHeight}:r=30:d=${totalDuration.ff()}")
             args.add("-f"); args.add("lavfi"); args.add("-i")
-            args.add("anullsrc=r=44100:cl=stereo:d=$totalDuration")
+            args.add("anullsrc=r=44100:cl=stereo:d=${totalDuration.ff()}")
 
             // Media inputs, starting from index 2. Images are looped for their longest clip use.
             val assetIdOrder = downloadedAssets.keys.toList()
@@ -109,7 +109,7 @@ object FFmpegService {
                     val longestUse = clips.filter { it.assetId == assetId }
                         .maxOfOrNull { (it.trimOut - it.trimIn).toDouble() } ?: 5.0
                     args.add("-loop"); args.add("1")
-                    args.add("-t"); args.add((longestUse + 1.0).toString())
+                    args.add("-t"); args.add((longestUse + 1.0).ff())
                     args.add("-i"); args.add(localFile.absolutePath)
                 } else {
                     args.add("-i"); args.add(localFile.absolutePath)
@@ -162,11 +162,11 @@ object FFmpegService {
                     var tag = currentVideoTag
                     lines.forEachIndexed { index, line ->
                         val outTag = if (index == lines.lastIndex) nextTag else "v_textline_${chain++}"
-                        val yExpr = "(h-text_h)/2+${(index - (lines.size - 1) / 2.0) * (canvasHeight / 12)}"
+                        val yExpr = "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * (canvasHeight / 12)).ff()}"
                         filters.add(
                             "[$tag]drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
                                 "fontcolor=white:fontsize=${canvasHeight / 14}:x=(w-text_w)/2:y=$yExpr:" +
-                                "enable='between(t,$start,$end)'[$outTag]"
+                                "enable='between(t,${start.ff()},${end.ff()})'[$outTag]"
                         )
                         tag = outTag
                     }
@@ -179,14 +179,14 @@ object FFmpegService {
                 val srcEnd = asset.sourceOffsetSeconds + clip.trimOut
 
                 val videoFilters = mutableListOf<String>()
-                videoFilters.add("trim=start=$srcStart:end=$srcEnd")
+                videoFilters.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
                 videoFilters.add("setpts=PTS-STARTPTS")
                 videoFilters.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
                 // Crop-fit honoring the clip's 0-100 offsets (50 = centered): 0 shows the
                 // left/top edge of the media, 100 the right/bottom edge.
                 val offsetFx = (effects.offsetX / 100.0).coerceIn(0.0, 1.0)
                 val offsetFy = (effects.offsetY / 100.0).coerceIn(0.0, 1.0)
-                videoFilters.add("crop=$canvasWidth:$canvasHeight:(iw-ow)*$offsetFx:(ih-oh)*$offsetFy")
+                videoFilters.add("crop=$canvasWidth:$canvasHeight:(iw-ow)*${offsetFx.ff()}:(ih-oh)*${offsetFy.ff()}")
                 videoFilters.add("fps=30")
 
                 // Color grading from effectsConfig (kept from the original renderer).
@@ -194,14 +194,14 @@ object FFmpegService {
                 if (cb != null) {
                     fun v(k: String) = cb[k]?.jsonPrimitive?.doubleOrNull ?: 0.0
                     videoFilters.add(
-                        "colorbalance=rs=${v("rs")}:gs=${v("gs")}:bs=${v("bs")}:rm=${v("rm")}:gm=${v("gm")}:bm=${v("bm")}:rh=${v("rh")}:gh=${v("gh")}:bh=${v("bh")}"
+                        "colorbalance=rs=${v("rs").ff()}:gs=${v("gs").ff()}:bs=${v("bs").ff()}:rm=${v("rm").ff()}:gm=${v("gm").ff()}:bm=${v("bm").ff()}:rh=${v("rh").ff()}:gh=${v("gh").ff()}:bh=${v("bh").ff()}"
                     )
                 } else {
                     val brightness = rawEffects?.get("brightness")?.jsonPrimitive?.doubleOrNull ?: 0.0
                     val contrast = rawEffects?.get("contrast")?.jsonPrimitive?.doubleOrNull ?: 1.0
                     val saturation = rawEffects?.get("saturation")?.jsonPrimitive?.doubleOrNull ?: 1.0
                     if (brightness != 0.0 || contrast != 1.0 || saturation != 1.0) {
-                        videoFilters.add("eq=brightness=$brightness:contrast=$contrast:saturation=$saturation")
+                        videoFilters.add("eq=brightness=${brightness.ff()}:contrast=${contrast.ff()}:saturation=${saturation.ff()}")
                     }
                 }
 
@@ -213,14 +213,14 @@ object FFmpegService {
                 )
 
                 // Shift PTS so content plays in sync with its position on the timeline.
-                videoFilters.add("setpts=PTS+$start/TB")
+                videoFilters.add("setpts=PTS+${start.ff()}/TB")
 
                 val trimmedTag = "v_trimmed_${clip.id}"
                 filters.add("[$idx:v]${videoFilters.joinToString(",")}[$trimmedTag]")
 
                 val nextVideoTag = "v_overlaid_${clip.id}"
                 filters.add(
-                    "[$currentVideoTag][$trimmedTag]overlay=eof_action=pass:enable='between(t,$start,$end)'$overlayExtra[$nextVideoTag]"
+                    "[$currentVideoTag][$trimmedTag]overlay=eof_action=pass:enable='between(t,${start.ff()},${end.ff()})'$overlayExtra[$nextVideoTag]"
                 )
                 currentVideoTag = nextVideoTag
             }
@@ -256,7 +256,7 @@ object FFmpegService {
                     filters.add(
                         "[$currentVideoTag]drawtext=${fontFileArg()}text='${escapeDrawtext(text)}':" +
                             "fontcolor=0x$color:fontsize=$fontSize:borderw=2:bordercolor=black@0.7:" +
-                            "x=(w-text_w)/2:y=$yExpr:enable='between(t,$visStart,$visEnd)'[$nextTag]"
+                            "x=(w-text_w)/2:y=$yExpr:enable='between(t,${visStart.ff()},${visEnd.ff()})'[$nextTag]"
                     )
                     currentVideoTag = nextTag
                 }
@@ -282,14 +282,14 @@ object FFmpegService {
                 val srcEnd = asset.sourceOffsetSeconds + clip.trimOut
 
                 val audioFilters = mutableListOf<String>()
-                audioFilters.add("atrim=start=$srcStart:end=$srcEnd")
+                audioFilters.add("atrim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
                 audioFilters.add("asetpts=PTS-STARTPTS")
                 if (effects.volumeKeyframes.isNotEmpty()) {
                     // Volume-over-time envelope: evaluated per frame; 't' is clip-relative
                     // because the chain runs after asetpts=PTS-STARTPTS.
                     audioFilters.add("volume=volume='${volumeEnvelopeExpression(effects.volumeKeyframes)}':eval=frame")
                 } else if (volume != 1.0) {
-                    audioFilters.add("volume=$volume")
+                    audioFilters.add("volume=${volume.ff()}")
                 }
 
                 val trimmedTag = "a_trimmed_${clip.id}"
@@ -312,7 +312,7 @@ object FFmpegService {
             args.add("-map")
             args.add("[out_a]")
 
-            args.add("-t"); args.add(totalDuration.toString())
+            args.add("-t"); args.add(totalDuration.ff())
             args.add("-c:v"); args.add("libx264")
             args.add("-preset"); args.add("veryfast")
             args.add("-pix_fmt"); args.add("yuv420p")
@@ -483,12 +483,14 @@ object FFmpegService {
         when (transition.type) {
             TransitionType.SLIDE -> {
                 // Slide the clip in from the chosen edge across the transition window.
-                val p = "(t-$start)/$transitionDur"
+                val s = start.ff()
+                val d = transitionDur.ff()
+                val p = "(t-$s)/$d"
                 overlayExtra = when (transition.direction) {
-                    SlideDirection.FROM_RIGHT -> ":x='if(lt(t-$start,$transitionDur),W-W*$p,0)'"
-                    SlideDirection.FROM_LEFT -> ":x='if(lt(t-$start,$transitionDur),-W+W*$p,0)'"
-                    SlideDirection.FROM_TOP -> ":y='if(lt(t-$start,$transitionDur),-H+H*$p,0)'"
-                    SlideDirection.FROM_BOTTOM -> ":y='if(lt(t-$start,$transitionDur),H-H*$p,0)'"
+                    SlideDirection.FROM_RIGHT -> ":x='if(lt(t-$s,$d),W-W*$p,0)'"
+                    SlideDirection.FROM_LEFT -> ":x='if(lt(t-$s,$d),-W+W*$p,0)'"
+                    SlideDirection.FROM_TOP -> ":y='if(lt(t-$s,$d),-H+H*$p,0)'"
+                    SlideDirection.FROM_BOTTOM -> ":y='if(lt(t-$s,$d),H-H*$p,0)'"
                 }
             }
             TransitionType.CIRCLE -> {
@@ -569,7 +571,7 @@ object FFmpegService {
         val layer = mutableListOf<String>()
         // Draw each wrapped line, centered, stacking symmetrically around the vertical center.
         lines.forEachIndexed { index, line ->
-            val yExpr = "(h-text_h)/2+${(index - (lines.size - 1) / 2.0) * (fontSize * 1.25)}"
+            val yExpr = "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * (fontSize * 1.25)).ff()}"
             layer.add(
                 "drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
                     "fontcolor=$fontColor:fontsize=$fontSize:x=(w-text_w)/2:y=$yExpr"
@@ -580,16 +582,16 @@ object FFmpegService {
         val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
         val overlayExtra = buildTransitionFilters(layer, transition, transitionDur, start, canvasWidth, canvasHeight)
         // Shift the layer's PTS so it appears at the clip's timeline position.
-        layer.add("setpts=PTS+$start/TB")
+        layer.add("setpts=PTS+${start.ff()}/TB")
 
         // A canvas-sized color source is this layer's background (transparent when bgAlpha = 0).
-        val head = "color=c=$bgColor@$bgAlpha:s=${canvasWidth}x${canvasHeight}:r=30:d=${duration + 1.0},format=yuva420p"
+        val head = "color=c=$bgColor@${bgAlpha.ff()}:s=${canvasWidth}x${canvasHeight}:r=30:d=${(duration + 1.0).ff()},format=yuva420p"
         val layerTag = "v_text_layer_${clip.id}"
         filters.add("$head,${layer.joinToString(",")}[$layerTag]")
 
         val nextVideoTag = "v_overlaid_text_${clip.id}"
         filters.add(
-            "[$currentVideoTag][$layerTag]overlay=eof_action=pass:enable='between(t,$start,$end)'$overlayExtra[$nextVideoTag]"
+            "[$currentVideoTag][$layerTag]overlay=eof_action=pass:enable='between(t,${start.ff()},${end.ff()})'$overlayExtra[$nextVideoTag]"
         )
         return nextVideoTag
     }
@@ -689,15 +691,32 @@ object FFmpegService {
      */
     internal fun volumeEnvelopeExpression(keyframes: List<VolumePoint>): String {
         val points = keyframes.sortedBy { it.time }
-        var expression = "${points.last().volume}"
+        var expression = points.last().volume.ff()
         for (i in points.size - 2 downTo 0) {
             val a = points[i]
             val b = points[i + 1]
             val span = (b.time - a.time).takeIf { it > 0.0 } ?: 1.0
-            val segment = "${a.volume}+(${b.volume}-${a.volume})*(t-${a.time})/$span"
-            expression = "if(lt(t\\,${b.time})\\,$segment\\,$expression)"
+            val segment = "${a.volume.ff()}+(${b.volume.ff()}-${a.volume.ff()})*(t-${a.time.ff()})/${span.ff()}"
+            expression = "if(lt(t\\,${b.time.ff()})\\,$segment\\,$expression)"
         }
-        return "if(lt(t\\,${points.first().time})\\,${points.first().volume}\\,$expression)"
+        return "if(lt(t\\,${points.first().time.ff()})\\,${points.first().volume.ff()}\\,$expression)"
+    }
+
+    /**
+     * Formats a number as a plain, fixed-point decimal string for FFmpeg. Kotlin's `toString()`
+     * renders very small (or large) magnitudes in scientific notation (e.g. a tiny trim value like
+     * `1.52587890625E-5`, which comes from float drift in a clip's [Clip.trimIn]/[Clip.timelineStart]),
+     * and FFmpeg's option/expression parsers reject that ("Unable to parse option value ... as
+     * duration"). This always yields a representation FFmpeg can parse.
+     */
+    internal fun Number.ff(): String {
+        val d = toDouble()
+        if (!d.isFinite()) return "0"
+        if (d == 0.0) return "0"
+        return java.math.BigDecimal.valueOf(d)
+            .setScale(6, java.math.RoundingMode.HALF_UP)
+            .stripTrailingZeros()
+            .toPlainString()
     }
 
     /** Escapes text for use inside a drawtext `text='...'` argument. */
