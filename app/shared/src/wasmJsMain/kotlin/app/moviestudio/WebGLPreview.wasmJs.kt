@@ -525,6 +525,12 @@ actual fun WebGLPreviewSurface(
         var settleUntilNanos = 0L
         var lastRenderNanos = 0L
         var info: ImageInfo? = null
+        // Skia image backing the frame currently held in [bitmap]. A fresh raster image is created
+        // every tick, so the PREVIOUS one must be freed explicitly: otherwise every ~30fps readback
+        // leaks a native raster image and the wasm/Skia heap grows until an allocation traps ("index
+        // out of bounds") — reached fastest when overlapping videos keep the loop producing a frame
+        // every vsync. At most two images (the on-screen one and its replacement) are ever alive.
+        var lastImage: Image? = null
         while (true) {
             val nowNanos = withFrameNanos { it }
             val size = sizePx
@@ -550,7 +556,12 @@ actual fun WebGLPreviewSurface(
             if (info == null || info.width != rb.width || info.height != rb.height) {
                 info = ImageInfo(rb.width, rb.height, ColorType.RGBA_8888, ColorAlphaType.OPAQUE)
             }
-            bitmap = Image.makeRaster(info, bytes, rb.width * 4).toComposeImageBitmap()
+            val image = Image.makeRaster(info, bytes, rb.width * 4)
+            bitmap = image.toComposeImageBitmap()
+            // Free the previous frame's native image now that a newer one is on screen; it was
+            // already drawn and is no longer referenced by [bitmap], so this is safe.
+            lastImage?.close()
+            lastImage = image
         }
     }
 

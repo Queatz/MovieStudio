@@ -238,7 +238,10 @@ object FFmpegService {
                     // Grain / mosaic layered on top of the fade for the textured transitions.
                     when (transition.type) {
                         TransitionType.NOISE ->
-                            videoFilters.add("noise=alls=48:allf=t:enable='between(t,0,$transitionDur)'")
+                            // Noise only the alpha plane (component 3 of yuva420p) so the reveal
+                            // itself is grainy/dissolve-like, without speckling the clip's RGB
+                            // colors (that used to happen with "alls", which noises every plane).
+                            videoFilters.add("noise=c3s=48:c3f=t:enable='between(t,0,$transitionDur)'")
                         TransitionType.VORONOI ->
                             videoFilters.add("pixelize=width=42:height=42:enable='between(t,0,$transitionDur)'")
                         TransitionType.PIXELATE -> {
