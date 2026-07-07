@@ -92,12 +92,23 @@ private const val SETTLE_NANOS = 500_000_000L
             '  float y = 1.0 - (aPos.y + uTranslate.y) * 2.0;' +
             '  gl_Position = vec4(x, y, 0.0, 1.0);' +
             '}';
-        // Fragment shader: cover-crop UV window (uUvScale/uUvOffset), cross-fade (uAlpha) and
-        // the centered circular reveal (uReveal) evaluated in PIXEL space (the stage is not
-        // square) as a fraction of the center-to-corner distance — matching the DOM clip-path
-        // circle and the FFmpeg geq mask.
+        // Fragment shader (highp so the hash-based grain/cell noise below keeps precision — the
+        // Dave-Hoskins hashes overflow mediump's ~2^14 range; highp is guaranteed on the preferred
+        // WebGL2 context and requested with a GL_FRAGMENT_PRECISION_HIGH guard + mediump fallback so
+        // the rare WebGL1 GPU without it still links). It applies, in order: PIXELATE (quantize the sample
+        // position into square blocks whose size shrinks to 1px as the transition completes),
+        // VORONOI (sample at the nearest random cell seed so the clip resolves out of cells), the
+        // cover-crop UV window (uUvScale/uUvOffset), the cross-fade (uAlpha), NOISE (animated grain
+        // dissolve on the alpha), and the centered circular reveal (uReveal) evaluated in PIXEL
+        // space (the stage is not square) as a fraction of the center-to-corner distance — matching
+        // the DOM clip-path circle and the FFmpeg geq mask. uPixelate/uNoise/uVoronoi are the
+        // shared TransitionVisual fractions (0 = crisp/clean, 1 = strongest); uSeed animates grain.
         const fsSrc =
-            'precision mediump float;' +
+            '#ifdef GL_FRAGMENT_PRECISION_HIGH\n' +
+            'precision highp float;\n' +
+            '#else\n' +
+            'precision mediump float;\n' +
+            '#endif\n' +
             'varying vec2 vPos;' +
             'uniform sampler2D uTex;' +
             'uniform vec2 uUvScale;' +
@@ -105,9 +116,48 @@ private const val SETTLE_NANOS = 500_000_000L
             'uniform vec2 uSize;' +
             'uniform float uAlpha;' +
             'uniform float uReveal;' +
+            'uniform float uPixelate;' +
+            'uniform float uNoise;' +
+            'uniform float uVoronoi;' +
+            'uniform float uSeed;' +
+            'float hash12(vec2 p) {' +
+            '  vec3 p3 = fract(vec3(p.xyx) * 0.1031);' +
+            '  p3 += dot(p3, p3.yzx + 33.33);' +
+            '  return fract((p3.x + p3.y) * p3.z);' +
+            '}' +
+            'vec2 hash22(vec2 p) {' +
+            '  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));' +
+            '  p3 += dot(p3, p3.yzx + 33.33);' +
+            '  return fract((p3.xx + p3.yz) * p3.zy);' +
+            '}' +
             'void main() {' +
-            '  vec4 c = texture2D(uTex, vPos * uUvScale + uUvOffset);' +
+            '  vec2 pos = vPos;' +
+            '  if (uPixelate > 0.001) {' +
+            '    float blockPx = max(1.0, 48.0 * uPixelate);' +
+            '    pos = (floor(vPos * uSize / blockPx) + 0.5) * blockPx / uSize;' +
+            '  }' +
+            '  if (uVoronoi > 0.001) {' +
+            '    float cellPx = max(1.0, 60.0 * uVoronoi);' +
+            '    vec2 g = vPos * uSize / cellPx;' +
+            '    vec2 baseCell = floor(g);' +
+            '    float best = 9.0;' +
+            '    vec2 nearest = g;' +
+            '    for (int y = -1; y <= 1; y++) {' +
+            '      for (int x = -1; x <= 1; x++) {' +
+            '        vec2 cell = baseCell + vec2(float(x), float(y));' +
+            '        vec2 seed = cell + hash22(cell);' +
+            '        float d = distance(g, seed);' +
+            '        if (d < best) { best = d; nearest = seed; }' +
+            '      }' +
+            '    }' +
+            '    pos = nearest * cellPx / uSize;' +
+            '  }' +
+            '  vec4 c = texture2D(uTex, pos * uUvScale + uUvOffset);' +
             '  float a = uAlpha;' +
+            '  if (uNoise > 0.001) {' +
+            '    float r = hash12(floor(vPos * uSize) + vec2(uSeed));' +
+            '    a = clamp(a + (r - 0.5) * 2.0 * uNoise, 0.0, 1.0);' +
+            '  }' +
             '  if (uReveal < 1.0) {' +
             '    float d = length((vPos - vec2(0.5, 0.5)) * uSize) / length(uSize * 0.5);' +
             '    if (d > uReveal) { a = 0.0; }' +
@@ -142,10 +192,16 @@ private const val SETTLE_NANOS = 500_000_000L
             uSize: gl.getUniformLocation(prog, 'uSize'),
             uAlpha: gl.getUniformLocation(prog, 'uAlpha'),
             uReveal: gl.getUniformLocation(prog, 'uReveal'),
+            uPixelate: gl.getUniformLocation(prog, 'uPixelate'),
+            uNoise: gl.getUniformLocation(prog, 'uNoise'),
+            uVoronoi: gl.getUniformLocation(prog, 'uVoronoi'),
+            uSeed: gl.getUniformLocation(prog, 'uSeed'),
             layers: [],
             videos: {},
             images: {},
             readBuf: null,
+            // Frame counter driving the animated grain seed; kept small (& 1023) so it stays exact.
+            frame: 0,
             active: false,
             // Set when a hidden <video> presents a new frame (requestVideoFrameCallback) or an
             // image finishes loading, so the paused render loop knows to draw exactly one frame.
@@ -179,6 +235,9 @@ private const val SETTLE_NANOS = 500_000_000L
             gl.viewport(0, 0, canvas.width, canvas.height);
             gl.clearColor(0, 0, 0, 1);
             gl.clear(gl.COLOR_BUFFER_BIT);
+            // Advance the grain seed once per frame so a NOISE dissolve animates rather than freezes.
+            S.frame = (S.frame + 1) & 1023;
+            gl.uniform1f(S.uSeed, S.frame);
             const stageAspect = canvas.width / canvas.height;
             for (let i = 0; i < S.layers.length; i++) {
                 const layer = S.layers[i];
@@ -239,6 +298,9 @@ private const val SETTLE_NANOS = 500_000_000L
                 gl.uniform2f(S.uSize, canvas.width, canvas.height);
                 gl.uniform1f(S.uAlpha, layer.alpha);
                 gl.uniform1f(S.uReveal, layer.reveal);
+                gl.uniform1f(S.uPixelate, layer.pixelate);
+                gl.uniform1f(S.uNoise, layer.noise);
+                gl.uniform1f(S.uVoronoi, layer.voronoi);
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
         };
@@ -260,7 +322,10 @@ private const val SETTLE_NANOS = 500_000_000L
             dy: old ? old.dy : 0,
             reveal: old ? old.reveal : 1,
             offsetX: old ? old.offsetX : 50,
-            offsetY: old ? old.offsetY : 50
+            offsetY: old ? old.offsetY : 50,
+            pixelate: old ? old.pixelate : 0,
+            noise: old ? old.noise : 0,
+            voronoi: old ? old.voronoi : 0
         });
     }
     S.layers = next;
@@ -333,21 +398,22 @@ private const val SETTLE_NANOS = 500_000_000L
 """)
 private external fun jsWebGLSyncStructure(structJson: String, playing: Boolean)
 
-// Pushes the fast-changing per-frame values (8 numbers per layer, in stack order: position, alpha,
-// dx, dy, reveal, offsetX, offsetY, volume) as a flat CSV — parsed with a cheap split, no JSON.parse
-// and no per-tick object allocation. The structure must already be in place (jsWebGLSyncStructure);
-// if the count does not match yet, the tick is skipped and the next one applies. Video layers
-// re-seek here when they drift more than 0.5s from their target position, and apply their (clamped)
-// volume so a keyframed envelope is honored in the preview (the top video is the only audible one).
+// Pushes the fast-changing per-frame values (11 numbers per layer, in stack order: position, alpha,
+// dx, dy, reveal, offsetX, offsetY, volume, pixelate, noise, voronoi) as a flat CSV — parsed with a
+// cheap split, no JSON.parse and no per-tick object allocation. The structure must already be in
+// place (jsWebGLSyncStructure); if the count does not match yet, the tick is skipped and the next
+// one applies. Video layers re-seek here when they drift more than 0.5s from their target position,
+// and apply their (clamped) volume so a keyframed envelope is honored in the preview (the top video
+// is the only audible one).
 @JsFun("""
 (csv) => {
     const S = window.__msWebGLPreview;
     if (!S || !S.layers || S.layers.length === 0) { return; }
     const parts = csv.length ? csv.split(',') : [];
     const n = S.layers.length;
-    if (parts.length !== n * 8) { return; }
+    if (parts.length !== n * 11) { return; }
     for (let i = 0; i < n; i++) {
-        const b = i * 8;
+        const b = i * 11;
         const layer = S.layers[i];
         layer.position = parseFloat(parts[b]);
         layer.alpha = parseFloat(parts[b + 1]);
@@ -357,6 +423,9 @@ private external fun jsWebGLSyncStructure(structJson: String, playing: Boolean)
         layer.offsetX = parseFloat(parts[b + 5]);
         layer.offsetY = parseFloat(parts[b + 6]);
         layer.volume = parseFloat(parts[b + 7]);
+        layer.pixelate = parseFloat(parts[b + 8]);
+        layer.noise = parseFloat(parts[b + 9]);
+        layer.voronoi = parseFloat(parts[b + 10]);
         if (layer.kind === 'video') {
             const entry = S.videos[layer.key];
             if (entry && entry.el) {
@@ -453,9 +522,9 @@ private fun structuralJson(layers: List<WebGLPreviewLayer>): String = buildStrin
 }
 
 /**
- * Serializes the fast-changing per-frame values as a flat CSV (8 numbers per layer, in stack order:
- * position, alpha, dx, dy, reveal, offsetX, offsetY, volume) — cheaper to build and parse than JSON
- * and allocation-free on the JS side.
+ * Serializes the fast-changing per-frame values as a flat CSV (11 numbers per layer, in stack order:
+ * position, alpha, dx, dy, reveal, offsetX, offsetY, volume, pixelate, noise, voronoi) — cheaper to
+ * build and parse than JSON and allocation-free on the JS side.
  */
 private fun frameCsv(layers: List<WebGLPreviewLayer>): String = buildString {
     layers.forEachIndexed { index, layer ->
@@ -467,7 +536,10 @@ private fun frameCsv(layers: List<WebGLPreviewLayer>): String = buildString {
         append(layer.revealRadiusFraction).append(',')
         append(layer.offsetXPercent).append(',')
         append(layer.offsetYPercent).append(',')
-        append(layer.volume)
+        append(layer.volume).append(',')
+        append(layer.pixelateFraction).append(',')
+        append(layer.noiseFraction).append(',')
+        append(layer.voronoiFraction)
     }
 }
 

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -183,6 +184,8 @@ private fun EditorTopBar(
     val movie = viewModel.currentMovie ?: return
     var editingTitle by remember(movie.id) { mutableStateOf(false) }
     var titleDraft by remember(movie.id) { mutableStateOf(movie.title) }
+    var editingDescription by remember(movie.id) { mutableStateOf(false) }
+    var descriptionDraft by remember(movie.id) { mutableStateOf(movie.description) }
 
     Row(
         modifier = Modifier
@@ -194,36 +197,79 @@ private fun EditorTopBar(
         RoundIconButton("←", contentDescription = "Back to movies", size = 34.dp) { viewModel.goToDashboard() }
         Spacer(Modifier.width(8.dp))
 
-        if (editingTitle) {
-            StudioTextField(
-                value = titleDraft,
-                onValueChange = { titleDraft = it },
-                modifier = Modifier.width(280.dp),
-                singleLine = true,
-                onDismiss = { editingTitle = false },
-                onSubmit = {
-                    viewModel.updateMovie(movie.copy(title = titleDraft.trim()))
-                    editingTitle = false
+        Column {
+            if (editingTitle) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StudioTextField(
+                        value = titleDraft,
+                        onValueChange = { titleDraft = it },
+                        modifier = Modifier.width(280.dp),
+                        singleLine = true,
+                        onDismiss = { editingTitle = false },
+                        onSubmit = {
+                            viewModel.updateMovie(movie.copy(title = titleDraft.trim()))
+                            editingTitle = false
+                        }
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    PillButton("Save", compact = true, enabled = titleDraft.isNotBlank()) {
+                        viewModel.updateMovie(movie.copy(title = titleDraft.trim()))
+                        editingTitle = false
+                    }
                 }
-            )
-            Spacer(Modifier.width(6.dp))
-            PillButton("Save", compact = true, enabled = titleDraft.isNotBlank()) {
-                viewModel.updateMovie(movie.copy(title = titleDraft.trim()))
-                editingTitle = false
+            } else {
+                Text(
+                    movie.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { titleDraft = movie.title; editingTitle = true }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
             }
-        } else {
-            Text(
-                movie.title,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { titleDraft = movie.title; editingTitle = true }
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            )
+
+            // The movie's description, shown and editable right under the title. Click to edit
+            // inline (multi-line); a blank description shows a subtle prompt to add one.
+            if (editingDescription) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StudioTextField(
+                        value = descriptionDraft,
+                        onValueChange = { descriptionDraft = it },
+                        modifier = Modifier.width(280.dp),
+                        placeholder = "Description",
+                        minLines = 2,
+                        onDismiss = { editingDescription = false },
+                        onSubmit = {
+                            viewModel.updateMovie(movie.copy(description = descriptionDraft.trim()))
+                            editingDescription = false
+                        }
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    PillButton("Save", compact = true) {
+                        viewModel.updateMovie(movie.copy(description = descriptionDraft.trim()))
+                        editingDescription = false
+                    }
+                }
+            } else {
+                Text(
+                    movie.description.ifBlank { "Add a description" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (movie.description.isBlank())
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .widthIn(max = 280.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { descriptionDraft = movie.description; editingDescription = true }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
         }
 
         Spacer(Modifier.width(10.dp))

@@ -223,15 +223,23 @@ fun StudioTextField(
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                    // A long press is a press still held after the platform long-press timeout.
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    // A long press is a press still held after the platform long-press timeout —
+                    // but only while the pointer stays put. If it wanders past the touch slop the
+                    // user is selecting text / dragging, not holding to dictate, so we bail out and
+                    // never start voice input.
+                    var movedTooFar = false
                     val releasedEarly = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             if (event.changes.none { it.pressed }) break
+                            if (event.changes.any { (it.position - down.position).getDistance() > viewConfiguration.touchSlop }) {
+                                movedTooFar = true
+                                break
+                            }
                         }
                     }
-                    if (releasedEarly == null) {
+                    if (releasedEarly == null && !movedTooFar) {
                         // Dictate for as long as the press is held. A failing platform bridge
                         // must never kill this pointer handler (that would disable dictation
                         // for the rest of the field's lifetime).

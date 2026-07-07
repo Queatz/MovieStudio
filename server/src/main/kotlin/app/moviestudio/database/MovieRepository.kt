@@ -33,7 +33,11 @@ object MovieRepository {
 
     fun update(movie: Movie): Movie {
         val doc = toDoc(movie)
-        ArangoDatabase.db.collection(COLLECTION.collectionName).updateDocument(movie.id, RawJson.of(doc))
+        // replaceDocument (not update) so fields reset to their default are persisted. With a
+        // partial update, defaults omitted by the serializer (encodeDefaults = false) — e.g. the
+        // aspectRatio switched back to "16:9" — would be merge-kept at their old value, silently
+        // reverting the user's change.
+        ArangoDatabase.db.collection(COLLECTION.collectionName).replaceDocument(movie.id, RawJson.of(doc))
         return movie
     }
 

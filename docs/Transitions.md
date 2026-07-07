@@ -95,6 +95,8 @@ data class TransitionVisual(
     val translateYFraction: Float = 0f,  // slide offset, fraction of stage (+ = down)
     val revealRadiusFraction: Float = 1f,// centered circular reveal (1 = no mask, 0 = nothing)
     val pixelateFraction: Float = 0f,    // mosaic amount (0 = crisp, 1 = maximally blocky)
+    val noiseFraction: Float = 0f,       // grain/dissolve amount (0 = clean, 1 = fully speckled)
+    val voronoiFraction: Float = 0f,     // voronoi-cell amount (0 = crisp, 1 = coarse cells)
 )
 fun TransitionSpec.visualAt(progress: Float): TransitionVisual
 ```
@@ -107,13 +109,19 @@ fun TransitionSpec.visualAt(progress: Float): TransitionVisual
     at full opacity — **no** cross-fade.
   - `PIXELATE` → the clip resolves out of large mosaic blocks (`pixelateFraction = 1 - p`) while it
     cross-fades in (`alpha = p`).
-  - `ALPHA` / `NOISE` / `VORONOI` → a cross-fade (`alpha = p`).
+  - `NOISE` → the clip emerges from grain/dissolve speckle (`noiseFraction = 1 - p`) while it
+    cross-fades in (`alpha = p`).
+  - `VORONOI` → the clip resolves out of voronoi cells (`voronoiFraction = 1 - p`) while it
+    cross-fades in (`alpha = p`).
+  - `ALPHA` → a plain cross-fade (`alpha = p`).
 - The reveal fraction and slide-offset signs in `visualAt(...)` are defined to match the FFmpeg
   expressions in §4, so those transitions look the same in the preview and the export.
-- **Not every primitive is reproducible everywhere.** Compose modifiers can express `alpha`,
-  `translate` and a circular clip (`revealRadiusFraction`), but *not* an arbitrary mosaic, so the
-  preview leaves `pixelateFraction` to FFmpeg and only shows the accompanying alpha fade. This
-  asymmetry is exactly why a primitive set is a **bridge, not the endgame** — see §7.
+- **Not every primitive is reproducible everywhere.** The GPU-composited **WebGL preview** runs a
+  fragment shader over the frame, so it *can* apply `pixelateFraction` / `noiseFraction` /
+  `voronoiFraction` (see §5). The **default DOM `<video>` + Compose preview** can only express
+  `alpha`, `translate` and a circular clip (`revealRadiusFraction`) — *not* an arbitrary mosaic /
+  grain / cell warp — so there the textured transitions fall back to their accompanying alpha fade.
+  This asymmetry is exactly why a primitive set is a **bridge, not the endgame** — see §7.
 
 ---
 
@@ -135,7 +143,7 @@ and applied as follows (clip-local time `0..transitionDur`):
 |------------------|---------------------------------------------------------------------------------------------------------|
 | `SLIDE`          | Overlay `x`/`y` slides the clip in from `direction` (e.g. FROM_RIGHT: `x='if(lt(t-start,dur), W-W*p, 0)'`, FROM_TOP: `y='...-H+H*p...'`), `p=(t-start)/dur` |
 | `ALPHA`          | `format=yuva420p`, `fade=t=in:st=0:d=dur:alpha=1` (alpha fade-in)                                        |
-| `NOISE`          | alpha fade-in **+** `noise=alls=48:allf=t:enable='between(t,0,dur)'`                                     |
+| `NOISE`          | alpha fade-in **+** `noise=c3s=48:c3f=t:enable='between(t,0,dur)'` (grain on the alpha plane only)       |
 | `VORONOI`        | alpha fade-in **+** `pixelize=width=42:height=42:enable='between(t,0,dur)'`                              |
 | `PIXELATE`       | alpha fade-in **+** **animated mosaic** (see below)                                                     |
 | `CIRCLE`         | `format=yuva420p` **+** growing circular alpha mask via `geq` (see below) — no fade                     |
@@ -183,11 +191,33 @@ applies the shared `visualAt(progressAt(...))` to every visual clip under the pl
   `VideoPlayer` (below).
 - **Description-only cards** are *not* transitioned, matching FFmpeg (those items skip the
   transition block in the render).
-- **Pixelate** shows only its alpha fade in the preview (Compose can't mosaic the content); the real
-  animated blocks appear in the export. See §7 for why and the plan to close this gap.
+- **Pixelate / Noise / Voronoi** show only their alpha fade in the **default DOM preview** (Compose
+  can't mosaic/grain the content); the real textured animation appears in the export and in the
+  **WebGL preview** (below).
 
 Because a transitioning clip becomes partly transparent / offset, the lower-`zIndex` clips (or the
 black stage) show through exactly as the FFmpeg overlay reveals `currentVideoTag`.
+
+### 5.1 The WebGL preview applies the textured transitions too
+
+The optional **WebGL preview** (`app/shared/.../WebGLPreview.{wasmJs,js}.kt`, chosen from the
+renderer dropdown) composites every layer on the GPU and reads the frame back into the Compose
+scene graph. Because it runs a real fragment shader, it applies the textured primitives the DOM
+overlay can't, so it matches the FFmpeg export far more closely:
+
+- **`PIXELATE`** — the sampling position is quantized into square blocks whose size shrinks from
+  ~48px to 1px as the transition completes (`blockPx = max(1, 48 * pixelateFraction)`), mirroring
+  the FFmpeg nearest-neighbor down/up-scale.
+- **`VORONOI`** — each pixel is sampled at the nearest random cell seed found over a 3×3 grid of
+  cells whose size shrinks to per-pixel (crisp) as the transition completes
+  (`cellPx = max(1, 60 * voronoiFraction)`), so the clip resolves out of cells.
+- **`NOISE`** — the clip's alpha is speckled with a per-pixel hash grain that fades out as the
+  transition completes (`a = clamp(alpha + (rand - 0.5) * 2 * noiseFraction, 0, 1)`); a per-frame
+  seed animates the grain.
+
+The shader uses `precision highp float` (guaranteed by the preferred WebGL2 context) so the
+hash-based grain/cells keep precision. The three amounts travel to the shader through the per-frame
+CSV bridge alongside the existing alpha / translate / reveal values.
 
 ---
 
@@ -252,9 +282,10 @@ model):** a transition becomes a fragment shader `transition(vec2 uv, float prog
 - **Preview (GPU):** run the shader over the two frames — Android `RuntimeShader` (AGSL) and desktop
   Skia `RuntimeEffect` (`org.jetbrains.skia.RuntimeEffect`) already exist in Compose Multiplatform.
   On **web** this means promoting the preview from a DOM `<video>` overlay to a `<canvas>` that draws
-  the decoded video frame and runs the shader in WebGL — the biggest single piece of work, but it
-  also removes the overlay's current transform limitations (it's why pixelate/arbitrary effects are
-  impossible on web today).
+  the decoded video frame and runs the shader in WebGL — the biggest single piece of work. The
+  optional **WebGL preview** (§5.1) is already this canvas-and-shader path and shows why it removes
+  the DOM overlay's transform limitations (pixelate / noise / voronoi run there today); generalizing
+  it to arbitrary GL-Transitions shaders is the remaining step.
 - **Export (FFmpeg):** the same GLSL runs via the `gl-transition` filter, or we lean on FFmpeg's
   built-in **`xfade`** filter, which already ships ~50 transitions (`fade`, `wipe*`, `slide*`,
   `circleopen`/`circleclose`/`circlecrop`, `pixelize`, `dissolve`, `radial`, …) plus a `custom=`
@@ -272,12 +303,10 @@ export in lock-step for the transitions we ship.
 
 ## 8. Remaining gaps
 
-- **Pixelate is fade-only in the preview.** The export animates the real mosaic; the preview shows
-  the accompanying alpha fade because Compose can't mosaic content and the web video is a DOM
-  overlay. Closing this needs the shader/canvas preview from §7.
-- **Grain detail is fade-only in the preview.** `NOISE` and `VORONOI` add their FFmpeg grain on top
-  of the fade in the export; the preview approximates them as the dominant alpha fade (timing and
-  reveal match; the texture doesn't).
+- **Pixelate / Noise / Voronoi are fade-only in the *default* DOM preview.** Compose can't mosaic /
+  grain content and the web video is a DOM overlay, so the default preview shows only the
+  accompanying alpha fade. The **WebGL preview** (§5.1) and the FFmpeg export both apply the real
+  textured animation; switching the renderer to WebGL closes the gap.
 - **Transition-out** is still unsupported (see the note at the top).
 - **`CIRCLE`'s `geq` mask is per-pixel per-frame**, so it's the most expensive transition to render;
   the `xfade=circleopen` route in §7 would be cheaper.
@@ -292,13 +321,14 @@ export in lock-step for the transitions we ship.
   template for future per-type parameters.
 - The window math (`progressAt`) and the effect mapping (`visualAt` → `TransitionVisual`) live in
   **shared `core` code** as a small set of orthogonal **primitives** (alpha / translate / circular
-  reveal / pixelate), so the preview and FFmpeg stay in lock-step.
-- **`CIRCLE`** is now a real growing circular reveal (FFmpeg `geq` alpha mask; preview
-  `CircleRevealShape` / web `clip-path`), and **`PIXELATE`** now **animates** the mosaic in the
-  export (time-varying nearest-neighbor down/up-scale) instead of a constant block size.
+  reveal / pixelate / noise / voronoi), so the preview and FFmpeg stay in lock-step.
+- **`CIRCLE`** is a real growing circular reveal (FFmpeg `geq` alpha mask; preview
+  `CircleRevealShape` / web `clip-path`), **`PIXELATE`** **animates** the mosaic (time-varying
+  nearest-neighbor down/up-scale), and **`NOISE`** / **`VORONOI`** add real grain / voronoi cells.
 - The **live `PreviewPanel` applies transitions** to images (`graphicsLayer` + circle clip) and
   video (via the extended `VideoPlayer`, which honors `alpha` / offset / reveal — on web by driving
-  the DOM overlay's `style.opacity` / position / `clipPath`).
-- Remaining gaps and the path to **hundreds** of transitions (GL-Transitions shaders + `xfade` /
-  `gl-transition`, and a WebGL canvas preview) are in §7–§8; the preview still shows pixelate/noise/
-  voronoi as their dominant fade, and there is no transition-**out**.
+  the DOM overlay's `style.opacity` / position / `clipPath`). The **WebGL preview** additionally
+  runs the `pixelate` / `noise` / `voronoi` primitives in its fragment shader (§5.1).
+- The path to **hundreds** of transitions (GL-Transitions shaders + `xfade` / `gl-transition`) is in
+  §7; the *default* DOM preview still shows the textured transitions as their dominant fade, and
+  there is no transition-**out**.

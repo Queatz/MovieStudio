@@ -287,7 +287,11 @@ private fun WebGLStage(visualClips: List<ActiveClip>, playhead: Float, isPlaying
                 offsetXPercent = effects.offsetX,
                 offsetYPercent = effects.offsetY,
                 // The volume-over-time envelope (when present) evaluated at the playhead.
-                volume = effects.volumeAt((playhead - active.clip.timelineStart).toDouble())
+                volume = effects.volumeAt((playhead - active.clip.timelineStart).toDouble()),
+                // Textured transition amounts the WebGL shader animates (mosaic / grain / cells).
+                pixelateFraction = transitionVisual.pixelateFraction,
+                noiseFraction = transitionVisual.noiseFraction,
+                voronoiFraction = transitionVisual.voronoiFraction
             )
         }
     WebGLPreviewSurface(layers, isPlaying, Modifier.fillMaxSize())

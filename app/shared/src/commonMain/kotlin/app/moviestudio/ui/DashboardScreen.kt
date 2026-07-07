@@ -41,6 +41,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
@@ -145,9 +146,9 @@ fun DashboardScreen(viewModel: AppViewModel) {
     if (showCreateDialog) {
         CreateMovieDialog(
             onDismiss = { showCreateDialog = false },
-            onCreate = { title, aspect ->
+            onCreate = { title, aspect, description ->
                 showCreateDialog = false
-                viewModel.createMovie(title, aspect) // auto-opens once created
+                viewModel.createMovie(title, aspect, description) // auto-opens once created
             }
         )
     }
@@ -200,6 +201,16 @@ private fun MovieCard(movie: Movie, onOpen: () -> Unit, onDelete: () -> Unit) {
                 )
                 RoundIconButton("🗑", contentDescription = "Delete movie", size = 28.dp) { showDeleteConfirm = true }
             }
+            if (movie.description.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    movie.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             Spacer(Modifier.height(4.dp))
             Text(
                 "${formatDuration(movie.totalDuration)} • ${movie.aspectRatio}",
@@ -242,9 +253,10 @@ fun StatusBadge(status: MovieStatus, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun CreateMovieDialog(onDismiss: () -> Unit, onCreate: (String, String) -> Unit) {
+private fun CreateMovieDialog(onDismiss: () -> Unit, onCreate: (String, String, String) -> Unit) {
     var title by remember { mutableStateOf("") }
     var aspect by remember { mutableStateOf(SUPPORTED_ASPECT_RATIOS.first()) }
+    var description by remember { mutableStateOf("") }
 
     StudioDialog(title = "New Movie", onDismiss = onDismiss, width = 440.dp) {
         StudioTextField(
@@ -257,6 +269,15 @@ private fun CreateMovieDialog(onDismiss: () -> Unit, onCreate: (String, String) 
             autoFocus = true
         )
         Spacer(Modifier.height(12.dp))
+        StudioTextField(
+            value = description,
+            onValueChange = { description = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Description",
+            placeholder = "What's this movie about?",
+            minLines = 3
+        )
+        Spacer(Modifier.height(12.dp))
         DropdownSelector(
             label = "Aspect ratio",
             options = SUPPORTED_ASPECT_RATIOS,
@@ -267,7 +288,7 @@ private fun CreateMovieDialog(onDismiss: () -> Unit, onCreate: (String, String) 
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
-            PillButton("Create Movie", enabled = title.isNotBlank()) { onCreate(title.trim(), aspect) }
+            PillButton("Create Movie", enabled = title.isNotBlank()) { onCreate(title.trim(), aspect, description.trim()) }
         }
     }
 }

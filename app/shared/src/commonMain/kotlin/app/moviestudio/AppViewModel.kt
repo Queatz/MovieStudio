@@ -231,7 +231,7 @@ class AppViewModel : ViewModel() {
     }
 
     /** Creates a movie with three default tracks, then opens it right away. */
-    fun createMovie(title: String, aspectRatio: String) {
+    fun createMovie(title: String, aspectRatio: String, description: String = "") {
         viewModelScope.launch {
             isLoading = true
             try {
@@ -241,7 +241,8 @@ class AppViewModel : ViewModel() {
                     totalDuration = 0.0,
                     status = MovieStatus.DRAFT,
                     createdAt = 0, // stamped by the server
-                    aspectRatio = aspectRatio
+                    aspectRatio = aspectRatio,
+                    description = description
                 )
                 val saved = NetworkService.createMovie(movie)
                 for ((index, type) in listOf(TrackType.VIDEO, TrackType.MUSIC, TrackType.VOICE).withIndex()) {

@@ -39,7 +39,11 @@ data class Movie(
     val aspectRatio: String = DEFAULT_ASPECT_RATIO,
     // Optional cover photo (an image asset's URL) shown on the movie card. Set from the image
     // asset dialog; null means the default placeholder poster is shown.
-    val coverImageUrl: String? = null
+    val coverImageUrl: String? = null,
+    // Optional free-form, multi-line description of the movie. Shown (and editable) in the New
+    // Movie dialog, under the title on the dashboard card and in the editor top bar. Blank means
+    // no description has been set.
+    val description: String = ""
 ) {
     companion object {
         const val DEFAULT_ASPECT_RATIO: String = "16:9"
@@ -447,9 +451,17 @@ const val TRANSITION_MIN_SECONDS: Double = 0.05
  *   (+X = right, +Y = down); a slide starts fully off-screen (|fraction| = 1) and settles at 0.
  * - [revealRadiusFraction]: a centered circular reveal mask, as a fraction of the distance from the
  *   center to a corner (0 = nothing shown, 1 = fully revealed / no mask).
- * - [pixelateFraction]: mosaic amount (0 = crisp, 1 = maximally blocky). Compose modifiers cannot
- *   pixelate arbitrary content, so the live preview leaves this to the FFmpeg render and only
- *   approximates a pixelate transition via its [alpha]; see `docs/Transitions.md`.
+ * - [pixelateFraction]: mosaic amount (0 = crisp, 1 = maximally blocky).
+ * - [noiseFraction]: grain/dissolve amount (0 = clean, 1 = fully speckled) applied to the clip's
+ *   alpha, so the clip emerges from noise.
+ * - [voronoiFraction]: voronoi-cell amount (0 = crisp, 1 = coarse cells) — the clip is sampled at
+ *   the nearest random cell seed, so it resolves out of cellular blocks.
+ *
+ * The GPU-composited WebGL preview can express every primitive (including [pixelateFraction],
+ * [noiseFraction] and [voronoiFraction]) because it runs a fragment shader over the frame. The
+ * default DOM `<video>` + Compose preview can only express [alpha], [translateXFraction] /
+ * [translateYFraction] and [revealRadiusFraction], so there the textured transitions fall back to
+ * their accompanying [alpha] cross-fade; see `docs/Transitions.md`.
  *
  * This primitive set is a bridge, not the endgame: truly arbitrary transitions (the "hundreds" of
  * wipes / irises / dissolves / GL-Transitions) are ultimately a `progress`-driven shader that mixes
@@ -460,7 +472,9 @@ data class TransitionVisual(
     val translateXFraction: Float = 0f,
     val translateYFraction: Float = 0f,
     val revealRadiusFraction: Float = 1f,
-    val pixelateFraction: Float = 0f
+    val pixelateFraction: Float = 0f,
+    val noiseFraction: Float = 0f,
+    val voronoiFraction: Float = 0f
 )
 
 /** A clip with no transition: fully opaque, un-offset, fully revealed and crisp. */
@@ -489,11 +503,16 @@ fun TransitionSpec?.progressAt(clipLocalSeconds: Double, clipDuration: Double): 
  * - [TransitionType.CIRCLE]: a centered circular reveal that grows from nothing to full
  *   (`revealRadiusFraction = progress`) at full opacity — no cross-fade.
  * - [TransitionType.PIXELATE]: the clip resolves out of large mosaic blocks
- *   (`pixelateFraction = 1 - progress`) while it cross-fades in (`alpha = progress`). Compose can't
- *   pixelate the preview, so there it shows as the alpha fade; FFmpeg animates the real mosaic.
- * - [TransitionType.ALPHA] / [NOISE] / [VORONOI]: a cross-fade (`alpha = progress`). The extra
- *   grain FFmpeg layers on top of noise / voronoi is not reproducible with Compose modifiers, so
- *   the preview approximates them as the dominant alpha fade.
+ *   (`pixelateFraction = 1 - progress`) while it cross-fades in (`alpha = progress`).
+ * - [TransitionType.NOISE]: the clip emerges from grain/dissolve speckle
+ *   (`noiseFraction = 1 - progress`) while it cross-fades in (`alpha = progress`).
+ * - [TransitionType.VORONOI]: the clip resolves out of voronoi cells
+ *   (`voronoiFraction = 1 - progress`) while it cross-fades in (`alpha = progress`).
+ * - [TransitionType.ALPHA]: a plain cross-fade (`alpha = progress`).
+ *
+ * The WebGL preview and the FFmpeg render both apply the textured [pixelateFraction] /
+ * [noiseFraction] / [voronoiFraction] amounts; the default DOM preview can only express the
+ * accompanying [alpha] cross-fade (see `docs/Transitions.md`).
  */
 fun TransitionSpec.visualAt(progress: Float): TransitionVisual {
     if (type == TransitionType.NONE) return NO_TRANSITION
@@ -510,6 +529,8 @@ fun TransitionSpec.visualAt(progress: Float): TransitionVisual {
         }
         TransitionType.CIRCLE -> TransitionVisual(revealRadiusFraction = p)
         TransitionType.PIXELATE -> TransitionVisual(alpha = p, pixelateFraction = 1f - p)
+        TransitionType.NOISE -> TransitionVisual(alpha = p, noiseFraction = 1f - p)
+        TransitionType.VORONOI -> TransitionVisual(alpha = p, voronoiFraction = 1f - p)
         else -> TransitionVisual(alpha = p)
     }
 }

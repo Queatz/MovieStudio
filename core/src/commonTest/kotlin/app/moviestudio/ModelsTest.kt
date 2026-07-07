@@ -34,6 +34,47 @@ class ModelsTest {
     }
 
     @Test
+    fun visualAtMapsTexturedTransitionsToTheirPrimitives() {
+        // Halfway through the window, each textured transition cross-fades in (alpha = progress)
+        // while its own primitive resolves from strongest (1 - progress) toward crisp/clean.
+        val pixelate = TransitionSpec(TransitionType.PIXELATE).visualAt(0.25f)
+        assertEquals(0.25f, pixelate.alpha, 0.0001f)
+        assertEquals(0.75f, pixelate.pixelateFraction, 0.0001f)
+        assertEquals(0f, pixelate.noiseFraction, 0.0001f)
+        assertEquals(0f, pixelate.voronoiFraction, 0.0001f)
+
+        val noise = TransitionSpec(TransitionType.NOISE).visualAt(0.25f)
+        assertEquals(0.25f, noise.alpha, 0.0001f)
+        assertEquals(0.75f, noise.noiseFraction, 0.0001f)
+        assertEquals(0f, noise.pixelateFraction, 0.0001f)
+        assertEquals(0f, noise.voronoiFraction, 0.0001f)
+
+        val voronoi = TransitionSpec(TransitionType.VORONOI).visualAt(0.25f)
+        assertEquals(0.25f, voronoi.alpha, 0.0001f)
+        assertEquals(0.75f, voronoi.voronoiFraction, 0.0001f)
+        assertEquals(0f, voronoi.pixelateFraction, 0.0001f)
+        assertEquals(0f, voronoi.noiseFraction, 0.0001f)
+
+        // A plain ALPHA fade never touches the textured primitives.
+        val alpha = TransitionSpec(TransitionType.ALPHA).visualAt(0.4f)
+        assertEquals(0.4f, alpha.alpha, 0.0001f)
+        assertEquals(0f, alpha.pixelateFraction, 0.0001f)
+        assertEquals(0f, alpha.noiseFraction, 0.0001f)
+        assertEquals(0f, alpha.voronoiFraction, 0.0001f)
+
+        // Fully settled (progress 1): every textured transition is crisp/clean and fully opaque.
+        for (type in listOf(TransitionType.PIXELATE, TransitionType.NOISE, TransitionType.VORONOI)) {
+            val settled = TransitionSpec(type).visualAt(1f)
+            assertEquals(1f, settled.alpha, 0.0001f)
+            assertEquals(0f, settled.pixelateFraction, 0.0001f)
+            assertEquals(0f, settled.noiseFraction, 0.0001f)
+            assertEquals(0f, settled.voronoiFraction, 0.0001f)
+        }
+        // NONE always yields the identity visual (no effect).
+        assertEquals(NO_TRANSITION, TransitionSpec(TransitionType.NONE).visualAt(0.5f))
+    }
+
+    @Test
     fun volumeEnvelopeInterpolatesLinearlyBetweenKeyframes() {
         val config = EffectsConfig(
             volume = 0.8,
@@ -200,6 +241,26 @@ class ModelsTest {
         val names = MovieStatus.entries.map { it.name }
         assertTrue(names.containsAll(listOf("DRAFT", "IN_PRODUCTION", "RENDERING", "REVIEW", "COMPLETED", "ARCHIVED")))
         assertEquals("In production", MovieStatus.IN_PRODUCTION.displayName())
+    }
+
+    @Test
+    fun movieDescriptionRoundTripsAndLegacyMoviesDecodeWithBlankDescription() {
+        val json = Json { ignoreUnknownKeys = true }
+        // A movie's multi-line description survives a serialization round-trip.
+        val movie = Movie(
+            id = "m1", title = "Heist", totalDuration = 42.0, status = MovieStatus.IN_PRODUCTION,
+            createdAt = 123L, aspectRatio = "16:9",
+            description = "A crew plans one\nlast big score."
+        )
+        val decoded = json.decodeFromString(Movie.serializer(), json.encodeToString(Movie.serializer(), movie))
+        assertEquals(movie, decoded)
+        assertEquals("A crew plans one\nlast big score.", decoded.description)
+        // Movies saved before the description field existed decode with a blank description.
+        val legacy = json.decodeFromString(
+            Movie.serializer(),
+            """{"id":"m2","title":"Old","totalDuration":0.0,"status":"DRAFT","createdAt":0}"""
+        )
+        assertEquals("", legacy.description)
     }
 
     @Test

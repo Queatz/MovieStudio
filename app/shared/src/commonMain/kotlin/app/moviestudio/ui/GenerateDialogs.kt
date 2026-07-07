@@ -121,7 +121,16 @@ fun GenerateMediaDialog(
     var characterIds by remember { mutableStateOf(initialSetup.characterIds) }
     var sceneIds by remember { mutableStateOf(initialSetup.sceneIds) }
     var referenceImages by remember { mutableStateOf(initialSetup.referenceImages) }
-    var duration by remember { mutableStateOf(initialSetup.durationSeconds.coerceIn(2.0, 15.0)) }
+    var duration by remember {
+        // Placeholders carry no stored generation setup, so pre-fill the duration slider from the
+        // asset's own length (it fills in place); real regenerations use their stored setup.
+        val initial = if (initialAsset != null && initialAsset.isDescriptionOnly) {
+            initialAsset.durationSeconds
+        } else {
+            initialSetup.durationSeconds
+        }
+        mutableStateOf(initial.coerceIn(2.0, 15.0))
+    }
     // New generations default to the size whose aspect is closest to the movie's aspect ratio;
     // regenerations keep the size they were originally made with.
     val movieAspect = viewModel.currentMovie?.aspectRatio ?: "16:9"
@@ -1124,7 +1133,16 @@ fun SoundEffectDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDi
         }
     }
     var prompt by remember { mutableStateOf(initialSetup?.prompt ?: initialAsset?.description ?: "") }
-    var duration by remember { mutableStateOf(initialSetup?.durationSeconds?.coerceIn(2.0, 12.0) ?: 5.0) }
+    var duration by remember {
+        // Placeholders carry no stored generation setup, so pre-fill the duration slider from the
+        // asset's own length (it fills in place); real regenerations use their stored setup.
+        val initial = if (initialAsset != null && initialAsset.isDescriptionOnly) {
+            initialAsset.durationSeconds
+        } else {
+            initialSetup?.durationSeconds ?: 5.0
+        }
+        mutableStateOf(initial.coerceIn(2.0, 12.0))
+    }
     var sfxModel by remember {
         mutableStateOf(initialSetup?.sfxModel?.takeIf { it in SUPPORTED_SFX_MODELS } ?: SUPPORTED_SFX_MODELS.first())
     }

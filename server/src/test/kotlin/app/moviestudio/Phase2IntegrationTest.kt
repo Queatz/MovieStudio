@@ -79,7 +79,8 @@ class Phase2IntegrationTest {
             title = "Test Movie Title",
             totalDuration = 180.0,
             status = MovieStatus.DRAFT,
-            createdAt = System.currentTimeMillis()
+            createdAt = System.currentTimeMillis(),
+            aspectRatio = "9:16"
         )
 
         // Insert
@@ -92,6 +93,7 @@ class Phase2IntegrationTest {
         assertEquals(movie.title, retrieved.title)
         assertEquals(movie.totalDuration, retrieved.totalDuration)
         assertEquals(movie.status, retrieved.status)
+        assertEquals("9:16", retrieved.aspectRatio)
 
         // Update — movies can move between all the lifecycle statuses
         val updatedMovie = movie.copy(title = "Updated Movie Title", status = MovieStatus.IN_PRODUCTION)
@@ -102,6 +104,12 @@ class Phase2IntegrationTest {
         assertNotNull(retrievedUpdated)
         assertEquals("Updated Movie Title", retrievedUpdated.title)
         assertEquals(MovieStatus.IN_PRODUCTION, retrievedUpdated.status)
+
+        // Changing the aspect ratio must stick — including switching it back to the default
+        // value. A partial-merge update would drop the (default-valued) field and keep the old
+        // "9:16", so the ratio would silently revert. The persisted value must equal the change.
+        MovieRepository.update(updatedMovie.copy(aspectRatio = Movie.DEFAULT_ASPECT_RATIO))
+        assertEquals(Movie.DEFAULT_ASPECT_RATIO, MovieRepository.getById(movieId)?.aspectRatio)
 
         // List
         val allMovies = MovieRepository.listAll()

@@ -8,7 +8,8 @@ import androidx.compose.ui.Modifier
  * renderer draws for the same clip: the media at [url], center-cropped ("cover") into the stage
  * with the clip's 0-100 crop offsets, and transformed by the transition-in state evaluated at the
  * playhead ([alpha] cross-fade, [translateXFraction]/[translateYFraction] slide as fractions of
- * the stage size, [revealRadiusFraction] centered circular reveal — 1 = fully revealed).
+ * the stage size, [revealRadiusFraction] centered circular reveal — 1 = fully revealed, and the
+ * textured [pixelateFraction]/[noiseFraction]/[voronoiFraction] amounts the shader applies).
  */
 data class WebGLPreviewLayer(
     /** Stable identity of the layer (the clip id); keys the platform's video texture pool. */
@@ -30,7 +31,13 @@ data class WebGLPreviewLayer(
      * at the playhead. Only the top-most video is audible, matching the default renderer; the
      * platform clamps it to the media element's 0..1 range.
      */
-    val volume: Double = 1.0
+    val volume: Double = 1.0,
+    /** Mosaic amount (0 = crisp, 1 = maximally blocky), from [TransitionVisual.pixelateFraction]. */
+    val pixelateFraction: Float = 0f,
+    /** Grain/dissolve amount (0 = clean, 1 = fully speckled), from [TransitionVisual.noiseFraction]. */
+    val noiseFraction: Float = 0f,
+    /** Voronoi-cell amount (0 = crisp, 1 = coarse cells), from [TransitionVisual.voronoiFraction]. */
+    val voronoiFraction: Float = 0f
 )
 
 /** [WebGLPreviewLayer.kind] of a still image (texture uploaded once, cached by URL). */
