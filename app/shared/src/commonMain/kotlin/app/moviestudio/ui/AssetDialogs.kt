@@ -208,6 +208,23 @@ fun AssetDetailsDialog(
             AssetAudioPlayer(asset)
         }
 
+        // ------------------------------------------------------------------- music: lyrics
+        // The lyrics the music model sang, returned alongside the generated track (with its
+        // section markers, e.g. "[verse]"), shown read-only for MUSIC assets that have them.
+        if (asset.type == AssetType.MUSIC && !asset.lyrics.isNullOrBlank()) {
+            SectionLabel("Lyrics")
+            Text(
+                asset.lyrics!!.trim(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            )
+        }
+
         // ------------------------------------------------------------------ voice: transcript
         if (asset.type == AssetType.VOICE) {
             SectionLabel("Transcript")

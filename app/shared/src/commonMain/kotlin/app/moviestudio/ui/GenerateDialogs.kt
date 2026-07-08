@@ -1355,6 +1355,78 @@ private enum class VoiceLibraryTab(val label: String) {
     DESIGN("🎨 Voice Design")
 }
 
+/** The two Voice Design input modes: a free-form description or CosyVoice's guided dimensions. */
+private enum class VoiceDesignMode(val label: String) {
+    SIMPLE("Simple"),
+    DETAILED("Detailed")
+}
+
+// CosyVoice's recommended voice-design dimensions. Combining more of them yields a more precise
+// voice; every field is optional. Each list mirrors CosyVoice's example descriptions.
+private val VOICE_DESIGN_GENDERS = listOf("Male", "Female", "Neutral")
+private val VOICE_DESIGN_AGES =
+    listOf("Child (5-12)", "Teenager (13-18)", "Young adult (19-35)", "Middle-aged (36-55)", "Elderly (55+)")
+private val VOICE_DESIGN_PITCHES = listOf("High", "Mid", "Low", "Slightly high", "Slightly low")
+private val VOICE_DESIGN_SPEEDS = listOf("Fast", "Moderate", "Slow", "Slightly fast", "Slightly slow")
+private val VOICE_DESIGN_EMOTIONS =
+    listOf("Cheerful", "Calm", "Gentle", "Serious", "Lively", "Composed", "Soothing")
+private val VOICE_DESIGN_TIMBRES = listOf("Magnetic", "Crisp", "Husky", "Mellow", "Sweet", "Rich", "Powerful")
+private val VOICE_DESIGN_USE_CASES = listOf(
+    "News broadcasting", "Advertising", "Audiobook", "Animation character", "Voice assistant", "Documentary narration"
+)
+
+/**
+ * Combines the Voice Design inputs the user actually filled out — CosyVoice's guided dimensions
+ * plus any free-form [simple] description — into a single description string sent to the API.
+ * Every field is optional; blanks are skipped and each dimension keeps enough context
+ * (e.g. "High pitch", "for News broadcasting") to stay unambiguous once merged.
+ */
+private fun buildVoiceDesignDescription(
+    simple: String,
+    gender: String,
+    age: String,
+    pitch: String,
+    speed: String,
+    emotion: String,
+    timbre: String,
+    useCase: String,
+    additionalDetails: String
+): String {
+    val parts = buildList {
+        if (gender.isNotBlank()) add(gender)
+        if (age.isNotBlank()) add(age)
+        if (pitch.isNotBlank()) add("$pitch pitch")
+        if (speed.isNotBlank()) add("$speed speed")
+        if (emotion.isNotBlank()) add(emotion)
+        if (timbre.isNotBlank()) add("$timbre timbre")
+        if (useCase.isNotBlank()) add("for $useCase")
+        if (simple.isNotBlank()) add(simple.trim())
+        if (additionalDetails.isNotBlank()) add(additionalDetails.trim())
+    }
+    return parts.joinToString(", ")
+}
+
+/**
+ * A single optional CosyVoice voice-design dimension: a labelled dropdown whose first entry
+ * ("Any") clears the choice. The chosen example description feeds into the combined voice
+ * description (see [buildVoiceDesignDescription]).
+ */
+@Composable
+private fun VoiceDesignDimension(
+    label: String,
+    options: List<String>,
+    selected: String,
+    onSelect: (String) -> Unit
+) {
+    DropdownSelector(
+        label = label,
+        options = listOf("") + options,
+        selected = selected,
+        display = { it.ifBlank { "Any" } },
+        modifier = Modifier.fillMaxWidth()
+    ) { onSelect(it) }
+}
+
 /**
  * Human-readable label for the currently selected voice [voiceId], resolved against the Voice
  * Library ([options]): built-in presets, the user's cloned voices and their designed voices.
@@ -1386,7 +1458,20 @@ fun VoiceLibraryDialog(
 
     // Voice Design create form.
     var designName by remember { mutableStateOf("") }
+    // Which description input is shown: a free-form "Simple" text or CosyVoice's "Detailed" dimensions.
+    var designMode by remember { mutableStateOf(VoiceDesignMode.SIMPLE) }
+    // Simple mode: a single free-form description.
     var designPrompt by remember { mutableStateOf("") }
+    // Detailed mode: CosyVoice's guided dimensions — all optional (blank = unspecified).
+    var designGender by remember { mutableStateOf("") }
+    var designAge by remember { mutableStateOf("") }
+    var designPitch by remember { mutableStateOf("") }
+    var designSpeed by remember { mutableStateOf("") }
+    var designEmotion by remember { mutableStateOf("") }
+    var designTimbre by remember { mutableStateOf("") }
+    var designUseCase by remember { mutableStateOf("") }
+    // Detailed mode: free-form text for anything not covered by the dimensions above.
+    var designAdditionalDetails by remember { mutableStateOf("") }
     var designing by remember { mutableStateOf(false) }
 
     // Any in-progress preview stops when the library closes.
@@ -1456,7 +1541,8 @@ fun VoiceLibraryDialog(
 
             VoiceLibraryTab.DESIGN -> {
                 Text(
-                    "Describe the voice you want and CosyVoice designs it — no recording needed.",
+                    "Describe the voice you want and CosyVoice designs it — no recording needed. " +
+                        "Combine more dimensions for a more precise voice; every field is optional.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1469,28 +1555,92 @@ fun VoiceLibraryDialog(
                     placeholder = "Old sea captain",
                     singleLine = true
                 )
+                Spacer(Modifier.height(10.dp))
+
+                // Simple (free-form) vs Detailed (CosyVoice's guided dimensions) description input.
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    VoiceDesignMode.entries.forEach { mode ->
+                        if (mode == designMode) {
+                            PillButton(mode.label, compact = true) { designMode = mode }
+                        } else {
+                            GhostPillButton(mode.label, compact = true) { designMode = mode }
+                        }
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
-                StudioTextField(
-                    value = designPrompt,
-                    onValueChange = { designPrompt = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = "Voice description",
-                    placeholder = "A warm, gravelly older man with a slow, weathered storyteller's cadence.",
-                    minLines = 2,
-                    maxLines = 4
+
+                when (designMode) {
+                    VoiceDesignMode.SIMPLE -> {
+                        StudioTextField(
+                            value = designPrompt,
+                            onValueChange = { designPrompt = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Voice description",
+                            placeholder = "A warm, gravelly older man with a slow, weathered storyteller's cadence.",
+                            minLines = 2,
+                            maxLines = 4
+                        )
+                    }
+
+                    VoiceDesignMode.DETAILED -> {
+                        VoiceDesignDimension("Gender", VOICE_DESIGN_GENDERS, designGender) { designGender = it }
+                        Spacer(Modifier.height(8.dp))
+                        VoiceDesignDimension("Age", VOICE_DESIGN_AGES, designAge) { designAge = it }
+                        Spacer(Modifier.height(8.dp))
+                        VoiceDesignDimension("Pitch", VOICE_DESIGN_PITCHES, designPitch) { designPitch = it }
+                        Spacer(Modifier.height(8.dp))
+                        VoiceDesignDimension("Speed", VOICE_DESIGN_SPEEDS, designSpeed) { designSpeed = it }
+                        Spacer(Modifier.height(8.dp))
+                        VoiceDesignDimension("Emotion", VOICE_DESIGN_EMOTIONS, designEmotion) { designEmotion = it }
+                        Spacer(Modifier.height(8.dp))
+                        VoiceDesignDimension("Timbre", VOICE_DESIGN_TIMBRES, designTimbre) { designTimbre = it }
+                        Spacer(Modifier.height(8.dp))
+                        VoiceDesignDimension("Use case", VOICE_DESIGN_USE_CASES, designUseCase) { designUseCase = it }
+                        Spacer(Modifier.height(8.dp))
+                        StudioTextField(
+                            value = designAdditionalDetails,
+                            onValueChange = { designAdditionalDetails = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Additional details (optional)",
+                            placeholder = "Anything else you'd like to add about the voice.",
+                            minLines = 2,
+                            maxLines = 4
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+
+                // Everything the user filled in — across both modes — is merged into one description.
+                val designDescription = buildVoiceDesignDescription(
+                    simple = designPrompt,
+                    gender = designGender,
+                    age = designAge,
+                    pitch = designPitch,
+                    speed = designSpeed,
+                    emotion = designEmotion,
+                    timbre = designTimbre,
+                    useCase = designUseCase,
+                    additionalDetails = designAdditionalDetails
                 )
-                Spacer(Modifier.height(8.dp))
                 PillButton(
                     if (designing) "Designing..." else "🎨 Design voice",
                     compact = true,
-                    enabled = designName.isNotBlank() && designPrompt.isNotBlank() && !designing
+                    enabled = designName.isNotBlank() && designDescription.isNotBlank() && !designing
                 ) {
                     designing = true
-                    viewModel.createVoiceDesign(designName.trim(), designPrompt.trim()) { design ->
+                    viewModel.createVoiceDesign(designName.trim(), designDescription) { design ->
                         designing = false
                         if (design != null) {
                             designName = ""
                             designPrompt = ""
+                            designGender = ""
+                            designAge = ""
+                            designPitch = ""
+                            designSpeed = ""
+                            designEmotion = ""
+                            designTimbre = ""
+                            designUseCase = ""
+                            designAdditionalDetails = ""
                             choose(design.qwenVoiceId)
                         }
                     }

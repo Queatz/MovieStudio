@@ -128,6 +128,10 @@ data class Asset(
     val description: String? = null,
     // For voice media types (voiceover), the auto-generated (and user-editable) transcript text.
     val transcript: String? = null,
+    // For MUSIC assets generated with vocals: the lyrics returned by the music model (Fun-Music),
+    // including its section markers (e.g. "[verse]"). Null for instrumental tracks or media that
+    // carries no lyrics.
+    val lyrics: String? = null,
     // Per-word timings backing the transcript, used by the transcript editor/viewer.
     val wordTimings: List<WordTiming> = emptyList(),
     // Playback offset (seconds) into the source media file. Used by clipped sound effects that
@@ -980,7 +984,7 @@ val SUPPORTED_VIDEO_SIZES: List<String> = listOf(
 /**
  * Image generation sizes offered by the text-to-image / image-edit models. Includes every
  * [SUPPORTED_VIDEO_SIZES] tier (so a movie's chosen size lines up across image and video
- * generations) plus the larger sizes qwen-image-max additionally supports.
+ * generations) plus the larger sizes qwen-image-2.0-pro additionally supports.
  */
 val SUPPORTED_IMAGE_SIZES: List<String> = listOf(
     "1024*1024", "1280*720", "720*1280", "768*1024", "1024*768",

@@ -172,7 +172,7 @@ object QwenAIService : AIGenerationService {
 
     /**
      * Builds the ledger entry for an image-generation/edit call. Unlike the chat/TTS models,
-     * Qwen-Image (`qwen-image-max` / `qwen-image-edit-max`) is billed per generated image at a
+     * Qwen-Image (`qwen-image-2.0-pro` / `qwen-image-edit-2.0-pro`) is billed per generated image at a
      * flat price, so its response never carries an `input_tokens`/`output_tokens` usage block -
      * feeding it through [recordCall] always logged 0 tokens and $0.00, which is the bug this
      * works around. We still record a meaningful, non-zero token figure by converting the image's
@@ -548,7 +548,7 @@ object QwenAIService : AIGenerationService {
         val baseImageUrl = setup.imageUrl?.takeIf { it.isNotBlank() }?.let(OssService::freshDownloadUrl)
         val model = if (baseImageUrl != null) QwenConfig.imageEditModel else QwenConfig.imageModel
         onProgress(15, if (baseImageUrl != null) "Submitting image edit task ($model)..." else "Submitting image task ($model)...")
-        // The qwen-image family (both the plain and edit variants) is only exposed through the
+        // The qwen-image 2.0 family (both the plain and edit variants) is only exposed through the
         // chat-style multimodal-generation/generation endpoint - the legacy Wanx
         // aigc/text2image and aigc/image2image endpoints reject qwen-image-* model names with
         // HTTP 400 "url error, please check url！" (model name / API endpoint mismatch).
@@ -607,7 +607,12 @@ object QwenAIService : AIGenerationService {
      * prompt, optional full lyrics and an instrumental switch, returning a 24h OSS URL that we
      * immediately re-host on our own bucket.
      */
-    private suspend fun executeMusic(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
+    private suspend fun executeMusic(
+        job: Job,
+        payload: AiJobPayload,
+        ledger: MutableList<AiLedgerEntry>,
+        onProgress: suspend (Int, String) -> Unit,
+    ) {
         val setup = payload.setup
         onProgress(20, "Composing music with ${QwenConfig.musicModel}...")
         val requestBody = buildMusicRequestBody(setup, QwenConfig.musicModel)
@@ -617,14 +622,19 @@ object QwenAIService : AIGenerationService {
             async = false,
             timeoutSeconds = 300
         )
-        val audio = response["output"]?.jsonObject?.get("audio")?.jsonObject
+        val output = response["output"]?.jsonObject
+        val audio = output?.get("audio")?.jsonObject
         val mediaUrl = audio?.get("url")?.jsonPrimitive?.contentOrNull
             ?: throw IllegalStateException("Fun-Music response missing output.audio.url: $response")
+        // Fun-Music returns the (generated or supplied) lyrics — with its section markers such as
+        // "[verse]" — under output.extra_info.lyrics. Persist them on the asset so the music
+        // dialog can show what is being sung. Instrumental tracks report no lyrics (left null).
+        val lyrics = extractMusicLyrics(response)
         ledger.recordCall("Composed music (${QwenConfig.musicModel})", QwenConfig.musicModel, response)
 
         onProgress(80, "Uploading generated music to Alibaba OSS...")
         val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "music", "mp3", 30.0)
-        GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
+        GenerationCommon.finalize(job, payload, ossUrl, duration, lyrics = lyrics, ledgerEntries = ledger)
     }
 
     /**
@@ -648,6 +658,19 @@ object QwenAIService : AIGenerationService {
             put("instrumental", setup.instrumental)
         }
     }
+
+    /**
+     * Extracts the lyrics Fun-Music returns alongside a generated track. The model reports them
+     * under `output.extra_info.lyrics`, including its section markers (e.g. "[verse]"). Returns the
+     * trimmed lyrics, or null when the response carries none (instrumental tracks). Pure and
+     * network-free so it can be unit-tested (see `QwenMusicRequestTest`).
+     */
+    internal fun extractMusicLyrics(response: JsonObject): String? =
+        response["output"]?.jsonObject
+            ?.get("extra_info")?.jsonObject
+            ?.get("lyrics")?.jsonPrimitive?.contentOrNull
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
 
     /**
      * Qwen TTS with a preset or cloned voice. The input text becomes the stored transcript.

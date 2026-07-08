@@ -213,6 +213,7 @@ object GenerationCommon {
         durationSeconds: Double,
         transcript: String? = null,
         wordTimings: List<WordTiming> = emptyList(),
+        lyrics: String? = null,
         sourceOffsetSeconds: Double = 0.0,
         // AI calls made while producing this media; appended to the asset's cost ledger.
         ledgerEntries: List<AiLedgerEntry> = emptyList()
@@ -248,6 +249,7 @@ object GenerationCommon {
                 ledger = existing.ledger + ledgerEntries,
                 voice = payload.setup.voice.ifBlank { existing.voice },
                 transcript = transcript ?: existing.transcript,
+                lyrics = lyrics ?: existing.lyrics,
                 wordTimings = wordTimings.ifEmpty { existing.wordTimings },
                 sourceOffsetSeconds = sourceOffsetSeconds
             )
@@ -283,6 +285,7 @@ object GenerationCommon {
                 ledger = ledgerEntries,
                 voice = payload.setup.voice.ifBlank { null },
                 transcript = transcript,
+                lyrics = lyrics,
                 wordTimings = wordTimings,
                 sourceOffsetSeconds = sourceOffsetSeconds,
                 createdAt = now

@@ -1,6 +1,7 @@
 package app.moviestudio
 
 import app.moviestudio.service.QwenAIService
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
@@ -72,5 +73,52 @@ class QwenMusicRequestTest {
         assertEquals("Jazzy lo-fi beat", input.str("prompt"))
         assertEquals("male", input.str("gender"))
         assertFalse(input.containsKey("lyrics"))
+    }
+
+    @Test
+    fun lyricsAreExtractedFromExtraInfoWithSectionMarkersPreserved() {
+        // Mirrors the real Fun-Music response shape (output.extra_info.lyrics).
+        val response = Json.parseToJsonElement(
+            """
+            {
+              "output": {
+                "audio": {"url": "http://example.com/track.mp3"},
+                "extra_info": {"channels": 2, "lyrics": "[intro]\n\n[verse]\nWe rise together into the light\n\n[outro]\n", "sample_rate": 48000},
+                "finish_reason": "stop"
+              },
+              "usage": {"duration": 166, "input_tokens": 181}
+            }
+            """.trimIndent()
+        ).jsonObject
+
+        val lyrics = QwenAIService.extractMusicLyrics(response)
+
+        assertEquals("[intro]\n\n[verse]\nWe rise together into the light\n\n[outro]", lyrics)
+    }
+
+    @Test
+    fun instrumentalResponseWithoutLyricsYieldsNull() {
+        val response = Json.parseToJsonElement(
+            """
+            {
+              "output": {
+                "audio": {"url": "http://example.com/track.mp3"},
+                "extra_info": {"channels": 2, "sample_rate": 48000},
+                "finish_reason": "stop"
+              }
+            }
+            """.trimIndent()
+        ).jsonObject
+
+        assertNull(QwenAIService.extractMusicLyrics(response))
+    }
+
+    @Test
+    fun blankLyricsYieldNull() {
+        val response = Json.parseToJsonElement(
+            """{"output": {"extra_info": {"lyrics": "   \n  "}}}"""
+        ).jsonObject
+
+        assertNull(QwenAIService.extractMusicLyrics(response))
     }
 }

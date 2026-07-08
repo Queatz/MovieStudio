@@ -20,8 +20,8 @@ import org.slf4j.LoggerFactory
  * - QWEN_VIDEO_MODEL_I2V       WAN image-to-video model (default wan2.7-i2v).
  * - QWEN_VIDEO_MODEL_R2V       WAN reference-to-video model (default wan2.7-r2v).
  * - QWEN_VIDEO_MODEL_EDIT      WAN video-editing model (default wan2.7-videoedit).
- * - QWEN_IMAGE_MODEL           Text-to-image model (default qwen-image-max).
- * - QWEN_IMAGE_EDIT_MODEL      Image-to-image editing model (default qwen-image-edit-max-2026-01-16).
+ * - QWEN_IMAGE_MODEL           Text-to-image model (default qwen-image-2.0-pro).
+ * - QWEN_IMAGE_EDIT_MODEL      Image-to-image editing model (default qwen-image-edit-2.0-pro).
  * - QWEN_MUSIC_MODEL           Music generation model (default fun-music-v1).
  * - QWEN_TTS_MODEL             Text-to-speech model (default qwen-tts).
  * - QWEN_TTS_INSTRUCT_MODEL    Instruction-following TTS model used when voice instructions
@@ -56,8 +56,8 @@ object QwenConfig {
     // repaints/edits the source clip. Selected when a base video is attached to the setup.
     val videoModelEdit: String = Env.get("QWEN_VIDEO_MODEL_EDIT", "wan2.7-videoedit")
 
-    val imageModel: String = Env.get("QWEN_IMAGE_MODEL", "qwen-image-max")
-    val imageEditModel: String = Env.get("QWEN_IMAGE_EDIT_MODEL", "qwen-image-edit-max-2026-01-16")
+    val imageModel: String = Env.get("QWEN_IMAGE_MODEL", "qwen-image-2.0-pro")
+    val imageEditModel: String = Env.get("QWEN_IMAGE_EDIT_MODEL", "qwen-image-edit-2.0-pro")
     val musicModel: String = Env.get("QWEN_MUSIC_MODEL", "fun-music-v1")
     val ttsModel: String = Env.get("QWEN_TTS_MODEL", "qwen3-tts-flash")
     // Instruction-following TTS (Qwen instruct): selected when the generation setup carries voice
@@ -107,7 +107,7 @@ object QwenConfig {
         return perMillion / 1_000_000.0
     }
 
-    // Qwen-Image (`qwen-image-max` / `qwen-image-edit-max`) is billed per generated image at a
+    // Qwen-Image (`qwen-image-2.0-pro` / `qwen-image-edit-2.0-pro`) is billed per generated image at a
     // flat price (Alibaba tiers it by resolution on their side), not per token, so its response
     // carries no `input_tokens`/`output_tokens` usage block - unlike the ledger's other AI calls.
     // Overridable via env.

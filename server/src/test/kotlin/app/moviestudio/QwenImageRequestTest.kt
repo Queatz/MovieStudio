@@ -27,7 +27,7 @@ class QwenImageRequestTest {
     fun textToImageSendsOnlyTextContent() {
         val setup = GenerationSetup(kind = "image", prompt = "A moonlit street", resolution = "1024x768")
 
-        val body = QwenAIService.buildImageRequestBody(setup, "qwen-image-max")
+        val body = QwenAIService.buildImageRequestBody(setup, "qwen-image-2.0-pro")
         val content = body.firstContent()
 
         assertEquals("A moonlit street", content.single().jsonObject.str("text"))
@@ -40,7 +40,7 @@ class QwenImageRequestTest {
         val staleUrl = ossUrl(objectKey)
         val setup = GenerationSetup(kind = "image", prompt = "Restyle", imageUrl = staleUrl)
 
-        val body = QwenAIService.buildImageRequestBody(setup, "qwen-image-edit-max-2026-01-16")
+        val body = QwenAIService.buildImageRequestBody(setup, "qwen-image-edit-2.0-pro")
         val content = body.firstContent()
         val imageUrl = content.first().jsonObject.str("image")
 
