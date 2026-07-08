@@ -40,6 +40,7 @@ import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.GenerationSetup
+import app.moviestudio.ImageModel
 import app.moviestudio.MusicSequence
 import app.moviestudio.NetworkService
 import app.moviestudio.SEQUENCER_MAX_PITCH
@@ -47,7 +48,8 @@ import app.moviestudio.SEQUENCER_MAX_TEMPO_BPM
 import app.moviestudio.SEQUENCER_MIN_TEMPO_BPM
 import app.moviestudio.SEQUENCER_STEPS_PER_MEASURE
 import app.moviestudio.SEQUENCER_VISIBLE_OCTAVES
-import app.moviestudio.SUPPORTED_IMAGE_SIZES
+import app.moviestudio.ResolutionOrientation
+import app.moviestudio.SUPPORTED_IMAGE_MODELS
 import app.moviestudio.SUPPORTED_MUSIC_GENDERS
 import app.moviestudio.SUPPORTED_SFX_MODELS
 import app.moviestudio.SUPPORTED_VIDEO_SIZES
@@ -57,9 +59,15 @@ import app.moviestudio.VOICE_INSTRUCTION_PRESETS
 import app.moviestudio.VoiceClone
 import app.moviestudio.VoiceDesign
 import app.moviestudio.VoiceOptions
+import app.moviestudio.aspectRatioLabelFor
 import app.moviestudio.cancelMicRecording
 import app.moviestudio.closestSizeForAspect
+import app.moviestudio.imageModelById
 import app.moviestudio.isPitchInScale
+import app.moviestudio.isResolutionValidForModel
+import app.moviestudio.parseResolution
+import app.moviestudio.presetsFor
+import app.moviestudio.validateResolutionForModel
 import app.moviestudio.playSequencerTone
 import app.moviestudio.sequencerRowFrequency
 import app.moviestudio.startMicRecording
@@ -133,15 +141,25 @@ fun GenerateMediaDialog(
         }
         mutableStateOf(initial.coerceIn(2.0, 15.0))
     }
+    // The selected image-generation model (multi-model support). Video generation always uses the
+    // WAN 2.7 family, so this only drives image generation; a regenerate keeps the stored model.
+    var imageModel by remember { mutableStateOf(imageModelById(initialSetup.model)) }
+    // Whether the combined model & resolution dialog (image generation only) is open.
+    var showModelResolution by remember { mutableStateOf(false) }
     // New generations default to the size whose aspect is closest to the movie's aspect ratio;
-    // regenerations keep the size they were originally made with.
+    // regenerations keep the size they were originally made with. Image sizes come from the chosen
+    // model's own presets, video sizes from the shared WAN tier list.
     val movieAspect = viewModel.currentMovie?.aspectRatio ?: "16:9"
     var resolution by remember {
         mutableStateOf(
             if (initialAsset != null && initialSetup.resolution.isNotBlank()) {
                 initialSetup.resolution
             } else {
-                val sizes = if (initialSetup.kind == "image") SUPPORTED_IMAGE_SIZES else SUPPORTED_VIDEO_SIZES
+                val sizes = if (initialSetup.kind == "image") {
+                    imageModelById(initialSetup.model).presetResolutions
+                } else {
+                    SUPPORTED_VIDEO_SIZES
+                }
                 closestSizeForAspect(sizes, movieAspect)
             }
         )
@@ -160,7 +178,9 @@ fun GenerateMediaDialog(
         characterIds = characterIds,
         sceneIds = sceneIds,
         durationSeconds = duration,
-        resolution = resolution
+        resolution = resolution,
+        // Only image generation exposes a model choice; video always uses the WAN 2.7 family.
+        model = if (kind == "image") imageModel.id else ""
     )
     val modelKind = setup.resolveVideoModelKind()
     val modelLabel = when {
@@ -172,11 +192,17 @@ fun GenerateMediaDialog(
         else -> "WAN 2.7 T2V (text-to-video)"
     }
 
-    // Keep the selected size valid when switching between video and image generation, again
-    // preferring the size closest to the movie's aspect ratio.
-    LaunchedEffect(kind) {
-        val sizes = if (kind == "image") SUPPORTED_IMAGE_SIZES else SUPPORTED_VIDEO_SIZES
-        if (resolution !in sizes) resolution = closestSizeForAspect(sizes, movieAspect)
+    // Keep the selected size valid when switching between video and image generation, or when the
+    // image model changes, again preferring the size closest to the movie's aspect ratio. Image
+    // sizes are validated against the chosen model's own limits; video sizes against the WAN tiers.
+    LaunchedEffect(kind, imageModel) {
+        if (kind == "image") {
+            if (!isResolutionValidForModel(resolution, imageModel)) {
+                resolution = closestSizeForAspect(imageModel.presetResolutions, movieAspect)
+            }
+        } else if (resolution !in SUPPORTED_VIDEO_SIZES) {
+            resolution = closestSizeForAspect(SUPPORTED_VIDEO_SIZES, movieAspect)
+        }
     }
 
     val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
@@ -498,12 +524,20 @@ fun GenerateMediaDialog(
             }
         }
 
-        // Video editing inherits the base video's resolution, so the resolution picker is only
-        // shown for the kinds that actually honor it.
-        if (modelKind != "videoedit") {
+        // Model & resolution: image generation folds both into a single button that opens a
+        // dedicated dialog (the model picker plus the full resolution UI). Video generation keeps
+        // the shared WAN size dropdown; video editing inherits the base video's resolution, so it
+        // shows no picker at all.
+        if (kind == "image") {
+            ModelAndResolutionField(
+                model = imageModel,
+                resolution = resolution,
+                onClick = { showModelResolution = true }
+            )
+        } else if (modelKind != "videoedit") {
             DropdownSelector(
                 label = "Resolution",
-                options = if (kind == "image") SUPPORTED_IMAGE_SIZES else SUPPORTED_VIDEO_SIZES,
+                options = SUPPORTED_VIDEO_SIZES,
                 selected = resolution,
                 display = { it }
             ) { resolution = it }
@@ -514,7 +548,9 @@ fun GenerateMediaDialog(
             ActionSpacer()
             PillButton(
                 if (tweak) "✨ Apply edit" else "✨ Generate",
-                enabled = prompt.isNotBlank()
+                // Image generation is blocked until the (possibly custom) size fits the chosen model.
+                enabled = prompt.isNotBlank() &&
+                    (kind != "image" || isResolutionValidForModel(resolution, imageModel))
             ) {
                 // Editing a placeholder (or tweaking real media) fills the existing asset in place;
                 // only regenerating real media targets a brand-new asset.
@@ -523,6 +559,202 @@ fun GenerateMediaDialog(
             }
         }
     }
+
+    // The combined model & resolution dialog opened from the single field above (image generation
+    // only): it holds the model picker and the full resolution UI so the main dialog stays compact.
+    if (showModelResolution) {
+        ModelAndResolutionDialog(
+            model = imageModel,
+            onModelChange = { imageModel = it },
+            resolution = resolution,
+            onResolutionChange = { resolution = it },
+            onDismiss = { showModelResolution = false }
+        )
+    }
+}
+
+/**
+ * Compact summary field that folds the image model and resolution into a single tappable row —
+ * showing the chosen [model]'s name, the [resolution]'s aspect label and its "W×H" size — and
+ * opens the combined [ModelAndResolutionDialog] via [onClick]. Clipped before the clickable per the
+ * project's rounded-hover guideline.
+ */
+@Composable
+private fun ModelAndResolutionField(
+    model: ImageModel,
+    resolution: String,
+    onClick: () -> Unit
+) {
+    Text(
+        "Model & resolution",
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(StudioFieldShape) // clip BEFORE clickable so hover has rounded corners
+            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.5f))
+            .clickable { onClick() }
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                model.displayName,
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                "${aspectRatioLabelFor(resolution)} \u00B7 ${resolution.replace('*', '\u00D7')}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Text("\u25BE", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/**
+ * The combined model & resolution dialog for image generation, opened from
+ * [ModelAndResolutionField]. Holds the model picker (with its capability blurb) and the full
+ * [ImageResolutionPicker], reporting changes back through [onModelChange] / [onResolutionChange].
+ */
+@Composable
+private fun ModelAndResolutionDialog(
+    model: ImageModel,
+    onModelChange: (ImageModel) -> Unit,
+    resolution: String,
+    onResolutionChange: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    StudioDialog(title = "Model & resolution", onDismiss = onDismiss, width = 560.dp) {
+        // Multi-model image generation: choose which text-to-image / image-edit model runs. The
+        // picked model also drives which resolution presets and limits apply below.
+        SectionLabel("Model")
+        DropdownSelector(
+            label = null,
+            options = SUPPORTED_IMAGE_MODELS,
+            selected = model,
+            display = { it.displayName }
+        ) { onModelChange(it) }
+        Text(
+            model.description,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        ImageResolutionPicker(
+            model = model,
+            resolution = resolution,
+            onResolutionChange = onResolutionChange
+        )
+
+        DialogActions {
+            PillButton("Done") { onDismiss() }
+        }
+    }
+}
+
+/**
+ * Resolution picker for image generation: the chosen [model]'s own preset sizes grouped by
+ * orientation (each pill annotated with its aspect ratio) plus a custom "WIDTH×HEIGHT" entry that
+ * is validated live against the model's per-side and total-pixel limits. Selecting a preset or a
+ * valid custom size reports it through [onResolutionChange]; an invalid custom size shows why and
+ * leaves the current selection untouched.
+ */
+@Composable
+private fun ImageResolutionPicker(
+    model: ImageModel,
+    resolution: String,
+    onResolutionChange: (String) -> Unit
+) {
+    SectionLabel("Resolution")
+
+    // Preset sizes for this model, grouped so landscape / portrait / square are easy to scan.
+    listOf(
+        ResolutionOrientation.LANDSCAPE to "Landscape",
+        ResolutionOrientation.PORTRAIT to "Portrait",
+        ResolutionOrientation.SQUARE to "Square"
+    ).forEach { (orientation, title) ->
+        val presets = model.presetsFor(orientation)
+        if (presets.isNotEmpty()) {
+            Text(
+                title,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp, bottom = 4.dp)
+            )
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                presets.forEach { preset ->
+                    val label = "${aspectRatioLabelFor(preset)} · ${preset.replace('*', '\u00D7')}"
+                    if (preset == resolution) {
+                        PillButton(label, compact = true) { }
+                    } else {
+                        GhostPillButton(label, compact = true) { onResolutionChange(preset) }
+                    }
+                }
+            }
+        }
+    }
+
+    // Custom size: two number fields kept in sync with the current selection. A valid pair is
+    // applied immediately; an invalid one surfaces the model's own rejection reason.
+    SectionLabel("Custom size")
+    var width by remember(model, resolution) {
+        mutableStateOf(parseResolution(resolution)?.first?.toString() ?: "")
+    }
+    var height by remember(model, resolution) {
+        mutableStateOf(parseResolution(resolution)?.second?.toString() ?: "")
+    }
+    val candidate = "${width.trim()}*${height.trim()}"
+    val error = if (width.isBlank() || height.isBlank()) null else validateResolutionForModel(candidate, model)
+
+    fun apply(newWidth: String, newHeight: String) {
+        width = newWidth.filter { it.isDigit() }
+        height = newHeight.filter { it.isDigit() }
+        val next = "${width.trim()}*${height.trim()}"
+        if (width.isNotBlank() && height.isNotBlank() && isResolutionValidForModel(next, model)) {
+            onResolutionChange(next)
+        }
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        StudioTextField(
+            value = width,
+            onValueChange = { apply(it, height) },
+            modifier = Modifier.width(120.dp),
+            label = "Width",
+            placeholder = "1024",
+            singleLine = true,
+            aiGenerate = null
+        )
+        Text(
+            "\u00D7",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        StudioTextField(
+            value = height,
+            onValueChange = { apply(width, it) },
+            modifier = Modifier.width(120.dp),
+            label = "Height",
+            placeholder = "1024",
+            singleLine = true,
+            aiGenerate = null
+        )
+    }
+    Text(
+        error ?: "Each side ${model.minDimension}\u2013${model.maxDimension}px; total up to ${model.maxPixels} pixels.",
+        style = MaterialTheme.typography.bodySmall,
+        color = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp)
+    )
 }
 
 /**

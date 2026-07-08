@@ -57,6 +57,15 @@ fun TimelineNotesPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     var editTarget by remember { mutableStateOf<TimelineNote?>(null) }
     var deleteTarget by remember { mutableStateOf<TimelineNote?>(null) }
 
+    // Pressing Delete/Backspace with a note selected asks the view model for a confirmation; open
+    // the same delete dialog here for the selected note (works whether the panel is expanded or not).
+    LaunchedEffect(viewModel.noteDeletionRequested) {
+        if (viewModel.noteDeletionRequested) {
+            deleteTarget = viewModel.timelineNotes.firstOrNull { it.id == viewModel.selectedNoteId }
+            viewModel.noteDeletionRequested = false
+        }
+    }
+
     Box(
         modifier = modifier
             .width(width)

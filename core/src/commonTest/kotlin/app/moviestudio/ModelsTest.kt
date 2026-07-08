@@ -4,6 +4,7 @@ import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -352,5 +353,68 @@ class ModelsTest {
             """{"id":"a2","type":"IMAGE","ossUrl":"","durationSeconds":0.0,"movieId":null,"tags":[],"aiPrompt":null}"""
         )
         assertTrue(legacy.ledger.isEmpty())
+    }
+
+    @Test
+    fun imageModelLookupFallsBackToTheDefaultModel() {
+        // A known id resolves to its model (case-insensitively).
+        assertEquals(IMAGE_MODEL_WAN_PRO, imageModelById("wan2.7-image-pro"))
+        assertEquals(IMAGE_MODEL_WAN, imageModelById("WAN2.7-IMAGE"))
+        // Blank / null / unknown ids fall back to the configured default (Qwen Image 2.0).
+        assertEquals(DEFAULT_IMAGE_MODEL_ID, imageModelById("").id)
+        assertEquals(DEFAULT_IMAGE_MODEL_ID, imageModelById(null).id)
+        assertEquals(DEFAULT_IMAGE_MODEL_ID, imageModelById("no-such-model").id)
+    }
+
+    @Test
+    fun generationSetupModelRoundTripsAndDefaultsToBlank() {
+        // The model field defaults to blank (server picks its default) and survives a round-trip.
+        assertEquals("", GenerationSetup(kind = "image").model)
+        val setup = GenerationSetup(kind = "image", prompt = "p", model = "wan2.7-image-pro")
+        val decoded = Json.decodeFromString(GenerationSetup.serializer(), Json.encodeToString(GenerationSetup.serializer(), setup))
+        assertEquals(setup, decoded)
+        assertEquals("wan2.7-image-pro", decoded.model)
+    }
+
+    @Test
+    fun resolutionValidationHonorsEachModelsPixelAndSideLimits() {
+        // Every preset a model advertises must itself validate for that model.
+        for (model in SUPPORTED_IMAGE_MODELS) {
+            for (preset in model.presetResolutions) {
+                assertTrue(isResolutionValidForModel(preset, model), "$preset should be valid for ${model.id}")
+            }
+        }
+        // Qwen is total-pixel limited (max 2048×2048 = 4.19M px): 2048×2048 fits, 3840×2160 does not.
+        assertTrue(isResolutionValidForModel("2048*2048", IMAGE_MODEL_QWEN))
+        assertFalse(isResolutionValidForModel("3840*2160", IMAGE_MODEL_QWEN))
+        // Wan Pro reaches 4K.
+        assertTrue(isResolutionValidForModel("3840*2160", IMAGE_MODEL_WAN_PRO))
+        // Sides below the minimum and malformed input are rejected with a reason.
+        assertNotNull(validateResolutionForModel("100*100", IMAGE_MODEL_WAN))
+        assertNotNull(validateResolutionForModel("not-a-size", IMAGE_MODEL_WAN))
+    }
+
+    @Test
+    fun presetsAreGroupedByOrientationAndLabeledByAspect() {
+        val model = IMAGE_MODEL_QWEN
+        // Grouping only returns resolutions of the requested orientation.
+        assertTrue(model.presetsFor(ResolutionOrientation.LANDSCAPE).all { resolutionOrientation(it) == ResolutionOrientation.LANDSCAPE })
+        assertTrue(model.presetsFor(ResolutionOrientation.PORTRAIT).all { resolutionOrientation(it) == ResolutionOrientation.PORTRAIT })
+        assertTrue(model.presetsFor(ResolutionOrientation.SQUARE).all { resolutionOrientation(it) == ResolutionOrientation.SQUARE })
+        // Every preset is covered by exactly one orientation group.
+        val grouped = ResolutionOrientation.entries.sumOf { model.presetsFor(it).size }
+        assertEquals(model.presetResolutions.size, grouped)
+        // Aspect labels pick the closest supported ratio.
+        assertEquals("16:9", aspectRatioLabelFor("1664*928"))
+        assertEquals("9:16", aspectRatioLabelFor("928*1664"))
+        assertEquals("1:1", aspectRatioLabelFor("1328*1328"))
+    }
+
+    @Test
+    fun customResolutionCompletionMatchesTheRequestedAspect() {
+        // Completing from a width yields the matching height for 16:9, and vice-versa.
+        assertEquals("1920*1080", resolutionForAspect(1920, knownIsWidth = true, aspectRatio = "16:9"))
+        assertEquals("1920*1080", resolutionForAspect(1080, knownIsWidth = false, aspectRatio = "16:9"))
+        assertEquals("1000*1000", resolutionForAspect(1000, knownIsWidth = true, aspectRatio = "1:1"))
     }
 }

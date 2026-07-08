@@ -126,8 +126,23 @@ class AppViewModel : ViewModel() {
     /** True while the expandable notes side panel is open. */
     var notesPanelExpanded by mutableStateOf(false)
 
+    private val _selectedNoteId = mutableStateOf<String?>(null)
+
     /** The note highlighted in the panel (also set by clicking a marker on the timeline). */
-    var selectedNoteId by mutableStateOf<String?>(null)
+    var selectedNoteId: String?
+        get() = _selectedNoteId.value
+        set(value) {
+            _selectedNoteId.value = value
+            // Notes and timeline clips are mutually exclusive selections: selecting a note clears
+            // any selected clips so a following Delete/Backspace acts on the note, not a clip.
+            if (value != null) selectedClipIds = emptySet()
+        }
+
+    /**
+     * Set from the global key handler when Delete/Backspace is pressed with a note selected. The
+     * notes panel observes it to raise the note delete-confirmation dialog, then resets it.
+     */
+    var noteDeletionRequested by mutableStateOf(false)
 
     // ------------------------------------------------------------------------------- documents
     /** Rich-text documents of the open movie (script, research...), forming a tree. */
@@ -148,12 +163,20 @@ class AppViewModel : ViewModel() {
     var zoomScale by mutableStateOf(20f) // pixels per second on the timeline
     var scrollOffset by mutableStateOf(0f) // timeline horizontal scroll, in seconds
 
+    private val _selectedClipIds = mutableStateOf<Set<String>>(emptySet())
+
     /**
      * Every selected timeline clip (multi-select). Moving and deleting act on the whole set;
      * shift-clicking a clip toggles it in and out (see [toggleClipSelection]).
      */
-    var selectedClipIds by mutableStateOf<Set<String>>(emptySet())
-        private set
+    var selectedClipIds: Set<String>
+        get() = _selectedClipIds.value
+        private set(value) {
+            _selectedClipIds.value = value
+            // Notes and timeline clips are mutually exclusive selections: selecting a clip clears
+            // any selected note so a following Delete/Backspace acts on the clip, not the note.
+            if (value.isNotEmpty()) selectedNoteId = null
+        }
 
     /**
      * The single selected clip, or null when zero or several clips are selected. Reading it keys

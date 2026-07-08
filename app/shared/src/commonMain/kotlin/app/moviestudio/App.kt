@@ -134,6 +134,14 @@ fun App() {
                             viewModel.deleteSelectedClips()
                             true
                         }
+                        // Delete/Backspace on a selected note requests a delete confirmation
+                        // (handled by the notes panel). Notes and clips are never selected together.
+                        (event.key == Key.Delete || event.key == Key.Backspace) &&
+                            event.type == KeyEventType.KeyDown && !editingText && inEditor &&
+                            viewModel.selectedNoteId != null -> {
+                            viewModel.noteDeletionRequested = true
+                            true
+                        }
                         // ESC leaves fullscreen playback.
                         event.key == Key.Escape && event.type == KeyEventType.KeyDown &&
                             viewModel.isFullscreenPlayback -> {
