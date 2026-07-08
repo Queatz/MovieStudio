@@ -67,6 +67,7 @@ import app.moviestudio.isPitchInScale
 import app.moviestudio.isResolutionValidForModel
 import app.moviestudio.parseResolution
 import app.moviestudio.presetsFor
+import app.moviestudio.resolutionOrientation
 import app.moviestudio.validateResolutionForModel
 import app.moviestudio.playSequencerTone
 import app.moviestudio.sequencerRowFrequency
@@ -142,25 +143,39 @@ fun GenerateMediaDialog(
         mutableStateOf(initial.coerceIn(2.0, 15.0))
     }
     // The selected image-generation model (multi-model support). Video generation always uses the
-    // WAN 2.7 family, so this only drives image generation; a regenerate keeps the stored model.
-    var imageModel by remember { mutableStateOf(imageModelById(initialSetup.model)) }
+    // WAN 2.7 family, so this only drives image generation; a regenerate keeps the stored model,
+    // while a fresh generation picks up the movie's last-used image model, if any.
+    var imageModel by remember {
+        mutableStateOf(
+            if (initialAsset != null && initialSetup.model.isNotBlank()) {
+                imageModelById(initialSetup.model)
+            } else {
+                imageModelById(viewModel.currentMovie?.lastImageModel ?: initialSetup.model)
+            }
+        )
+    }
     // Whether the combined model & resolution dialog (image generation only) is open.
     var showModelResolution by remember { mutableStateOf(false) }
-    // New generations default to the size whose aspect is closest to the movie's aspect ratio;
-    // regenerations keep the size they were originally made with. Image sizes come from the chosen
-    // model's own presets, video sizes from the shared WAN tier list.
+    // Whether the video resolution dialog (video generation only) is open.
+    var showVideoResolution by remember { mutableStateOf(false) }
+    // New generations default to the movie's last-used resolution for that media kind, falling
+    // back to the size whose aspect is closest to the movie's aspect ratio when none was
+    // remembered yet; regenerations keep the size they were originally made with. Image sizes come
+    // from the chosen model's own presets, video sizes from the shared WAN tier list.
     val movieAspect = viewModel.currentMovie?.aspectRatio ?: "16:9"
+    fun defaultResolutionFor(kind: String, model: ImageModel): String = if (kind == "image") {
+        viewModel.currentMovie?.lastImageResolution?.takeIf { isResolutionValidForModel(it, model) }
+            ?: closestSizeForAspect(model.presetResolutions, movieAspect)
+    } else {
+        viewModel.currentMovie?.lastVideoResolution?.takeIf { it in SUPPORTED_VIDEO_SIZES }
+            ?: closestSizeForAspect(SUPPORTED_VIDEO_SIZES, movieAspect)
+    }
     var resolution by remember {
         mutableStateOf(
             if (initialAsset != null && initialSetup.resolution.isNotBlank()) {
                 initialSetup.resolution
             } else {
-                val sizes = if (initialSetup.kind == "image") {
-                    imageModelById(initialSetup.model).presetResolutions
-                } else {
-                    SUPPORTED_VIDEO_SIZES
-                }
-                closestSizeForAspect(sizes, movieAspect)
+                defaultResolutionFor(initialSetup.kind, imageModel)
             }
         )
     }
@@ -193,10 +208,15 @@ fun GenerateMediaDialog(
     }
 
     // Keep the selected size valid when switching between video and image generation, or when the
-    // image model changes, again preferring the size closest to the movie's aspect ratio. Image
-    // sizes are validated against the chosen model's own limits; video sizes against the WAN tiers.
+    // image model changes. A fresh generation (no initial asset) always picks up the movie's
+    // last-used resolution for the newly selected kind; an existing asset only has its resolution
+    // recalculated when it becomes invalid for the new model, otherwise it keeps the size it was
+    // originally made with. Image sizes are validated against the chosen model's own limits; video
+    // sizes against the WAN tiers.
     LaunchedEffect(kind, imageModel) {
-        if (kind == "image") {
+        if (initialAsset == null) {
+            resolution = defaultResolutionFor(kind, imageModel)
+        } else if (kind == "image") {
             if (!isResolutionValidForModel(resolution, imageModel)) {
                 resolution = closestSizeForAspect(imageModel.presetResolutions, movieAspect)
             }
@@ -576,9 +596,9 @@ fun GenerateMediaDialog(
         }
 
         // Model & resolution: image generation folds both into a single button that opens a
-        // dedicated dialog (the model picker plus the full resolution UI). Video generation keeps
-        // the shared WAN size dropdown; video editing inherits the base video's resolution, so it
-        // shows no picker at all.
+        // dedicated dialog (the model picker plus the full resolution UI). Video generation opens
+        // its own resolution dialog (same orientation-grouped presets, no model picker); video
+        // editing inherits the base video's resolution, so it shows no picker at all.
         if (kind == "image") {
             ModelAndResolutionField(
                 model = imageModel,
@@ -586,12 +606,10 @@ fun GenerateMediaDialog(
                 onClick = { showModelResolution = true }
             )
         } else if (modelKind != "videoedit") {
-            DropdownSelector(
-                label = "Resolution",
-                options = SUPPORTED_VIDEO_SIZES,
-                selected = resolution,
-                display = { it }
-            ) { resolution = it }
+            ResolutionField(
+                resolution = resolution,
+                onClick = { showVideoResolution = true }
+            )
         }
 
         DialogActions {
@@ -620,6 +638,16 @@ fun GenerateMediaDialog(
             resolution = resolution,
             onResolutionChange = { resolution = it },
             onDismiss = { showModelResolution = false }
+        )
+    }
+
+    // The video resolution dialog opened from the resolution field above (video generation only):
+    // the same orientation-grouped preset UI as the image picker, minus the model section.
+    if (showVideoResolution) {
+        VideoResolutionDialog(
+            resolution = resolution,
+            onResolutionChange = { resolution = it },
+            onDismiss = { showVideoResolution = false }
         )
     }
 }
@@ -730,6 +758,69 @@ private fun ModelAndResolutionField(
 }
 
 /**
+ * Compact summary field that shows a resolution's aspect label and its "W×H" size and opens the
+ * [VideoResolutionDialog] via [onClick]. The video counterpart of [ModelAndResolutionField], minus
+ * the model (video generation always uses the WAN 2.7 family). Clipped before the clickable per
+ * the project's rounded-hover guideline.
+ */
+@Composable
+private fun ResolutionField(
+    resolution: String,
+    onClick: () -> Unit
+) {
+    Text(
+        "Resolution",
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(StudioFieldShape) // clip BEFORE clickable so hover has rounded corners
+            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.5f))
+            .clickable { onClick() }
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "${aspectRatioLabelFor(resolution)} \u00B7 ${resolution.replace('*', '\u00D7')}",
+            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f)
+        )
+        Text("\u25BE", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/**
+ * The full-dialog resolution picker for video generation, opened from [ResolutionField]. Mirrors
+ * [ImageResolutionPicker]'s orientation-grouped sections (Landscape / Portrait / Square) over the
+ * shared [SUPPORTED_VIDEO_SIZES] tiers, but has no model section and no custom size (video
+ * generation always uses the WAN 2.7 tier list, with no per-model resolution limits to validate
+ * a custom size against).
+ */
+@Composable
+private fun VideoResolutionDialog(
+    resolution: String,
+    onResolutionChange: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    StudioDialog(title = "Resolution", onDismiss = onDismiss, width = 560.dp) {
+        ResolutionPresetSections(
+            presetsFor = { orientation -> SUPPORTED_VIDEO_SIZES.filter { resolutionOrientation(it) == orientation } },
+            resolution = resolution,
+            onResolutionChange = onResolutionChange
+        )
+
+        DialogActions {
+            PillButton("Done") { onDismiss() }
+        }
+    }
+}
+
+/**
  * The combined model & resolution dialog for image generation, opened from
  * [ModelAndResolutionField]. Holds the model picker (with its capability blurb) and the full
  * [ImageResolutionPicker], reporting changes back through [onModelChange] / [onResolutionChange].
@@ -771,27 +862,23 @@ private fun ModelAndResolutionDialog(
 }
 
 /**
- * Resolution picker for image generation: the chosen [model]'s own preset sizes grouped by
- * orientation (each pill annotated with its aspect ratio) plus a custom "WIDTH×HEIGHT" entry that
- * is validated live against the model's per-side and total-pixel limits. Selecting a preset or a
- * valid custom size reports it through [onResolutionChange]; an invalid custom size shows why and
- * leaves the current selection untouched.
+ * Renders the shared "Landscape / Portrait / Square" preset sections used by both
+ * [ImageResolutionPicker] and [VideoResolutionDialog]: for each [ResolutionOrientation], the
+ * sizes returned by [presetsFor] are shown as a row of pills (each annotated with its aspect
+ * ratio); tapping one reports it through [onResolutionChange]. Empty orientations are skipped.
  */
 @Composable
-private fun ImageResolutionPicker(
-    model: ImageModel,
+private fun ResolutionPresetSections(
+    presetsFor: (ResolutionOrientation) -> List<String>,
     resolution: String,
     onResolutionChange: (String) -> Unit
 ) {
-    SectionLabel("Resolution")
-
-    // Preset sizes for this model, grouped so landscape / portrait / square are easy to scan.
     listOf(
         ResolutionOrientation.LANDSCAPE to "Landscape",
         ResolutionOrientation.PORTRAIT to "Portrait",
         ResolutionOrientation.SQUARE to "Square"
     ).forEach { (orientation, title) ->
-        val presets = model.presetsFor(orientation)
+        val presets = presetsFor(orientation)
         if (presets.isNotEmpty()) {
             Text(
                 title,
@@ -814,6 +901,29 @@ private fun ImageResolutionPicker(
             }
         }
     }
+}
+
+/**
+ * Resolution picker for image generation: the chosen [model]'s own preset sizes grouped by
+ * orientation (each pill annotated with its aspect ratio) plus a custom "WIDTH×HEIGHT" entry that
+ * is validated live against the model's per-side and total-pixel limits. Selecting a preset or a
+ * valid custom size reports it through [onResolutionChange]; an invalid custom size shows why and
+ * leaves the current selection untouched.
+ */
+@Composable
+private fun ImageResolutionPicker(
+    model: ImageModel,
+    resolution: String,
+    onResolutionChange: (String) -> Unit
+) {
+    SectionLabel("Resolution")
+
+    // Preset sizes for this model, grouped so landscape / portrait / square are easy to scan.
+    ResolutionPresetSections(
+        presetsFor = { orientation -> model.presetsFor(orientation) },
+        resolution = resolution,
+        onResolutionChange = onResolutionChange
+    )
 
     // Custom size: two number fields kept in sync with the current selection. A valid pair is
     // applied immediately; an invalid one surfaces the model's own rejection reason.

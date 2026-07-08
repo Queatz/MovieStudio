@@ -1426,10 +1426,30 @@ class AppViewModel : ViewModel() {
             try {
                 NetworkService.generateMedia(currentMovie?.id, setup, assetId)
                 refreshActiveJobs()
+                rememberLastGenerationSettings(setup)
             } catch (e: Exception) {
                 errorMessage = "Failed to start generation: ${e.message}"
             }
         }
+    }
+
+    /**
+     * Remembers the resolution (and, for images, the model) [setup] used, on the current movie,
+     * so the generate-image/generate-video dialogs pre-select it next time. Per-movie, since
+     * different movies commonly target different resolutions (e.g. aspect ratios).
+     */
+    private fun rememberLastGenerationSettings(setup: GenerationSetup) {
+        val movie = currentMovie ?: return
+        val updated = when (setup.kind) {
+            "image" -> if (movie.lastImageResolution != setup.resolution || movie.lastImageModel != setup.model) {
+                movie.copy(lastImageResolution = setup.resolution, lastImageModel = setup.model)
+            } else null
+            "video" -> if (movie.lastVideoResolution != setup.resolution) {
+                movie.copy(lastVideoResolution = setup.resolution)
+            } else null
+            else -> null
+        }
+        if (updated != null) updateMovie(updated)
     }
 
     /** Queues movie-skeleton generation at the current playhead. */

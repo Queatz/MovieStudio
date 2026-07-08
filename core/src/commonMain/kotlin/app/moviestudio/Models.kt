@@ -44,7 +44,16 @@ data class Movie(
     // Optional free-form, multi-line description of the movie. Shown (and editable) in the New
     // Movie dialog, under the title on the dashboard card and in the editor top bar. Blank means
     // no description has been set.
-    val description: String = ""
+    val description: String = "",
+    // Last resolution ("W*H") used to generate an image for this movie, remembered so the
+    // generate-image dialog pre-selects it next time. Null until an image has been generated.
+    val lastImageResolution: String? = null,
+    // Last image-generation model id (one of [SUPPORTED_IMAGE_MODELS]) used for this movie,
+    // remembered alongside [lastImageResolution]. Null until an image has been generated.
+    val lastImageModel: String? = null,
+    // Last resolution ("W*H") used to generate a video for this movie, remembered so the
+    // generate-video dialog pre-selects it next time. Null until a video has been generated.
+    val lastVideoResolution: String? = null
 ) {
     companion object {
         const val DEFAULT_ASPECT_RATIO: String = "16:9"
