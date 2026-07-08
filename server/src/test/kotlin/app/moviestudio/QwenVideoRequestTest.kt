@@ -47,6 +47,16 @@ class QwenVideoRequestTest {
             .filter { it.getValue("type").jsonPrimitive.content == "reference_video" }
             .map { it.getValue("url").jsonPrimitive.content }
 
+    /** The `url` values of each `video` media object in the `input.media` list. */
+    private fun JsonObject.videoUrls(): List<String> =
+        getValue("media").jsonArray.map { it.jsonObject }
+            .filter { it.getValue("type").jsonPrimitive.content == "video" }
+            .map { it.getValue("url").jsonPrimitive.content }
+
+    /** The `type` of each media object in the `input.media` list, in order. */
+    private fun JsonObject.mediaTypes(): List<String> =
+        getValue("media").jsonArray.map { it.jsonObject.getValue("type").jsonPrimitive.content }
+
     private fun ossUrl(objectKey: String): String {
         val endpointHost = OssService.endpoint.removePrefix("http://").removePrefix("https://").removeSuffix("/")
         return "https://${OssService.bucketName}.$endpointHost/$objectKey?Expires=1&Signature=old"
@@ -124,9 +134,17 @@ class QwenVideoRequestTest {
 
         assertEquals(
             listOf("https://oss/base.mp4"),
-            input.referenceVideoUrls(),
-            "video edit must send the base video as a reference_video media object under input.media",
+            input.videoUrls(),
+            "video edit must send the base video as a video media object under input.media",
         )
+        assertEquals(
+            "video",
+            input.mediaTypes().first(),
+            "the video-edit model only accepts the media types 'video' or 'reference_image'; the base " +
+                "clip at index 0 must be a 'video' entry (a 'reference_video' entry is rejected with " +
+                "\"Input should be 'video' or 'reference_image': input.media.0.type\")",
+        )
+        assertTrue(input.referenceVideoUrls().isEmpty(), "video edit must not send a reference_video media object")
         assertNull(input["video_url"], "video edit must not send the legacy scalar video_url field")
         assertNull(input["ref_images_url"], "video edit must not send the legacy ref_images_url field")
         assertNull(input["img_url"], "video edit must not send the legacy img_url field")
@@ -138,7 +156,13 @@ class QwenVideoRequestTest {
     }
 
     @Test
-    fun videoEditSendsOptionalReferenceImagesAndFirstFrame() {
+    fun videoEditWithReferenceImageSendsOnlyVideoAndReferenceImageTypes() {
+        // The exact scenario from the bug report: editing a video as another video while also
+        // supplying a reference character (image). Model Studio's video-edit model only accepts the
+        // media types 'video' or 'reference_image', so the base clip must be a 'video' entry at
+        // index 0 and every reference image rides along as a 'reference_image' entry. Any
+        // 'reference_video' / 'first_frame' entry is rejected with "Input should be 'video' or
+        // 'reference_image': input.media.0.type".
         val setup = GenerationSetup(
             kind = "video",
             prompt = "Repaint",
@@ -151,16 +175,24 @@ class QwenVideoRequestTest {
         val body = QwenAIService.buildVideoRequestBody(setup, "Repaint, cinematic", "videoedit", "wan2.7-videoedit")
         val input = body.input()
 
-        assertEquals(listOf("https://oss/base.mp4"), input.referenceVideoUrls())
+        assertEquals(listOf("https://oss/base.mp4"), input.videoUrls())
         assertEquals(
             listOf("https://oss/ref-a.png", "https://oss/ref-b.png"),
             input.referenceUrls(),
             "optional reference images must ride along as reference_image media objects",
         )
         assertEquals(
-            listOf("https://oss/first-frame.png"),
-            input.firstFrameUrls(),
-            "an optional guiding image must ride along as a first_frame media object",
+            listOf("video", "reference_image", "reference_image"),
+            input.mediaTypes(),
+            "the video-edit model only accepts 'video' or 'reference_image' media types",
+        )
+        assertTrue(
+            input.referenceVideoUrls().isEmpty(),
+            "video edit must not send a reference_video media object",
+        )
+        assertTrue(
+            input.firstFrameUrls().isEmpty(),
+            "the video-edit model does not accept a first_frame media object",
         )
     }
 

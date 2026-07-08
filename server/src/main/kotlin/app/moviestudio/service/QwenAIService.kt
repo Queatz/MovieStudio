@@ -474,12 +474,14 @@ object QwenAIService : AIGenerationService {
      *        rejected with "Field required: input.media". R2V also needs an explicit output
      *        `size` — without it the task fails with "'NoneType' object has no attribute
      *        'resolution'".
-     * - videoedit: the base clip as a `{ "type": "reference_video", "url": <url> }` media object
-     *        under `input.media`, plus optional `reference_image` entries and a guiding
-     *        `first_frame` entry — the same `input.media` list shape as I2V/R2V. Model Studio
-     *        rejects the legacy scalar `video_url` field with "Field required: input.media". The
-     *        edited clip inherits the source video's resolution and length, so no output `size` or
-     *        `duration` parameter is sent for it.
+     * - videoedit: the base clip as a `{ "type": "video", "url": <url> }` media object under
+     *        `input.media`, plus optional `reference_image` entries — the same `input.media` list
+     *        shape as R2V. The video-edit model only accepts the media types `video` /
+     *        `reference_image`: sending the base clip as a `reference_video` entry (or a guiding
+     *        `first_frame` entry) is rejected with "Input should be 'video' or 'reference_image':
+     *        input.media.0.type", and the legacy scalar `video_url` field is rejected with "Field
+     *        required: input.media". The edited clip inherits the source video's resolution and
+     *        length, so no output `size` or `duration` parameter is sent for it.
      */
     internal fun buildVideoRequestBody(
         setup: GenerationSetup,
@@ -523,16 +525,18 @@ object QwenAIService : AIGenerationService {
                         })
                     }
                 })
-                // WAN 2.7 video-edit expects the base video — and every optional guidance input —
+                // WAN 2.7 video-edit expects the base video — and every optional reference image —
                 // as a list of media objects under `input.media`, each `{ "type": ..., "url": ... }`,
-                // exactly like I2V/R2V. The base clip is a `reference_video` entry; optional
-                // reference images ride along as `reference_image` entries and an optional guiding
-                // first frame as a `first_frame` entry. Model Studio rejects the legacy scalar
-                // `video_url` / `ref_images_url` / `img_url` fields with "Field required:
-                // input.media".
+                // like R2V. The base clip is a `video` entry and optional reference images ride
+                // along as `reference_image` entries. The video-edit model only accepts the media
+                // types `video` / `reference_image`: sending the base clip as a `reference_video`
+                // entry (or a guiding `first_frame` entry) is rejected with "Input should be
+                // 'video' or 'reference_image': input.media.0.type", and the legacy scalar
+                // `video_url` / `ref_images_url` / `img_url` fields are rejected with "Field
+                // required: input.media".
                 "videoedit" -> put("media", buildJsonArray {
                     add(buildJsonObject {
-                        put("type", "reference_video")
+                        put("type", "video")
                         put("url", setup.videoUrl?.let(OssService::freshDownloadUrl) ?: "")
                     })
                     setup.referenceImages.take(3).forEach {
@@ -541,11 +545,6 @@ object QwenAIService : AIGenerationService {
                             put("url", OssService.freshDownloadUrl(it))
                         })
                     }
-                    val imageUrl = setup.imageUrl
-                    if (!imageUrl.isNullOrBlank()) add(buildJsonObject {
-                        put("type", "first_frame")
-                        put("url", OssService.freshDownloadUrl(imageUrl))
-                    })
                 })
             }
         }
