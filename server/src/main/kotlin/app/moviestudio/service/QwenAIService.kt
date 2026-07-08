@@ -8,6 +8,7 @@ import app.moviestudio.AssetType
 import app.moviestudio.GenerationSetup
 import app.moviestudio.Job
 import app.moviestudio.QWEN_VOICE_CATALOG
+import app.moviestudio.SUPPORTED_IMAGE_MODELS
 import app.moviestudio.VOICE_SAMPLE_TEXT
 import app.moviestudio.VoiceClone
 import app.moviestudio.VoiceDesign
@@ -570,11 +571,11 @@ object QwenAIService : AIGenerationService {
     private suspend fun executeImage(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val baseImageUrl = setup.imageUrl?.takeIf { it.isNotBlank() }?.let(OssService::freshDownloadUrl)
-        val model = if (baseImageUrl != null) QwenConfig.imageEditModel else QwenConfig.imageModel
+        val model = resolveImageModel(setup, isEdit = baseImageUrl != null)
         onProgress(15, if (baseImageUrl != null) "Submitting image edit task ($model)..." else "Submitting image task ($model)...")
-        // The qwen-image 2.0 family (both the plain and edit variants) is only exposed through the
-        // chat-style multimodal-generation/generation endpoint - the legacy Wanx
-        // aigc/text2image and aigc/image2image endpoints reject qwen-image-* model names with
+        // Every image model (the qwen-image 2.0 family and the WAN 2.7 image models) is invoked
+        // through the chat-style multimodal-generation/generation endpoint - the legacy Wanx
+        // aigc/text2image and aigc/image2image endpoints reject these model names with
         // HTTP 400 "url error, please check url！" (model name / API endpoint mismatch).
         val requestBody = buildImageRequestBody(setup, model)
         // Unlike the WAN video/audio models, the qwen-image family only supports synchronous
@@ -624,6 +625,20 @@ object QwenAIService : AIGenerationService {
             if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
             put("size", setup.resolution.replace("x", "*").ifBlank { "1024*1024" })
         }
+    }
+
+    /**
+     * The concrete image model a generation should use: the model the user explicitly chose
+     * ([GenerationSetup.model]) when it names one of the supported image models, otherwise the
+     * configured default (the image-edit variant when a base image is attached). All supported
+     * image models share the same multimodal-generation endpoint, so only the model name changes.
+     */
+    internal fun resolveImageModel(setup: GenerationSetup, isEdit: Boolean): String {
+        val requested = setup.model.trim()
+        if (requested.isNotEmpty() && SUPPORTED_IMAGE_MODELS.any { it.id.equals(requested, ignoreCase = true) }) {
+            return requested
+        }
+        return if (isEdit) QwenConfig.imageEditModel else QwenConfig.imageModel
     }
 
     /**

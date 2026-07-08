@@ -2,6 +2,7 @@ package app.moviestudio
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlin.math.roundToInt
 
 /**
  * Lifecycle status of a movie. Users can move a movie between these statuses at any time
@@ -896,6 +897,9 @@ fun sequencerRowFrequency(pitch: Int): Double {
  * - video + a start image -> I2V
  * - video + prompt only -> T2V
  * - image -> text-to-image (or image edit when a base image is attached)
+ *
+ * For image generation the user additionally picks the concrete model ([model], one of
+ * [SUPPORTED_IMAGE_MODELS]); a blank [model] lets the server use its configured default.
  */
 @Serializable
 data class GenerationSetup(
@@ -914,6 +918,9 @@ data class GenerationSetup(
     val sceneIds: List<String> = emptyList(),
     val durationSeconds: Double = 5.0,
     val resolution: String = "1280*720",
+    // Image-generation model id (one of [SUPPORTED_IMAGE_MODELS], e.g. "wan2.7-image-pro"); blank
+    // lets the server use its configured default. Only meaningful for image generation.
+    val model: String = "",
     // Music-specific options.
     val lyric: String = "",
     val theme: String = "",
@@ -992,6 +999,218 @@ val SUPPORTED_IMAGE_SIZES: List<String> = listOf(
     "832*480", "480*832", "624*624",
     "1328*1328", "1664*928", "928*1664", "1472*1140", "1140*1472"
 )
+
+// ---------------------------------------------------------------------------------------------
+// Image generation models (selectable text-to-image / image-to-image models)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * A selectable text-to-image / image-to-image model offered in the image generation dialog,
+ * together with its resolution capabilities. Both the [presetResolutions] and any custom
+ * resolution the user types must satisfy the model's per-dimension and total-pixel limits (see
+ * [validateResolutionForModel]).
+ *
+ * Every preset resolution matches one of [SUPPORTED_ASPECT_RATIOS] (or its portrait inverse, e.g.
+ * 9:16 for 16:9) so generated images crop as little as possible against a movie's aspect ratio.
+ * Each model exposes 2 square, 4 landscape and 4 portrait presets, scaled to what the model can
+ * actually produce.
+ */
+@Serializable
+data class ImageModel(
+    // DashScope model id sent to the API, e.g. "wan2.7-image-pro".
+    val id: String,
+    // User-facing name shown in the model dropdown, e.g. "Wan 2.7 Pro".
+    val displayName: String,
+    // Short capability blurb shown alongside the dropdown.
+    val description: String,
+    // Smallest total pixel count (width × height) the model accepts.
+    val minPixels: Long,
+    // Largest total pixel count (width × height) the model accepts.
+    val maxPixels: Long,
+    // Smallest value either side may take, in pixels.
+    val minDimension: Int,
+    // Largest value either side may take, in pixels.
+    val maxDimension: Int,
+    // Preset "W*H" resolutions offered for this model, grouped by orientation in the picker.
+    val presetResolutions: List<String>
+)
+
+/**
+ * Wan 2.7 Pro (`wan2.7-image-pro`): the top image tier, generating up to 4K (3840×2160) — the
+ * largest of the three models.
+ */
+val IMAGE_MODEL_WAN_PRO: ImageModel = ImageModel(
+    id = "wan2.7-image-pro",
+    displayName = "Wan 2.7 Pro",
+    description = "Highest detail, up to 4K (3840×2160).",
+    minPixels = 512L * 512L,
+    maxPixels = 3840L * 2160L,
+    minDimension = 512,
+    maxDimension = 4096,
+    presetResolutions = listOf(
+        // Landscape: 16:9 (4K), 16:9 (2K), 4:3, 21:9.
+        "3840*2160", "2560*1440", "2880*2160", "3360*1440",
+        // Portrait: 9:16, 9:16, 3:4, 9:21.
+        "2160*3840", "1440*2560", "2160*2880", "1440*3360",
+        // Square: 1:1, 1:1.
+        "2048*2048", "1440*1440"
+    )
+)
+
+/**
+ * Wan 2.7 (`wan2.7-image`): the standard Wan image tier, generating up to roughly 2.5K
+ * (2560×1440).
+ */
+val IMAGE_MODEL_WAN: ImageModel = ImageModel(
+    id = "wan2.7-image",
+    displayName = "Wan 2.7",
+    description = "Great quality, up to 2.5K (2560×1440).",
+    minPixels = 512L * 512L,
+    maxPixels = 2560L * 1440L,
+    minDimension = 512,
+    maxDimension = 2560,
+    presetResolutions = listOf(
+        // Landscape: 16:9, 16:9, 4:3, 21:9.
+        "1920*1080", "1280*720", "1440*1080", "2520*1080",
+        // Portrait: 9:16, 9:16, 3:4, 9:21.
+        "1080*1920", "720*1280", "1080*1440", "1080*2520",
+        // Square: 1:1, 1:1.
+        "1440*1440", "1024*1024"
+    )
+)
+
+/**
+ * Qwen Image 2.0 (`qwen-image-2.0-pro`): the studio's current default model. Its hard limit is the
+ * total pixel count — between 512×512 (262k px) and 2048×2048 (4.19M px); individual sides may
+ * exceed 2048px as long as the total stays inside that window. The presets use Qwen's documented
+ * aspect-optimized sizes (1328×1328, 1664×928, ...) plus matching extra tiers.
+ */
+val IMAGE_MODEL_QWEN: ImageModel = ImageModel(
+    id = "qwen-image-2.0-pro",
+    displayName = "Qwen Image 2.0",
+    description = "Balanced quality; total pixels 512×512 up to 2048×2048.",
+    minPixels = 512L * 512L,
+    maxPixels = 2048L * 2048L,
+    minDimension = 512,
+    maxDimension = 4096,
+    presetResolutions = listOf(
+        // Landscape: 16:9, 16:9, 4:3, 21:9.
+        "1664*928", "1536*864", "1472*1104", "2016*864",
+        // Portrait: 9:16, 9:16, 3:4, 9:21.
+        "928*1664", "864*1536", "1104*1472", "864*2016",
+        // Square: 1:1, 1:1.
+        "1328*1328", "1024*1024"
+    )
+)
+
+/**
+ * The selectable image-generation models, in dropdown order (Wan 2.7 Pro, Wan 2.7, Qwen Image 2.0).
+ */
+val SUPPORTED_IMAGE_MODELS: List<ImageModel> = listOf(IMAGE_MODEL_WAN_PRO, IMAGE_MODEL_WAN, IMAGE_MODEL_QWEN)
+
+/**
+ * The default image model id used when a [GenerationSetup] carries no explicit [GenerationSetup.model]
+ * — Qwen Image 2.0, the model the studio has always used.
+ */
+const val DEFAULT_IMAGE_MODEL_ID: String = "qwen-image-2.0-pro"
+
+/** Looks up a [SUPPORTED_IMAGE_MODELS] entry by [id], falling back to the default (then first) model. */
+fun imageModelById(id: String?): ImageModel =
+    SUPPORTED_IMAGE_MODELS.firstOrNull { it.id.equals(id, ignoreCase = true) }
+        ?: SUPPORTED_IMAGE_MODELS.firstOrNull { it.id == DEFAULT_IMAGE_MODEL_ID }
+        ?: SUPPORTED_IMAGE_MODELS.first()
+
+/** Orientation of a "W*H" resolution, used to group resolution presets in the picker. */
+enum class ResolutionOrientation { LANDSCAPE, PORTRAIT, SQUARE }
+
+/** Parses a "W*H" (or "WxH") resolution into its integer width/height, or null when malformed. */
+fun parseResolution(resolution: String): Pair<Int, Int>? {
+    val parts = resolution.split('*', 'x', 'X')
+    val width = parts.getOrNull(0)?.trim()?.toIntOrNull()
+    val height = parts.getOrNull(1)?.trim()?.toIntOrNull()
+    return if (width != null && height != null && width > 0 && height > 0) width to height else null
+}
+
+/** The [ResolutionOrientation] of a "W*H" resolution (malformed input is treated as landscape). */
+fun resolutionOrientation(resolution: String): ResolutionOrientation {
+    val (width, height) = parseResolution(resolution) ?: return ResolutionOrientation.LANDSCAPE
+    return when {
+        width > height -> ResolutionOrientation.LANDSCAPE
+        width < height -> ResolutionOrientation.PORTRAIT
+        else -> ResolutionOrientation.SQUARE
+    }
+}
+
+/** This model's preset resolutions in the given [orientation], preserving their listed order. */
+fun ImageModel.presetsFor(orientation: ResolutionOrientation): List<String> =
+    presetResolutions.filter { resolutionOrientation(it) == orientation }
+
+/**
+ * A short aspect-ratio label ("16:9", "9:16", ...) for a "W*H" resolution: the
+ * [SUPPORTED_ASPECT_RATIOS] entry (or its portrait inverse) whose ratio is closest to the
+ * resolution's own. Used to annotate preset resolutions in the picker.
+ */
+fun aspectRatioLabelFor(resolution: String): String {
+    val (width, height) = parseResolution(resolution) ?: return ""
+    val ratio = width.toFloat() / height.toFloat()
+    val candidates = SUPPORTED_ASPECT_RATIOS.flatMap { r ->
+        val parts = r.split(":")
+        val inverse = if (parts.size == 2) "${parts[1]}:${parts[0]}" else r
+        listOf(r, inverse)
+    }.distinct()
+    return candidates.minByOrNull { candidate ->
+        val f = aspectRatioToFloat(candidate)
+        if (f > ratio) f / ratio else ratio / f
+    } ?: ""
+}
+
+/**
+ * Validates a "W*H" [resolution] against [model]'s capabilities. Returns null when valid, or a
+ * short human-readable reason it is rejected (bad format, a side out of range, or a total pixel
+ * count outside the model's supported window).
+ */
+fun validateResolutionForModel(resolution: String, model: ImageModel): String? {
+    val parsed = parseResolution(resolution)
+        ?: return "Enter the resolution as WIDTH×HEIGHT, e.g. 1024×768."
+    val (width, height) = parsed
+    if (width < model.minDimension || height < model.minDimension) {
+        return "Each side must be at least ${model.minDimension}px."
+    }
+    if (width > model.maxDimension || height > model.maxDimension) {
+        return "Each side can be at most ${model.maxDimension}px for ${model.displayName}."
+    }
+    val pixels = width.toLong() * height.toLong()
+    if (pixels < model.minPixels) {
+        return "Too small: ${model.displayName} needs at least ${model.minPixels} total pixels " +
+            "(width × height)."
+    }
+    if (pixels > model.maxPixels) {
+        return "Too large: ${model.displayName} allows at most ${model.maxPixels} total pixels " +
+            "(width × height)."
+    }
+    return null
+}
+
+/** True when [resolution] is a valid size for [model]. */
+fun isResolutionValidForModel(resolution: String, model: ImageModel): Boolean =
+    validateResolutionForModel(resolution, model) == null
+
+/**
+ * Completes a partial custom resolution from a single known dimension: given one side and a target
+ * [aspectRatio] from [SUPPORTED_ASPECT_RATIOS] (e.g. "16:9"), computes the missing side so the
+ * result has that aspect. [knownIsWidth] tells whether [known] is the width (else the height).
+ * Returns the resulting "W*H" string.
+ */
+fun resolutionForAspect(known: Int, knownIsWidth: Boolean, aspectRatio: String): String {
+    val ratio = aspectRatioToFloat(aspectRatio) // width / height
+    return if (knownIsWidth) {
+        val height = (known / ratio).roundToInt().coerceAtLeast(1)
+        "$known*$height"
+    } else {
+        val width = (known * ratio).roundToInt().coerceAtLeast(1)
+        "$width*$known"
+    }
+}
 
 /**
  * Sound-effect generation modes a user can pick (see [GenerationSetup.sfxModel]); both
