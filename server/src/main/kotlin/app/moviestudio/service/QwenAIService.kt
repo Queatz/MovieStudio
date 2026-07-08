@@ -645,13 +645,22 @@ object QwenAIService : AIGenerationService {
      * as `input.lyrics` and the preferred vocal `gender` ("female"/"male") as `input.gender` -
      * both only when the track has vocals ([GenerationSetup.instrumental] is false). A blank
      * gender is omitted so the model picks the voice itself.
+     *
+     * Fun-Music does NOT turn a track instrumental just because `input.instrumental` is `true` -
+     * that flag is not documented/honored by the API. When no `lyrics` are supplied it happily
+     * writes and sings its own, so simply omitting `lyrics` produces vocals anyway. The documented
+     * way to get a vocal-free track is to send the `[instrumental]` structure tag as the whole
+     * `lyrics` value, which is what we do here; `instrumental` is still sent for forward-compat in
+     * case the API starts honoring it.
      */
     internal fun buildMusicRequestBody(setup: GenerationSetup, model: String): JsonObject = buildJsonObject {
         put("model", model)
         putJsonObject("input") {
             val theme = setup.theme.ifBlank { setup.prompt }
             if (theme.isNotBlank()) put("prompt", theme)
-            if (!setup.instrumental) {
+            if (setup.instrumental) {
+                put("lyrics", "[instrumental]")
+            } else {
                 if (setup.lyric.isNotBlank()) put("lyrics", setup.lyric)
                 if (setup.gender.isNotBlank()) put("gender", setup.gender)
             }

@@ -48,7 +48,7 @@ class QwenMusicRequestTest {
     }
 
     @Test
-    fun instrumentalDropsGenderAndLyrics() {
+    fun instrumentalDropsGenderAndSendsInstrumentalLyricsMarker() {
         val setup = GenerationSetup(
             kind = "music",
             theme = "Cinematic instrumental",
@@ -60,7 +60,9 @@ class QwenMusicRequestTest {
         val input = QwenAIService.buildMusicRequestBody(setup, "fun-music-v1").input()
 
         assertNull(input["gender"])
-        assertNull(input["lyrics"])
+        // Fun-Music ignores input.instrumental and writes/sings its own lyrics when `lyrics` is
+        // omitted, so instrumental tracks must explicitly send the "[instrumental]" structure tag.
+        assertEquals("[instrumental]", input.str("lyrics"))
         assertEquals(true, input["instrumental"]?.jsonPrimitive?.booleanOrNull)
     }
 
