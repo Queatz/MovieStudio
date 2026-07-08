@@ -558,7 +558,7 @@ object FFmpegService {
         canvasHeight: Int
     ): String {
         val textCfg = effects.text ?: TextConfig()
-        val rawText = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "Text" }
+        val rawText = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "" }
         // Font size is authored relative to a TEXT_REFERENCE_HEIGHT-tall canvas (same as the preview).
         val fontSize = (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(8, canvasHeight)
         // Wrap to roughly the canvas width for the chosen font size (avg glyph advance ~0.55em).

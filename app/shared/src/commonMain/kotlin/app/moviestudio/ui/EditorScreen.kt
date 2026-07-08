@@ -205,6 +205,7 @@ private fun EditorTopBar(
                         onValueChange = { titleDraft = it },
                         modifier = Modifier.width(280.dp),
                         singleLine = true,
+                        autoFocus = true,
                         onDismiss = { editingTitle = false },
                         onSubmit = {
                             viewModel.updateMovie(movie.copy(title = titleDraft.trim()))
@@ -232,6 +233,10 @@ private fun EditorTopBar(
                 )
             }
 
+            if (editingTitle && editingDescription) {
+                Spacer(Modifier.width(6.dp))
+            }
+
             // The movie's description, shown and editable right under the title. Click to edit
             // inline (multi-line); a blank description shows a subtle prompt to add one.
             if (editingDescription) {
@@ -242,6 +247,7 @@ private fun EditorTopBar(
                         modifier = Modifier.width(280.dp),
                         placeholder = "Description",
                         minLines = 2,
+                        autoFocus = true,
                         onDismiss = { editingDescription = false },
                         onSubmit = {
                             viewModel.updateMovie(movie.copy(description = descriptionDraft.trim()))
