@@ -259,6 +259,9 @@ data class Character(
     val name: String,
     val description: String,
     val referenceImages: List<String> = emptyList(),
+    // The movie this character was created for; drives the "This movie" library filter, mirroring
+    // Asset.movieId. Null for characters saved before this field existed (always shown).
+    val movieId: String? = null,
     val createdAt: Long = 0
 ) {
     companion object {
@@ -276,6 +279,9 @@ data class Scene(
     val name: String,
     val description: String,
     val referenceImages: List<String> = emptyList(),
+    // The movie this scene was created for; drives the "This movie" library filter, mirroring
+    // Asset.movieId. Null for scenes saved before this field existed (always shown).
+    val movieId: String? = null,
     val createdAt: Long = 0
 ) {
     companion object {
@@ -417,25 +423,47 @@ private val QWEN_TTS_MULTILINGUAL: List<String> = listOf(
 )
 
 /**
- * The catalog of Qwen3-TTS default voices with their spoken languages — the studio's built-in
- * Voice Library "Default Voices". These are the standard, multilingual Qwen3-TTS voices, which are
- * the ones the hosted qwen3-tts endpoint actually accepts. This mirrors Qwen3-TTS's documented
- * voice list (the models are an enumerated set rather than a queryable endpoint);
- * [AIGenerationService.listVoicePresets] returns it.
- *
- * The region-specific Chinese-dialect voices (e.g. "Kiki", "Rocky", "Dylan") are intentionally NOT
- * listed here: the hosted qwen3-tts model rejects them with HTTP 400
- * `InternalError.Algo.InvalidParameter: Voice '<name>' is not supported`, so surfacing them in the
- * Voice Library only produced failed voiceover jobs. Only voices the endpoint supports are offered.
+ * The catalog of Qwen-TTS default voices with their spoken languages — the studio's built-in Voice
+ * Library "Default Voices". This mirrors the documented non-real-time qwen-tts voice list (the
+ * models are an enumerated set rather than a queryable endpoint); [AIGenerationService.listVoicePresets]
+ * returns it.
  */
 val QWEN_VOICE_CATALOG: List<VoicePreset> = listOf(
     VoicePreset("Cherry", "Cherry", QWEN_TTS_MULTILINGUAL, "Warm, friendly female voice", "female"),
+    VoicePreset("Serena", "Serena", QWEN_TTS_MULTILINGUAL, "Clear, warm female voice", "female"),
     VoicePreset("Ethan", "Ethan", QWEN_TTS_MULTILINGUAL, "Bright, upbeat male voice", "male"),
+    VoicePreset("Chelsie", "Chelsie", QWEN_TTS_MULTILINGUAL, "Friendly, expressive female voice", "female"),
+    VoicePreset("Momo", "Momo", QWEN_TTS_MULTILINGUAL, "Lively, youthful female voice", "female"),
+    VoicePreset("Vivian", "Vivian", QWEN_TTS_MULTILINGUAL, "Soft, gentle female voice", "female"),
+    VoicePreset("Moon", "Moon", QWEN_TTS_MULTILINGUAL, "Calm, rounded female voice", "female"),
+    VoicePreset("Maia", "Maia", QWEN_TTS_MULTILINGUAL, "Natural, conversational female voice", "female"),
+    VoicePreset("Kai", "Kai", QWEN_TTS_MULTILINGUAL, "Confident, conversational male voice", "male"),
     VoicePreset("Nofish", "Nofish", QWEN_TTS_MULTILINGUAL, "Relaxed, casual male voice", "male"),
+    VoicePreset("Bella", "Bella", QWEN_TTS_MULTILINGUAL, "Bright, polished female voice", "female"),
     VoicePreset("Jennifer", "Jennifer", QWEN_TTS_MULTILINGUAL, "Poised, professional female voice", "female"),
     VoicePreset("Ryan", "Ryan", QWEN_TTS_MULTILINGUAL, "Smooth, mellow male voice", "male"),
     VoicePreset("Katerina", "Katerina", QWEN_TTS_MULTILINGUAL, "Elegant, expressive female voice", "female"),
+    VoicePreset("Aiden", "Aiden", QWEN_TTS_MULTILINGUAL, "Balanced, friendly male voice", "male"),
+    VoicePreset("Mia", "Mia", QWEN_TTS_MULTILINGUAL, "Light, cheerful female voice", "female"),
+    VoicePreset("Mochi", "Mochi", QWEN_TTS_MULTILINGUAL, "Playful, animated female voice", "female"),
+    VoicePreset("Bellona", "Bellona", QWEN_TTS_MULTILINGUAL, "Strong, articulate female voice", "female"),
+    VoicePreset("Vincent", "Vincent", QWEN_TTS_MULTILINGUAL, "Warm, steady male voice", "male"),
+    VoicePreset("Bunny", "Bunny", QWEN_TTS_MULTILINGUAL, "Cute, energetic female voice", "female"),
+    VoicePreset("Neil", "Neil", QWEN_TTS_MULTILINGUAL, "Clear, narrator-style male voice", "male"),
     VoicePreset("Elias", "Elias", QWEN_TTS_MULTILINGUAL, "Measured, lecturer-style male voice", "male"),
+    VoicePreset("Arthur", "Arthur", QWEN_TTS_MULTILINGUAL, "Classic, composed male voice", "male"),
+    VoicePreset("Nini", "Nini", QWEN_TTS_MULTILINGUAL, "Sweet, bright female voice", "female"),
+    VoicePreset("Seren", "Seren", QWEN_TTS_MULTILINGUAL, "Smooth, relaxed female voice", "female"),
+    VoicePreset("Pip", "Pip", QWEN_TTS_MULTILINGUAL, "Light, quirky male voice", "male"),
+    VoicePreset("Stella", "Stella", QWEN_TTS_MULTILINGUAL, "Polished, confident female voice", "female"),
+    VoicePreset("Bodega", "Bodega", QWEN_TTS_MULTILINGUAL, "Warm, characterful male voice", "male"),
+    VoicePreset("Sonrisa", "Sonrisa", QWEN_TTS_MULTILINGUAL, "Sunny, expressive female voice", "female"),
+    VoicePreset("Alek", "Alek", QWEN_TTS_MULTILINGUAL, "Direct, articulate male voice", "male"),
+    VoicePreset("Dolce", "Dolce", QWEN_TTS_MULTILINGUAL, "Soft, melodic female voice", "female"),
+    VoicePreset("Sohee", "Sohee", QWEN_TTS_MULTILINGUAL, "Gentle, natural female voice", "female"),
+    VoicePreset("Lenn", "Lenn", QWEN_TTS_MULTILINGUAL, "Friendly, modern male voice", "male"),
+    VoicePreset("Emilien", "Emilien", QWEN_TTS_MULTILINGUAL, "Smooth, European male voice", "male"),
+    VoicePreset("Andre", "Andre", QWEN_TTS_MULTILINGUAL, "Deep, composed male voice", "male"),
 )
 
 /**

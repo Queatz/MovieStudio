@@ -117,4 +117,65 @@ class FFmpegServiceErrorTest {
         )
         assertFalse(expr.contains("E-", ignoreCase = true), "volume expression must be FFmpeg-parseable, got: $expr")
     }
+
+    @Test
+    fun textSafeAreaPaddingReservesAMarginOnEachSide() {
+        // A TEXT element's block must not be laid out across the full canvas — some fraction of it
+        // is reserved as margin on every side (mirrors the preview's horizontal padding on TextClip).
+        val padding = FFmpegService.textSafeAreaPadding(1280)
+        assertTrue(padding > 0, "padding must be positive, or text can span the full width and touch the edges")
+        assertTrue(2 * padding < 1280, "the two margins must leave real room for content")
+    }
+
+    @Test
+    fun textSafeAreaWrapWidthIsNarrowerThanTheFullCanvasWidthEstimate() {
+        // Regression guard for the overflow bug: wrapping used to be based on the *full* canvas
+        // width, so a maximal line could run edge-to-edge. The padded estimate must wrap earlier.
+        val canvasWidth = 1280
+        val fontSize = 48
+        val fullCanvasEstimate = (canvasWidth * 1.8 / fontSize).toInt()
+        val paddedWrapWidth = FFmpegService.textSafeAreaWrapWidth(canvasWidth, fontSize)
+
+        assertTrue(
+            paddedWrapWidth < fullCanvasEstimate,
+            "wrap width must shrink once safe-area padding is reserved: padded=$paddedWrapWidth full=$fullCanvasEstimate"
+        )
+    }
+
+    @Test
+    fun textSafeAreaXExprClampsIntoThePaddedSafeArea() {
+        val canvasWidth = 1280
+        val padding = FFmpegService.textSafeAreaPadding(canvasWidth)
+        val expr = FFmpegService.textSafeAreaXExpr(canvasWidth)
+
+        // Centered by default, but hard-clamped between [padding, w-text_w-padding] so a line whose
+        // rendered width was under-estimated by the wrap heuristic still can't reach the frame edge.
+        assertEquals("'max($padding,min(w-text_w-$padding,(w-text_w)/2))'", expr)
+    }
+
+    @Test
+    fun textLineSpacingKeepsASingleLineAtTheIdealSpacing() {
+        // A single line has nothing to overflow vertically, so spacing is untouched.
+        assertEquals(48 * 1.25, FFmpegService.textLineSpacing(canvasHeight = 720, fontSize = 48, lineCount = 1))
+    }
+
+    @Test
+    fun textLineSpacingCompressesManyLinesToFitInsideTheSafeArea() {
+        // 8 lines at a large font size would, at the ideal fontSize*1.25 spacing, stack far taller
+        // than the frame — the top/bottom lines would run past the canvas edges. Spacing must shrink
+        // so the whole block still fits inside the vertically padded safe area.
+        val canvasHeight = 480
+        val fontSize = 100
+        val lineCount = 8
+        val padding = FFmpegService.textSafeAreaPadding(canvasHeight)
+
+        val spacing = FFmpegService.textLineSpacing(canvasHeight, fontSize, lineCount)
+        val blockHeight = (lineCount - 1) * spacing
+
+        assertTrue(spacing < fontSize * 1.25, "spacing must be compressed below the ideal for a tall block")
+        assertTrue(
+            blockHeight <= (canvasHeight - 2 * padding) + 0.001,
+            "the stacked block ($blockHeight px) must fit inside the padded safe area"
+        )
+    }
 }

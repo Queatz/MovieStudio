@@ -40,6 +40,13 @@ object FFmpegService {
     /** How many trailing lines of FFmpeg's stderr to retain for surfacing a failure reason. */
     private const val FFMPEG_LOG_TAIL_LINES = 40
 
+    /**
+     * Fraction of the canvas width/height reserved as a margin on each side so a TEXT element's
+     * block never reaches (let alone overflows) the frame edges — mirrors the live preview's
+     * `padding(horizontal = 24.dp)` on `TextClip` (see `PreviewPanel.kt`).
+     */
+    private const val TEXT_SAFE_AREA_PADDING_FRACTION = 0.06
+
     suspend fun executeRenderJob(job: Job, onProgress: suspend (progress: Int, message: String) -> Unit) {
         logger.info("Executing FFmpeg render job ${job.id} for movie ${job.movieId}")
 
@@ -74,7 +81,8 @@ object FFmpegService {
                     }
                 } catch (e: Exception) {
                     logger.error("Failed to download asset ${asset.id}: ${e.message}")
-                    withContext(Dispatchers.IO) { localFile.writeText("MOCK DOWNLOAD") }
+                    withContext(Dispatchers.IO) { runCatching { localFile.delete() } }
+                    continue
                 }
                 downloadedAssets[asset.id] = localFile
                 assetHasAudio[asset.id] = MediaUtil.probeHasAudio(localFile)
@@ -561,20 +569,25 @@ object FFmpegService {
         val rawText = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "" }
         // Font size is authored relative to a TEXT_REFERENCE_HEIGHT-tall canvas (same as the preview).
         val fontSize = (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(8, canvasHeight)
-        // Wrap to roughly the canvas width for the chosen font size (avg glyph advance ~0.55em).
-        val wrapWidth = (canvasWidth * 1.8 / fontSize).toInt().coerceIn(8, 80)
+        // Wrap within a horizontally padded safe area (mirrors the preview's horizontal padding on
+        // TextClip) so wrapped lines never reach/overflow the frame's edges.
+        val wrapWidth = textSafeAreaWrapWidth(canvasWidth, fontSize)
         val lines = wrapText(rawText, wrapWidth, 8)
         val fontColor = ffmpegDrawtextColor(textCfg.color)
         val bgColor = ffmpegColorHex(textCfg.backgroundColor)
         val bgAlpha = ffmpegColorAlpha(textCfg.backgroundColor)
+        val lineSpacing = textLineSpacing(canvasHeight, fontSize, lines.size)
+        val xExpr = textSafeAreaXExpr(canvasWidth)
 
         val layer = mutableListOf<String>()
-        // Draw each wrapped line, centered, stacking symmetrically around the vertical center.
+        // Draw each wrapped line, centered, stacking symmetrically around the vertical center. The
+        // x position is clamped into the horizontally padded safe area as a hard guarantee against
+        // overflow (the wrap estimate above is only a heuristic and actual glyph metrics can vary).
         lines.forEachIndexed { index, line ->
-            val yExpr = "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * (fontSize * 1.25)).ff()}"
+            val yExpr = "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * lineSpacing).ff()}"
             layer.add(
                 "drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
-                    "fontcolor=$fontColor:fontsize=$fontSize:x=(w-text_w)/2:y=$yExpr"
+                    "fontcolor=$fontColor:fontsize=$fontSize:x=$xExpr:y=$yExpr"
             )
         }
         // Transition-in over whatever plays beneath (clip-local 0..transitionDur).
@@ -750,6 +763,43 @@ object FFmpegService {
             lines[maxLines - 1] = lines[maxLines - 1].take(width - 1) + "…"
         }
         return lines.ifEmpty { listOf(text.take(width)) }
+    }
+
+    /** The pixel margin reserved on each side of [canvasSize] so a TEXT element's block stays inside a safe area. */
+    internal fun textSafeAreaPadding(canvasSize: Int): Int = (canvasSize * TEXT_SAFE_AREA_PADDING_FRACTION).toInt()
+
+    /**
+     * The character-count wrap width for a TEXT element's [fontSize], reduced by
+     * [textSafeAreaPadding] on each side so a wrapped line stays within a horizontally padded safe
+     * area instead of spanning the full canvas width — which would let it touch/overflow the frame
+     * edges. Same avg-glyph-advance heuristic (~0.55em) as the description-only placeholder text.
+     */
+    internal fun textSafeAreaWrapWidth(canvasWidth: Int, fontSize: Int): Int {
+        val availableWidth = (canvasWidth - 2 * textSafeAreaPadding(canvasWidth)).coerceAtLeast(1)
+        return (availableWidth * 1.8 / fontSize).toInt().coerceIn(8, 80)
+    }
+
+    /**
+     * The vertical spacing (px) between stacked TEXT element lines: normally `fontSize * 1.25`, but
+     * compressed (never expanded) so a tall multi-line block of [lineCount] lines still fits inside
+     * a vertically padded safe area of [canvasHeight] instead of its top/bottom lines running past
+     * the frame edges.
+     */
+    internal fun textLineSpacing(canvasHeight: Int, fontSize: Int, lineCount: Int): Double {
+        val idealLineSpacing = fontSize * 1.25
+        if (lineCount <= 1) return idealLineSpacing
+        val maxBlockHeight = (canvasHeight - 2 * textSafeAreaPadding(canvasHeight)).coerceAtLeast(fontSize).toDouble()
+        return minOf(idealLineSpacing, maxBlockHeight / (lineCount - 1))
+    }
+
+    /**
+     * The `drawtext` `x=` expression for a TEXT element line: centered by default, but clamped into
+     * the horizontally padded safe area of [canvasWidth] as a hard guarantee against overflow (the
+     * [textSafeAreaWrapWidth] estimate above is only a heuristic and actual glyph metrics can vary).
+     */
+    internal fun textSafeAreaXExpr(canvasWidth: Int): String {
+        val padding = textSafeAreaPadding(canvasWidth)
+        return "'max($padding,min(w-text_w-$padding,(w-text_w)/2))'"
     }
 
     /**

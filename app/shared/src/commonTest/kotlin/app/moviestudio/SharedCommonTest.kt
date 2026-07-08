@@ -174,6 +174,37 @@ class SharedCommonTest {
     }
 
     @Test
+    fun testPickResizeEdge() {
+        // Wide clip: the two grab zones don't overlap, so the nearest edge always wins.
+        assertEquals(ResizeEdge.LEFT, pickResizeEdge(2f, 0f, 100f, 10f, trimIn = 5f, trimOut = 10f, trimOutCap = 0f))
+        assertEquals(ResizeEdge.RIGHT, pickResizeEdge(98f, 0f, 100f, 10f, trimIn = 5f, trimOut = 10f, trimOutCap = 0f))
+        // Outside both grab zones: no resize.
+        assertEquals(null, pickResizeEdge(50f, 0f, 100f, 10f, trimIn = 5f, trimOut = 10f, trimOutCap = 0f))
+
+        // Tiny clip: pointer is within EDGE_GRAB of both edges at once.
+        // Left already at the source media's start (trimIn == 0) -> pick the right edge instead.
+        assertEquals(
+            ResizeEdge.RIGHT,
+            pickResizeEdge(5f, 0f, 8f, 10f, trimIn = 0f, trimOut = 5f, trimOutCap = 0f)
+        )
+        // Right already at the asset's length cap -> pick the left edge instead.
+        assertEquals(
+            ResizeEdge.LEFT,
+            pickResizeEdge(5f, 0f, 8f, 10f, trimIn = 2f, trimOut = 5f, trimOutCap = 5f)
+        )
+        // Both edges could still expand: default to the left edge (prior behavior).
+        assertEquals(
+            ResizeEdge.LEFT,
+            pickResizeEdge(5f, 0f, 8f, 10f, trimIn = 2f, trimOut = 5f, trimOutCap = 20f)
+        )
+        // Neither edge can expand (uncommon, but shouldn't crash): still defaults to left.
+        assertEquals(
+            ResizeEdge.LEFT,
+            pickResizeEdge(5f, 0f, 8f, 10f, trimIn = 0f, trimOut = 5f, trimOutCap = 5f)
+        )
+    }
+
+    @Test
     fun testMovedClipGroup() {
         val tracks = listOf(
             TrackWithClips(preloadTrack("v0", TrackType.VIDEO, 0), listOf(preloadClip("c1", "v0", "a").copy(timelineStart = 2f))),

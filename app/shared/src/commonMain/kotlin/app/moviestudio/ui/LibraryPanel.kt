@@ -290,8 +290,8 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
 
         val query = searchQuery.trim()
         when (val current = tab) {
-            LibTab.Characters -> CharacterList(viewModel, query) { characterEditor = it }
-            LibTab.Scenes -> SceneList(viewModel, query) { sceneEditor = it }
+            LibTab.Characters -> CharacterList(viewModel, query, onlyThisMovie) { characterEditor = it }
+            LibTab.Scenes -> SceneList(viewModel, query, onlyThisMovie) { sceneEditor = it }
             else -> {
                 val typed = when (current) {
                     LibTab.All -> viewModel.libraryAssets
@@ -531,7 +531,12 @@ private fun AssetCard(
 }
 
 @Composable
-private fun CharacterList(viewModel: AppViewModel, query: String = "", onEdit: (Character) -> Unit) {
+private fun CharacterList(
+    viewModel: AppViewModel,
+    query: String = "",
+    onlyThisMovie: Boolean = false,
+    onEdit: (Character) -> Unit
+) {
     var deleteTarget by remember { mutableStateOf<Character?>(null) }
     deleteTarget?.let { character ->
         ConfirmDialog(
@@ -542,15 +547,24 @@ private fun CharacterList(viewModel: AppViewModel, query: String = "", onEdit: (
             onDismiss = { deleteTarget = null }
         )
     }
-    val characters = if (query.isBlank()) viewModel.characters
-    else viewModel.characters.filter {
+    val scoped = if (onlyThisMovie) {
+        viewModel.characters.filter { it.movieId == viewModel.currentMovie?.id }
+    } else {
+        viewModel.characters
+    }
+    val characters = if (query.isBlank()) scoped
+    else scoped.filter {
         it.name.contains(query, ignoreCase = true) || it.description.contains(query, ignoreCase = true)
     }
     if (characters.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
-                if (query.isNotBlank()) "No characters match “$query”."
-                else "No saved characters.\nUse ＋ Add → New character.",
+                when {
+                    query.isNotBlank() -> "No characters match “$query”."
+                    onlyThisMovie && viewModel.characters.isNotEmpty() ->
+                        "No characters created for this movie yet.\nUncheck “This movie” to browse all characters."
+                    else -> "No saved characters.\nUse ＋ Add → New character."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -592,7 +606,12 @@ private fun CharacterList(viewModel: AppViewModel, query: String = "", onEdit: (
 }
 
 @Composable
-private fun SceneList(viewModel: AppViewModel, query: String = "", onEdit: (Scene) -> Unit) {
+private fun SceneList(
+    viewModel: AppViewModel,
+    query: String = "",
+    onlyThisMovie: Boolean = false,
+    onEdit: (Scene) -> Unit
+) {
     var deleteTarget by remember { mutableStateOf<Scene?>(null) }
     deleteTarget?.let { scene ->
         ConfirmDialog(
@@ -603,15 +622,24 @@ private fun SceneList(viewModel: AppViewModel, query: String = "", onEdit: (Scen
             onDismiss = { deleteTarget = null }
         )
     }
-    val scenes = if (query.isBlank()) viewModel.scenes
-    else viewModel.scenes.filter {
+    val scoped = if (onlyThisMovie) {
+        viewModel.scenes.filter { it.movieId == viewModel.currentMovie?.id }
+    } else {
+        viewModel.scenes
+    }
+    val scenes = if (query.isBlank()) scoped
+    else scoped.filter {
         it.name.contains(query, ignoreCase = true) || it.description.contains(query, ignoreCase = true)
     }
     if (scenes.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
-                if (query.isNotBlank()) "No scenes match “$query”."
-                else "No saved scenes.\nUse ＋ Add → New scene.",
+                when {
+                    query.isNotBlank() -> "No scenes match “$query”."
+                    onlyThisMovie && viewModel.scenes.isNotEmpty() ->
+                        "No scenes created for this movie yet.\nUncheck “This movie” to browse all scenes."
+                    else -> "No saved scenes.\nUse ＋ Add → New scene."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

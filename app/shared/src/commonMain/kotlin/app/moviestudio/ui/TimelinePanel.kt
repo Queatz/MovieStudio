@@ -62,6 +62,7 @@ import app.moviestudio.AssetType
 import app.moviestudio.Clip
 import app.moviestudio.MovieTimeline
 import app.moviestudio.MovingClip
+import app.moviestudio.ResizeEdge
 import app.moviestudio.TimelineNote
 import app.moviestudio.Track
 import app.moviestudio.TrackType
@@ -69,6 +70,7 @@ import app.moviestudio.TransitionType
 import app.moviestudio.calculatedDuration
 import app.moviestudio.movedClipGroup
 import app.moviestudio.parseEffectsConfig
+import app.moviestudio.pickResizeEdge
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -739,19 +741,22 @@ private fun TimelineCanvas(
                                 val asset = assetsState.firstOrNull { it.id == clip.assetId }
                                 val mediaCap = mediaTrimCap(asset)
                                 val trackType = viewModel.timeline?.tracks?.getOrNull(trackIndex)?.track?.type
-                                when {
-                                    offset.x - clipStartX <= EDGE_GRAB ->
+                                // When the clip is too small for the two edge-grab zones to be
+                                // told apart, pick whichever edge can still expand the clip (the
+                                // other is already maxed out, e.g. trimIn already 0).
+                                when (pickResizeEdge(offset.x, clipStartX, clipEndX, EDGE_GRAB, clip.trimIn, clip.trimOut, mediaCap)) {
+                                    ResizeEdge.LEFT ->
                                         DragSession.ResizeLeft(
                                             clip, mediaCap, collectSnapEdges(viewModel.timeline, setOf(clip.id)),
                                             clip.timelineStart, clip.trimIn,
                                             clip.timelineStart, clip.trimIn
                                         )
-                                    clipEndX - offset.x <= EDGE_GRAB ->
+                                    ResizeEdge.RIGHT ->
                                         DragSession.ResizeRight(
                                             clip, mediaCap, collectSnapEdges(viewModel.timeline, setOf(clip.id)),
                                             clip.trimOut, clip.trimOut
                                         )
-                                    else -> {
+                                    null -> {
                                         // Capture every selected clip (incl. the anchor) with the
                                         // row it starts on, so the group shifts rigidly from these
                                         // baselines. Snap edges exclude the whole group.

@@ -20,6 +20,8 @@ import app.moviestudio.storage.OssService
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -31,6 +33,8 @@ import io.ktor.client.statement.request
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -46,6 +50,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
 import kotlin.math.ceil
@@ -80,6 +85,7 @@ object QwenAIService : AIGenerationService {
                 requestTimeoutMillis = 300_000
                 socketTimeoutMillis = 300_000
             }
+            install(WebSockets)
         }
     }
 
@@ -250,13 +256,14 @@ object QwenAIService : AIGenerationService {
             return clone
         }
         val prefix = name.lowercase().replace(Regex("[^a-z0-9]"), "").take(9).ifBlank { "voice" }
+        val enrollmentAudioUrl = OssService.freshDownloadUrl(audioUrl)
         val body = buildJsonObject {
             put("model", QwenConfig.voiceEnrollModel)
             putJsonObject("input") {
                 put("action", "create_voice")
                 put("target_model", QwenConfig.voiceCloneTargetModel)
                 put("prefix", prefix)
-                put("url", audioUrl)
+                put("url", enrollmentAudioUrl)
             }
         }
         val response = postJson(
@@ -321,18 +328,26 @@ object QwenAIService : AIGenerationService {
 
     /**
      * Builds the CosyVoice Voice Design enrollment request body. It mirrors the voice-cloning
-     * enrollment ([createVoiceClone]) but describes the desired voice in natural language via the
-     * `text` input instead of supplying a reference audio `url`. Pure and network-free so its
-     * shape can be unit-tested.
+     * enrollment ([createVoiceClone]) but describes the desired voice in natural language instead
+     * of supplying a reference audio `url`. The provider requires BOTH `voice_prompt` (the voice
+     * description) and `preview_text` (the line spoken in the returned preview clip) — sending
+     * only one of them (e.g. the previous `text` field) fails with HTTP 400 "provide url, or
+     * provide both voice_prompt and preview_text.". Pure and network-free so its shape can be
+     * unit-tested.
      */
-    internal fun buildVoiceDesignRequestBody(prefix: String, description: String): JsonObject =
+    internal fun buildVoiceDesignRequestBody(
+        prefix: String,
+        description: String,
+        previewText: String = VOICE_SAMPLE_TEXT
+    ): JsonObject =
         buildJsonObject {
             put("model", QwenConfig.voiceEnrollModel)
             putJsonObject("input") {
                 put("action", "create_voice")
                 put("target_model", QwenConfig.voiceCloneTargetModel)
                 put("prefix", prefix)
-                put("text", description)
+                put("voice_prompt", description)
+                put("preview_text", previewText)
             }
         }
 
@@ -356,18 +371,17 @@ object QwenAIService : AIGenerationService {
         if (!QwenConfig.isConfigured) return ""
         val sampleText = text.ifBlank { VOICE_SAMPLE_TEXT }
         val setup = GenerationSetup(kind = "tts", prompt = sampleText, voice = voiceId)
-        val cosyVoice = isCosyVoiceVoice(voiceId)
-        val url = if (cosyVoice) {
-            "${QwenConfig.dashScopeBaseUrl}/services/audio/tts/generation"
-        } else {
-            "${QwenConfig.dashScopeBaseUrl}/services/aigc/multimodal-generation/generation"
+        if (isCosyVoiceVoice(voiceId)) {
+            val audioBytes = synthesizeCosyVoiceAudio(setup, voiceId, QwenConfig.voiceCloneTargetModel)
+            val (ossUrl, _) = rehostBytes(audioBytes, "samples", "voice-sample", "mp3", fallbackDuration = 2.0)
+            return ossUrl
         }
-        val requestBody = if (cosyVoice) {
-            buildClonedVoiceTtsRequestBody(setup, voiceId, QwenConfig.voiceCloneTargetModel)
-        } else {
-            buildTtsRequestBody(setup, voiceId, QwenConfig.ttsModel, instructions = "")
-        }
-        val response = postJson(url, requestBody, async = false, timeoutSeconds = 120)
+        val response = postJson(
+            "${QwenConfig.dashScopeBaseUrl}/services/aigc/multimodal-generation/generation",
+            buildTtsRequestBody(setup, voiceId, QwenConfig.ttsModel, instructions = ""),
+            async = false,
+            timeoutSeconds = 120
+        )
         return extractSyncTtsAudioUrl(response)
             ?: throw IllegalStateException("Qwen TTS sample response missing audio url: $response")
     }
@@ -644,11 +658,10 @@ object QwenAIService : AIGenerationService {
      *   `multimodal-generation/generation` endpoint, with the instructions riding along as the
      *   `instruct` input.
      * - Cloned voices are enrolled against the CosyVoice family ([QwenConfig.voiceCloneTargetModel]),
-     *   which is NOT exposed through `multimodal-generation/generation` - that endpoint rejects
-     *   CosyVoice model names with HTTP 400 "url error, please check url！" (the same model
-     *   name / API endpoint mismatch documented for the qwen-image family in [executeImage]).
-     *   They are synthesized through the DashScope speech-synthesis endpoint instead
-     *   (see [executeClonedVoiceTts]).
+     *   which is NOT exposed through the qwen-tts HTTP generation endpoint. The provider returns
+     *   HTTP 400 "url error, please check url！" when a CosyVoice voice/model is sent there. They
+     *   are synthesized through the DashScope WebSocket speech-synthesis task instead (see
+     *   [executeClonedVoiceTts]).
      */
     private suspend fun executeTts(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
@@ -678,15 +691,10 @@ object QwenAIService : AIGenerationService {
     }
 
     /**
-     * Cloned-voice (Qwen voice replication) speech synthesis. The enrolled voice targets the
-     * CosyVoice family ([QwenConfig.voiceCloneTargetModel]) and lives under the DashScope
-     * `audio/tts` namespace (the sibling of the `audio/tts/customization` enrollment endpoint used
-     * by [createVoiceClone]) - not the qwen-tts `multimodal-generation/generation` endpoint. The
-     * enrolled `voice_id` rides in `input.voice`.
-     *
-     * The call is synchronous: the hosted account rejects asynchronous CosyVoice calls with HTTP
-     * 403 "current user api does not support asynchronous calls", so the audio URL is read straight
-     * from the response (see [extractSyncTtsAudioUrl]) rather than submitted as a polled task.
+     * Cloned/designed voice speech synthesis. The enrolled voice targets the CosyVoice family
+     * ([QwenConfig.voiceCloneTargetModel]) and must be synthesized through DashScope's WebSocket
+     * speech-synthesis task protocol — not the qwen-tts HTTP endpoint. Binary audio frames are
+     * collected and re-hosted on OSS like other generated media.
      */
     private suspend fun executeClonedVoiceTts(
         job: Job,
@@ -699,18 +707,17 @@ object QwenAIService : AIGenerationService {
         val model = QwenConfig.voiceCloneTargetModel
         onProgress(20, "Synthesizing speech with cloned voice ($model)...")
 
-        val response = postJson(
-            "${QwenConfig.dashScopeBaseUrl}/services/audio/tts/generation",
-            buildClonedVoiceTtsRequestBody(setup, voice, model),
-            async = false,
-            timeoutSeconds = 180
-        )
-        val mediaUrl = extractSyncTtsAudioUrl(response)
-            ?: throw IllegalStateException("Qwen cloned-voice TTS response missing audio url: $response")
+        val audioBytes = synthesizeCosyVoiceAudio(setup, voice, model)
+        val response = buildJsonObject {
+            put("request_id", UUID.randomUUID().toString())
+            putJsonObject("output") {
+                put("audio_bytes", audioBytes.size)
+            }
+        }
         ledger.recordCall("Synthesized speech ($model)", model, response)
 
         onProgress(75, "Uploading voiceover to Alibaba OSS...")
-        finalizeVoiceover(job, payload, setup, mediaUrl, ledger, onProgress)
+        finalizeVoiceover(job, payload, setup, audioBytes, ledger, onProgress)
     }
 
     /**
@@ -724,6 +731,51 @@ object QwenAIService : AIGenerationService {
             ?: extractMediaUrl(output, listOf("audio_url", "url"))
     }
 
+    private suspend fun synthesizeCosyVoiceAudio(setup: GenerationSetup, voice: String, model: String): ByteArray {
+        val taskId = UUID.randomUUID().toString().replace("-", "")
+        val audio = ByteArrayOutputStream()
+        var finished = false
+        var lastError: String? = null
+        val startBody = buildClonedVoiceTtsRequestBody(setup, voice, model, taskId)
+        val continueBody = buildCosyVoiceContinueTaskBody(setup, model, taskId)
+        val finishBody = buildCosyVoiceFinishTaskBody(taskId)
+
+        httpClient.webSocket(urlString = dashScopeWebSocketInferenceUrl(), request = {
+            header("Authorization", "Bearer ${QwenConfig.apiKey}")
+        }) {
+            send(Frame.Text(json.encodeToString(JsonObject.serializer(), startBody)))
+            send(Frame.Text(json.encodeToString(JsonObject.serializer(), continueBody)))
+            send(Frame.Text(json.encodeToString(JsonObject.serializer(), finishBody)))
+            while (!finished) {
+                when (val frame = incoming.receive()) {
+                    is Frame.Binary -> audio.write(frame.data)
+                    is Frame.Text -> {
+                        val messageText = frame.readText()
+                        val message = runCatching { json.parseToJsonElement(messageText).jsonObject }.getOrNull()
+                            ?: continue
+                        val header = message["header"]?.jsonObject
+                        val event = header?.get("event")?.jsonPrimitive?.contentOrNull
+                        val code = header?.get("error_code")?.jsonPrimitive?.contentOrNull
+                        if (!code.isNullOrBlank()) {
+                            val messageDetail = header["error_message"]?.jsonPrimitive?.contentOrNull ?: messageText
+                            lastError = "$code: $messageDetail"
+                            finished = true
+                        } else if (event == "task-finished") {
+                            finished = true
+                        }
+                    }
+                    is Frame.Close -> finished = true
+                    else -> Unit
+                }
+            }
+        }
+
+        lastError?.let { throw IllegalStateException("CosyVoice WebSocket synthesis failed: $it") }
+        val bytes = audio.toByteArray()
+        if (bytes.isEmpty()) throw IllegalStateException("CosyVoice WebSocket synthesis returned no audio data")
+        return bytes
+    }
+
     /** Re-hosts the synthesized audio, derives transcript timings and finalizes the voice asset. */
     private suspend fun finalizeVoiceover(
         job: Job,
@@ -735,6 +787,23 @@ object QwenAIService : AIGenerationService {
     ) {
         val fallback = (setup.prompt.split(Regex("\\s+")).count { it.isNotBlank() } * 0.42).coerceAtLeast(2.0)
         val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "voice", "mp3", fallback)
+
+        onProgress(88, "Building transcript timings...")
+        val transcript = setup.prompt
+        val timings = TranscriptUtil.buildWordTimings(transcript, duration)
+        GenerationCommon.finalize(job, payload, ossUrl, duration, transcript, timings, ledgerEntries = ledger)
+    }
+
+    private suspend fun finalizeVoiceover(
+        job: Job,
+        payload: AiJobPayload,
+        setup: GenerationSetup,
+        audioBytes: ByteArray,
+        ledger: MutableList<AiLedgerEntry>,
+        onProgress: suspend (Int, String) -> Unit
+    ) {
+        val fallback = (setup.prompt.split(Regex("\\s+")).count { it.isNotBlank() } * 0.42).coerceAtLeast(2.0)
+        val (ossUrl, duration) = rehostBytes(audioBytes, job.movieId, "voice", "mp3", fallback)
 
         onProgress(88, "Building transcript timings...")
         val transcript = setup.prompt
@@ -763,17 +832,64 @@ object QwenAIService : AIGenerationService {
      * so voice instructions are intentionally omitted here. Pure and network-free so its shape can
      * be unit-tested.
      */
-    internal fun buildClonedVoiceTtsRequestBody(setup: GenerationSetup, voice: String, model: String): JsonObject =
+    internal fun buildClonedVoiceTtsRequestBody(
+        setup: GenerationSetup,
+        voice: String,
+        model: String,
+        taskId: String = UUID.randomUUID().toString().replace("-", "")
+    ): JsonObject =
         buildJsonObject {
+            putJsonObject("header") {
+                put("action", "run-task")
+                put("task_id", taskId)
+                put("streaming", "duplex")
+            }
+            putJsonObject("payload") {
+                put("task_group", "audio")
+                put("task", "tts")
+                put("function", "SpeechSynthesizer")
+                put("model", model)
+                put("input", buildJsonObject {})
+                putJsonObject("parameters") {
+                    put("voice", voice)
+                    put("text_type", "PlainText")
+                    put("format", "mp3")
+                    put("sample_rate", 24_000)
+                }
+            }
+        }
+
+    internal fun buildCosyVoiceContinueTaskBody(
+        setup: GenerationSetup,
+        model: String,
+        taskId: String
+    ): JsonObject = buildJsonObject {
+        putJsonObject("header") {
+            put("action", "continue-task")
+            put("task_id", taskId)
+            put("streaming", "duplex")
+        }
+        putJsonObject("payload") {
+            put("task_group", "audio")
+            put("task", "tts")
+            put("function", "SpeechSynthesizer")
             put("model", model)
             putJsonObject("input") {
                 put("text", setup.prompt)
-                put("voice", voice)
-            }
-            putJsonObject("parameters") {
-                put("format", "mp3")
             }
         }
+    }
+
+    private fun buildCosyVoiceFinishTaskBody(taskId: String): JsonObject = buildJsonObject {
+        putJsonObject("header") {
+            put("action", "finish-task")
+            put("task_id", taskId)
+            put("streaming", "duplex")
+        }
+        putJsonObject("payload") {
+            put("input", buildJsonObject {})
+        }
+    }
 
     /**
      * Sound-effect generation. The mode is picked by [GenerationSetup.sfxModel], both DashScope
@@ -1099,6 +1215,38 @@ object QwenAIService : AIGenerationService {
                 runCatching { if (tempFile.exists()) tempFile.delete() }
             }
         }
+    }
+
+    private suspend fun rehostBytes(
+        mediaBytes: ByteArray,
+        movieId: String,
+        kind: String,
+        extension: String,
+        fallbackDuration: Double
+    ): Pair<String, Double> {
+        val tempFile = withContext(Dispatchers.IO) {
+            File.createTempFile("moviestudio-$kind-", ".$extension").apply { writeBytes(mediaBytes) }
+        }
+        try {
+            val duration = MediaUtil.probeDurationSeconds(tempFile) ?: fallbackDuration
+            val objectKey = "ai-generated/$movieId/${kind}-${UUID.randomUUID()}.$extension"
+            return OssService.uploadFile(objectKey, tempFile) to duration
+        } finally {
+            withContext(Dispatchers.IO) {
+                runCatching { if (tempFile.exists()) tempFile.delete() }
+            }
+        }
+    }
+
+    private fun dashScopeWebSocketInferenceUrl(): String {
+        val base = QwenConfig.dashScopeBaseUrl.trimEnd('/')
+        val wsBase = when {
+            base.startsWith("https://") -> "wss://${base.removePrefix("https://")}"
+            base.startsWith("http://") -> "ws://${base.removePrefix("http://")}"
+            else -> base
+        }
+        val apiRoot = wsBase.removeSuffix("/api/v1")
+        return "$apiRoot/api-ws/v1/inference"
     }
 
     /**

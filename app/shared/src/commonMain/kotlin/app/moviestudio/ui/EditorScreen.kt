@@ -388,6 +388,7 @@ private fun RenderProgressDialog(viewModel: AppViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             if (url != null) {
+                val fileName = downloadFileNameForRender(viewModel.currentMovie?.title ?: "movie", url)
                 Spacer(Modifier.height(12.dp))
                 Box(
                     Modifier
@@ -396,11 +397,11 @@ private fun RenderProgressDialog(viewModel: AppViewModel) {
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color.Black)
                 ) {
-                    RenderReplayPlayer(url)
+                    RenderReplayPlayer(url, fileName)
                 }
                 Spacer(Modifier.height(12.dp))
                 DialogActions {
-                    GhostPillButton("⬇ Download") { triggerDownload(url, "movie-render.mp4") }
+                    GhostPillButton("⬇ Download") { triggerDownload(url, fileName) }
                     ActionSpacer()
                     PillButton("Done") { viewModel.clearRenderJob() }
                 }
@@ -410,11 +411,31 @@ private fun RenderProgressDialog(viewModel: AppViewModel) {
 }
 
 /**
+ * Builds a friendly file name for downloading a rendered movie: the movie's own title sanitized
+ * into a safe file name, with the extension taken from the render's URL when present (or "mp4"
+ * as a sensible default otherwise).
+ */
+private fun downloadFileNameForRender(movieTitle: String, url: String): String {
+    val urlExtension = url.substringAfterLast('.', "")
+        .substringBefore('?')
+        .takeIf { it.isNotBlank() && it.length in 1..5 }
+    val extension = urlExtension ?: "mp4"
+    val baseName = movieTitle
+        .take(60)
+        .map { c -> if (c.isLetterOrDigit() || c == '-' || c == '_' || c == ' ') c else ' ' }
+        .joinToString("")
+        .trim()
+        .replace(Regex("\\s+"), "-")
+        .ifBlank { "movie-render" }
+    return "$baseName.$extension"
+}
+
+/**
  * Small self-contained player used to replay a finished render inside a dialog: play/pause plus
  * fullscreen and download shortcuts for the single rendered movie.
  */
 @Composable
-private fun RenderReplayPlayer(url: String) {
+private fun RenderReplayPlayer(url: String, fileName: String) {
     var playing by remember(url) { mutableStateOf(true) }
     var position by remember(url) { mutableStateOf(0f) }
     Box(Modifier.fillMaxSize()) {
@@ -450,7 +471,7 @@ private fun RenderReplayPlayer(url: String) {
                 size = 34.dp,
                 background = Color.Black.copy(alpha = 0.55f),
                 tint = Color.White
-            ) { triggerDownload(url, "movie-render.mp4") }
+            ) { triggerDownload(url, fileName) }
         }
     }
 }
@@ -459,6 +480,7 @@ private fun RenderReplayPlayer(url: String) {
 @Composable
 private fun RendersHistoryDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
     var replayUrl by remember { mutableStateOf<String?>(null) }
+    val movieTitle = viewModel.currentMovie?.title ?: "movie"
 
     StudioDialog(title = "Renders", onDismiss = onDismiss, width = 560.dp, scrollable = false) {
         if (viewModel.renders.isEmpty()) {
@@ -477,7 +499,7 @@ private fun RendersHistoryDialog(viewModel: AppViewModel, onDismiss: () -> Unit)
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color.Black)
                 ) {
-                    RenderReplayPlayer(current)
+                    RenderReplayPlayer(current, downloadFileNameForRender(movieTitle, current))
                 }
                 Spacer(Modifier.height(10.dp))
                 GhostPillButton("← All renders", compact = true) { replayUrl = null }
@@ -487,7 +509,7 @@ private fun RendersHistoryDialog(viewModel: AppViewModel, onDismiss: () -> Unit)
                         RenderRow(
                             render = render,
                             onReplay = { replayUrl = render.url },
-                            onDownload = { triggerDownload(render.url, "movie-render-${render.id.take(6)}.mp4") }
+                            onDownload = { triggerDownload(render.url, downloadFileNameForRender(movieTitle, render.url)) }
                         )
                     }
                 }

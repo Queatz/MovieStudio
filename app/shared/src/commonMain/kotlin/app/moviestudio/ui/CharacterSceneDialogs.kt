@@ -224,6 +224,7 @@ fun CharacterEditorDialog(viewModel: AppViewModel, existing: Character?, onDismi
                         name = name.trim(),
                         description = description.trim(),
                         referenceImages = referenceImages.take(Character.MAX_REFERENCE_IMAGES),
+                        movieId = existing?.movieId ?: viewModel.currentMovie?.id,
                         createdAt = existing?.createdAt ?: 0
                     ),
                     isNew = existing == null
@@ -282,6 +283,7 @@ fun SceneEditorDialog(viewModel: AppViewModel, existing: Scene?, onDismiss: () -
                         name = name.trim(),
                         description = description.trim(),
                         referenceImages = referenceImages.take(Scene.MAX_REFERENCE_IMAGES),
+                        movieId = existing?.movieId ?: viewModel.currentMovie?.id,
                         createdAt = existing?.createdAt ?: 0
                     ),
                     isNew = existing == null
