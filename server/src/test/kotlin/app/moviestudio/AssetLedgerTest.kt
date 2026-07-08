@@ -110,8 +110,9 @@ class AssetLedgerTest {
     }
 
     // ------------------------------------------------------------------------------------------
-    // Image ledger entries: qwen-image-2.0-pro / qwen-image-edit-2.0-pro bill per generated image (a flat
-    // price), so their DashScope response never carries an input_tokens/output_tokens usage block
+    // Image ledger entries: qwen-image-2.0-pro (the same unified model bills both text-to-image and
+    // image-editing) bills per generated image (a flat price), so its DashScope response never
+    // carries an input_tokens/output_tokens usage block
     // - reported as "images always show 0 tokens" in the ledger. Covers the fix in
     // QwenAIService.buildImageLedgerEntry.
     // ------------------------------------------------------------------------------------------

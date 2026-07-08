@@ -40,7 +40,7 @@ class QwenImageRequestTest {
         val staleUrl = ossUrl(objectKey)
         val setup = GenerationSetup(kind = "image", prompt = "Restyle", imageUrl = staleUrl)
 
-        val body = QwenAIService.buildImageRequestBody(setup, "qwen-image-edit-2.0-pro")
+        val body = QwenAIService.buildImageRequestBody(setup, "qwen-image-2.0-pro")
         val content = body.firstContent()
         val imageUrl = content.first().jsonObject.str("image")
 

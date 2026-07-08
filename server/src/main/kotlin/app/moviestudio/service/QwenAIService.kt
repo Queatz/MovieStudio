@@ -172,8 +172,9 @@ object QwenAIService : AIGenerationService {
 
     /**
      * Builds the ledger entry for an image-generation/edit call. Unlike the chat/TTS models,
-     * Qwen-Image (`qwen-image-2.0-pro` / `qwen-image-edit-2.0-pro`) is billed per generated image at a
-     * flat price, so its response never carries an `input_tokens`/`output_tokens` usage block -
+     * Qwen-Image (`qwen-image-2.0-pro`, the same unified model for both text-to-image and
+     * image-editing) is billed per generated image at a flat price, so its response never carries
+     * an `input_tokens`/`output_tokens` usage block -
      * feeding it through [recordCall] always logged 0 tokens and $0.00, which is the bug this
      * works around. We still record a meaningful, non-zero token figure by converting the image's
      * pixel dimensions into the same 28x28-patch vision-token count Qwen-VL models report, then
