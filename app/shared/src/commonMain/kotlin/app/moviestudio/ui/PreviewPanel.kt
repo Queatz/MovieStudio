@@ -296,6 +296,7 @@ private fun WebGLStage(visualClips: List<ActiveClip>, playhead: Float, isPlaying
                 translateXFraction = transitionVisual.translateXFraction,
                 translateYFraction = transitionVisual.translateYFraction,
                 revealRadiusFraction = transitionVisual.revealRadiusFraction,
+                vignetteRevealFraction = transitionVisual.vignetteRevealFraction,
                 offsetXPercent = effects.offsetX,
                 offsetYPercent = effects.offsetY,
                 // The volume-over-time envelope (when present) evaluated at the playhead.

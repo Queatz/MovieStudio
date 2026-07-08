@@ -11,6 +11,7 @@ import app.moviestudio.routing.speechRoutes
 import app.moviestudio.routing.tipRoutes
 import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.service.AIGenerationService
+import app.moviestudio.service.JobRecoveryService
 import app.moviestudio.service.QwenAIService
 import app.moviestudio.service.QwenConfig
 import app.moviestudio.storage.OssService
@@ -68,6 +69,14 @@ fun Application.module() {
     QwenConfig.logStatus()
     AIGenerationService.setInstance(QwenAIService)
     logger.info("Using QwenAIService for AI generation jobs.")
+
+    // Reconcile jobs left RUNNING by a previous (crashed/restarted) process before the worker
+    // starts polling: resumable Model Studio async tasks are re-enqueued, the rest are cleaned up.
+    try {
+        JobRecoveryService.start(this)
+    } catch (e: Exception) {
+        logger.error("Could not start interrupted-job recovery on startup: ${e.message}", e)
+    }
 
     JobQueueWorker.start(this)
 

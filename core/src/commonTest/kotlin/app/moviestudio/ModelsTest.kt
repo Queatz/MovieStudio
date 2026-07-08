@@ -76,6 +76,40 @@ class ModelsTest {
     }
 
     @Test
+    fun visualAtMapsCircleAndVignetteToTheirRevealPrimitives() {
+        // CIRCLE is a pure hard circular reveal that grows with progress at full opacity (no fade).
+        val circle = TransitionSpec(TransitionType.CIRCLE).visualAt(0.3f)
+        assertEquals(1f, circle.alpha, 0.0001f)
+        assertEquals(0.3f, circle.revealRadiusFraction, 0.0001f)
+        assertEquals(1f, circle.vignetteRevealFraction, 0.0001f)
+
+        // VIGNETTE grows its aspect-matched soft oval (vignetteRevealFraction = progress) and ALSO
+        // exposes an alpha = progress cross-fade so the default renderer can fall back to a plain
+        // fade while the WebGL / FFmpeg renderers draw the real oval iris.
+        val half = TransitionSpec(TransitionType.VIGNETTE).visualAt(0.5f)
+        assertEquals(0.5f, half.alpha, 0.0001f)
+        assertEquals(0.5f, half.vignetteRevealFraction, 0.0001f)
+        // It is neither a circle nor a slide, and leaves the textured primitives untouched.
+        assertEquals(1f, half.revealRadiusFraction, 0.0001f)
+        assertEquals(0f, half.translateXFraction, 0.0001f)
+        assertEquals(0f, half.pixelateFraction, 0.0001f)
+        assertEquals(0f, half.noiseFraction, 0.0001f)
+        assertEquals(0f, half.voronoiFraction, 0.0001f)
+
+        // At the very start nothing is revealed and the clip is transparent; fully settled it is
+        // opaque and fully revealed (no mask).
+        val start = TransitionSpec(TransitionType.VIGNETTE).visualAt(0f)
+        assertEquals(0f, start.alpha, 0.0001f)
+        assertEquals(0f, start.vignetteRevealFraction, 0.0001f)
+        val settled = TransitionSpec(TransitionType.VIGNETTE).visualAt(1f)
+        assertEquals(1f, settled.alpha, 0.0001f)
+        assertEquals(1f, settled.vignetteRevealFraction, 0.0001f)
+
+        // The new type is offered in the transition picker with a friendly label.
+        assertEquals("Vignette", TransitionType.VIGNETTE.displayName())
+    }
+
+    @Test
     fun volumeEnvelopeInterpolatesLinearlyBetweenKeyframes() {
         val config = EffectsConfig(
             volume = 0.8,

@@ -15,6 +15,7 @@ import app.moviestudio.VoiceDesign
 import app.moviestudio.VoicePreset
 import app.moviestudio.WordTiming
 import app.moviestudio.database.AssetRepository
+import app.moviestudio.database.JobRepository
 import app.moviestudio.database.VoiceCloneRepository
 import app.moviestudio.database.VoiceDesignRepository
 import app.moviestudio.storage.OssService
@@ -443,6 +444,7 @@ object QwenAIService : AIGenerationService {
             ledger = ledger,
             ledgerModel = model,
             ledgerDescription = "Generated video ($model)",
+            job = job,
         ) { pct -> onProgress((20 + pct * 0.6).toInt().coerceIn(20, 80), "Generating video... $pct%") }
 
         onProgress(85, "Uploading generated video to Alibaba OSS...")
@@ -989,6 +991,7 @@ object QwenAIService : AIGenerationService {
             ledger = ledger,
             ledgerModel = QwenConfig.audioModel,
             ledgerDescription = "Generated sound effect (${QwenConfig.audioModel})",
+            job = job,
         ) { pct -> onProgress((20 + pct * 0.6).toInt().coerceIn(20, 80), "Generating sound effect... $pct%") }
 
         onProgress(85, "Uploading sound effect to Alibaba OSS...")
@@ -1015,6 +1018,7 @@ object QwenAIService : AIGenerationService {
             ledger = ledger,
             ledgerModel = QwenConfig.audioModel,
             ledgerDescription = "Generated sound effect (${QwenConfig.audioModel})",
+            job = job,
         ) { pct -> onProgress((55 + pct * 0.25).toInt().coerceIn(55, 80), "Generating sound effect... $pct%") }
 
         onProgress(85, "Uploading sound effect to Alibaba OSS...")
@@ -1200,6 +1204,13 @@ object QwenAIService : AIGenerationService {
     /**
      * Submits an asynchronous DashScope generation task and polls until it succeeds,
      * returning the generated media URL.
+     *
+     * When a [job] is supplied, the submitted `task_id` is persisted on it while the task runs
+     * (and cleared once it succeeds), so a server crash mid-poll can be recovered on startup by
+     * [JobRecoveryService]: a re-enqueued job already carries its `task_id`, so this helper skips
+     * submission and re-attaches to (re-polls) that same live task instead of resubmitting. Only
+     * pass a [job] for the single async task a generation actually waits on, so the persisted
+     * `task_id` is unambiguous.
      */
     private suspend fun runAsyncGenerationTask(
         submitUrl: String,
@@ -1209,15 +1220,24 @@ object QwenAIService : AIGenerationService {
         ledger: MutableList<AiLedgerEntry>? = null,
         ledgerModel: String? = null,
         ledgerDescription: String? = null,
+        job: Job? = null,
         onPollProgress: suspend (percent: Int) -> Unit,
     ): String {
-        val submitResponse = postJson(submitUrl, requestBody, async = true)
-        val output = submitResponse["output"]?.jsonObject
-            ?: throw IllegalStateException("Model Studio submit response missing 'output': $submitResponse")
-        val taskId = output["task_id"]?.jsonPrimitive?.contentOrNull
-            ?: throw IllegalStateException("Model Studio submit response missing 'task_id': $submitResponse")
-
-        logger.info("Submitted Model Studio task {}", taskId)
+        val resumeTaskId = job?.taskId?.takeIf { it.isNotBlank() }
+        val taskId: String = if (resumeTaskId != null) {
+            logger.info("Resuming interrupted Model Studio task {} for job {}", resumeTaskId, job.id)
+            resumeTaskId
+        } else {
+            val submitResponse = postJson(submitUrl, requestBody, async = true)
+            val output = submitResponse["output"]?.jsonObject
+                ?: throw IllegalStateException("Model Studio submit response missing 'output': $submitResponse")
+            val submittedTaskId = output["task_id"]?.jsonPrimitive?.contentOrNull
+                ?: throw IllegalStateException("Model Studio submit response missing 'task_id': $submitResponse")
+            logger.info("Submitted Model Studio task {}", submittedTaskId)
+            // Persist the task_id so a crash before completion can resume this exact task.
+            job?.let { persistJobTaskId(it.id, submittedTaskId) }
+            submittedTaskId
+        }
 
         val deadline = System.currentTimeMillis() + QwenConfig.pollTimeoutMs
         while (true) {
@@ -1235,6 +1255,9 @@ object QwenAIService : AIGenerationService {
                     if (ledger != null && ledgerModel != null) {
                         ledger.recordCall(ledgerDescription ?: "AI generation", ledgerModel, taskResponse)
                     }
+                    // Task consumed: stop tracking it so a later crash doesn't try to resume a
+                    // completed task (and so any subsequent async task in the same job starts fresh).
+                    job?.let { persistJobTaskId(it.id, null) }
                     onPollProgress(100)
                     return url
                 }
@@ -1247,6 +1270,38 @@ object QwenAIService : AIGenerationService {
                     onPollProgress(50)
                 }
             }
+        }
+    }
+
+    /**
+     * Records the current in-flight DashScope [taskId] (or null once the task completes) on the
+     * job so an interrupted generation can be resumed after a restart. Reloads the freshest job
+     * document first so unrelated fields are never clobbered, and never fails the generation if the
+     * bookkeeping write itself errors.
+     */
+    private fun persistJobTaskId(jobId: String, taskId: String?) {
+        runCatching {
+            val current = JobRepository.getById(jobId) ?: return
+            JobRepository.update(current.copy(taskId = taskId))
+        }.onFailure { logger.warn("Could not persist task_id for job {}: {}", jobId, it.message) }
+    }
+
+    override suspend fun probeAsyncTaskStatus(taskId: String): AsyncTaskState {
+        // Without credentials we cannot ask Model Studio anything, so the task is not resumable.
+        if (!QwenConfig.isConfigured) return AsyncTaskState.UNKNOWN
+        val response = runCatching { getJson("${QwenConfig.dashScopeBaseUrl}/tasks/$taskId") }
+            .getOrElse {
+                logger.warn("Could not probe Model Studio task {}: {}", taskId, it.message)
+                return AsyncTaskState.UNKNOWN
+            }
+        val status = response["output"]?.jsonObject
+            ?.get("task_status")?.jsonPrimitive?.contentOrNull?.uppercase()
+        return when (status) {
+            "PENDING" -> AsyncTaskState.PENDING
+            "RUNNING" -> AsyncTaskState.RUNNING
+            "SUCCEEDED" -> AsyncTaskState.SUCCEEDED
+            "FAILED", "CANCELED" -> AsyncTaskState.FAILED
+            else -> AsyncTaskState.UNKNOWN
         }
     }
 

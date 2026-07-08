@@ -74,6 +74,25 @@ class FFmpegServiceErrorTest {
     }
 
     @Test
+    fun vignetteExprIsAnAspectMatchedFeatheredOvalRevealMatchingTheShader() {
+        val expr = FFmpegService.vignetteAlphaExpression(2.0)
+
+        // Aspect-matched oval: each axis is normalized by its half-extent (W/2, H/2) so the reveal is
+        // an ellipse in pixel space, mirroring the WebGL shader's (vPos-0.5)*2 normalized coords.
+        assertTrue(expr.contains("(X-W/2)/(W/2)"), "x axis normalized by its half-extent")
+        assertTrue(expr.contains("(Y-H/2)/(H/2)"), "y axis normalized by its half-extent")
+        assertTrue(expr.contains("hypot("), "elliptical distance via hypot, like the circle mask")
+        // Divided by the center-to-corner distance sqrt(2) so it is 0 at the center and 1 at a corner.
+        assertTrue(expr.contains("1.41421356"), "normalized by the sqrt(2) corner distance")
+        // Animated over the window: the reveal radius grows with progress = min(T/dur, 1) past 1 so
+        // the corners finish fully opaque (the *(1+0.15) feather headroom).
+        assertTrue(expr.contains("min(T/2.0,1)"), "reveal radius animates with T over the window")
+        assertTrue(expr.contains("(1+0.15)"), "reveal grows past 1 so corners end fully opaque")
+        // Produces a valid, clamped 0..255 alpha ramp with a soft feathered edge.
+        assertTrue(expr.startsWith("clip(") && expr.endsWith(",0,255)"), "clamped to a valid alpha, got: $expr")
+    }
+
+    @Test
     fun textColorHelpersConvertHexToFfmpegColorAndAlpha() {
         // #RRGGBB is opaque; the FFmpeg literal drops the leading '#' and adds a 0x prefix.
         assertEquals("0xFF0000", FFmpegService.ffmpegColorHex("#FF0000"))

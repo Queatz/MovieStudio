@@ -41,6 +41,14 @@ data class AiJobPayload(
     val sourceUrl: String? = null
 )
 
+/**
+ * The state of a remote asynchronous generation task (e.g. an Alibaba Model Studio / DashScope
+ * task), as observed by [AIGenerationService.probeAsyncTaskStatus]. [UNKNOWN] covers "no such
+ * task", provider errors and any status the backend does not expose, and is treated by
+ * [JobRecoveryService] as not resumable.
+ */
+enum class AsyncTaskState { PENDING, RUNNING, SUCCEEDED, FAILED, UNKNOWN }
+
 interface AIGenerationService {
     /**
      * Auto-generates (or regenerates) a transcript with per-word timings for a voice/voiceover
@@ -91,6 +99,14 @@ interface AIGenerationService {
 
     suspend fun executeAiGenerationJob(job: Job, onProgress: suspend (progress: Int, message: String) -> Unit)
 
+    /**
+     * Queries the current state of a previously submitted remote asynchronous generation task
+     * (identified by [taskId]). Used on server start to decide whether an interrupted job can be
+     * resumed by re-polling its still-live task or must be cleaned up. The default returns
+     * [AsyncTaskState.UNKNOWN] for backends that do not run resumable async tasks.
+     */
+    suspend fun probeAsyncTaskStatus(taskId: String): AsyncTaskState = AsyncTaskState.UNKNOWN
+
     companion object : AIGenerationService {
         private var delegate: AIGenerationService = QwenAIService
 
@@ -121,6 +137,9 @@ interface AIGenerationService {
 
         override suspend fun executeAiGenerationJob(job: Job, onProgress: suspend (progress: Int, message: String) -> Unit) =
             delegate.executeAiGenerationJob(job, onProgress)
+
+        override suspend fun probeAsyncTaskStatus(taskId: String): AsyncTaskState =
+            delegate.probeAsyncTaskStatus(taskId)
     }
 }
 

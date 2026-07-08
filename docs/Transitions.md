@@ -21,7 +21,7 @@ export derive their behavior from the **same shared logic in `core`** so they st
 Defined in `core/src/commonMain/kotlin/app/moviestudio/Models.kt`:
 
 ```kotlin
-enum class TransitionType { NONE, ALPHA, NOISE, VORONOI, SLIDE, CIRCLE, PIXELATE }
+enum class TransitionType { NONE, ALPHA, NOISE, VORONOI, SLIDE, CIRCLE, VIGNETTE, PIXELATE }
 
 /** Which edge a SLIDE transition enters from (FROM_RIGHT reproduces the original behavior). */
 enum class SlideDirection { FROM_LEFT, FROM_RIGHT, FROM_TOP, FROM_BOTTOM }
@@ -53,6 +53,7 @@ data class TransitionSpec(
   | `VORONOI`        | Voronoi cells   |
   | `SLIDE`          | Slide           |
   | `CIRCLE`         | Circle reveal   |
+  | `VIGNETTE`       | Vignette        |
   | `PIXELATE`       | Pixelate        |
 
 ---
@@ -94,6 +95,7 @@ data class TransitionVisual(
     val translateXFraction: Float = 0f,  // slide offset, fraction of stage (+ = right)
     val translateYFraction: Float = 0f,  // slide offset, fraction of stage (+ = down)
     val revealRadiusFraction: Float = 1f,// centered circular reveal (1 = no mask, 0 = nothing)
+    val vignetteRevealFraction: Float = 1f,// aspect-matched soft-edged oval reveal (1 = no mask)
     val pixelateFraction: Float = 0f,    // mosaic amount (0 = crisp, 1 = maximally blocky)
     val noiseFraction: Float = 0f,       // grain/dissolve amount (0 = clean, 1 = fully speckled)
     val voronoiFraction: Float = 0f,     // voronoi-cell amount (0 = crisp, 1 = coarse cells)
@@ -107,6 +109,10 @@ fun TransitionSpec.visualAt(progress: Float): TransitionVisual
   - `SLIDE` → translate the clip in from its `direction` at full opacity (`translate = ±(1 - p)`).
   - `CIRCLE` → a centered circular reveal that grows from nothing to full (`revealRadiusFraction = p`)
     at full opacity — **no** cross-fade.
+  - `VIGNETTE` → a centered, aspect-matched **elliptical** reveal with a soft (feathered) edge that
+    grows from nothing to full (`vignetteRevealFraction = p`), plus an accompanying `alpha = p`
+    cross-fade so the default DOM preview can fall back to a plain fade while the WebGL preview and
+    the FFmpeg export draw the real oval iris.
   - `PIXELATE` → the clip resolves out of large mosaic blocks (`pixelateFraction = 1 - p`) while it
     cross-fades in (`alpha = p`).
   - `NOISE` → the clip emerges from grain/dissolve speckle (`noiseFraction = 1 - p`) while it
@@ -147,6 +153,7 @@ and applied as follows (clip-local time `0..transitionDur`):
 | `VORONOI`        | alpha fade-in **+** **animated voronoi cells** via `geq` (see below)                                    |
 | `PIXELATE`       | alpha fade-in **+** **animated mosaic** (see below)                                                     |
 | `CIRCLE`         | `format=yuva420p` **+** growing circular alpha mask via `geq` (see below) — no fade                     |
+| `VIGNETTE`       | `format=yuva420p` **+** growing aspect-matched, soft-edged **elliptical** alpha mask via `geq` (see below) — no fade |
 
 The textured/masked transitions now have real, animated implementations:
 
@@ -171,6 +178,17 @@ The textured/masked transitions now have real, animated implementations:
   frame. Outside the circle the clip is transparent, so the `overlay` shows the media beneath — a
   true iris-in. This is the exact analog of the preview's `CircleRevealShape`
   (`revealRadiusFraction = min(T/dur, 1)`), so preview and export match.
+- **`VIGNETTE` — growing soft-edged elliptical reveal.** Like `CIRCLE`, but the alpha mask is an
+  aspect-matched **ellipse** with a feathered edge (`FFmpegService.vignetteAlphaExpression`): each
+  axis is normalized by its half-extent so the reveal is an oval in *pixel* space, and the alpha
+  ramps linearly across a small `feather` band whose radius grows past the corners so the whole
+  frame ends fully opaque:
+  ```
+  geq=...:a='clip(255*(min(T/dur,1)*(1+feather) - en)/feather, 0, 255)'
+  // en = hypot((X-W/2)/(W/2),(Y-H/2)/(H/2)) / sqrt(2)   // 0 at center, 1 at a corner
+  ```
+  This is the exact analog of the WebGL shader's `uVignette` oval. The default DOM preview can't
+  express it, so there it falls back to the accompanying alpha fade.
 - **`PIXELATE` — animated mosaic.** Instead of a constant `pixelize=16`, the block size is animated:
   the clip is downscaled with nearest-neighbor to a *time-varying* tiny size and scaled back up, so
   the blocks start large (`maxBlock` px at `t=0`) and shrink to 1px (crisp) as the window ends:
@@ -202,9 +220,9 @@ applies the shared `visualAt(progressAt(...))` to every visual clip under the pl
   `VideoPlayer` (below).
 - **Description-only cards** are *not* transitioned, matching FFmpeg (those items skip the
   transition block in the render).
-- **Pixelate / Noise / Voronoi** show only their alpha fade in the **default DOM preview** (Compose
-  can't mosaic/grain the content); the real textured animation appears in the export and in the
-  **WebGL preview** (below).
+- **Pixelate / Noise / Voronoi / Vignette** show only their alpha fade in the **default DOM preview**
+  (Compose can't mosaic/grain the content, and the vignette oval iris is drawn only by the shader /
+  FFmpeg); the real effect appears in the export and in the **WebGL preview** (below).
 
 Because a transitioning clip becomes partly transparent / offset, the lower-`zIndex` clips (or the
 black stage) show through exactly as the FFmpeg overlay reveals `currentVideoTag`.
@@ -225,6 +243,10 @@ overlay can't, so it matches the FFmpeg export far more closely:
 - **`NOISE`** — the clip's alpha is speckled with a per-pixel hash grain that fades out as the
   transition completes (`a = clamp(alpha + (rand - 0.5) * 2 * noiseFraction, 0, 1)`); a per-frame
   seed animates the grain.
+- **`VIGNETTE`** — the alpha is a centered, aspect-matched **oval** with a soft feathered edge that
+  grows from the center outward
+  (`a = clamp((vignetteRevealFraction*(1+feather) - en)/feather, 0, 1)`, `en` = normalized
+  elliptical distance), mirroring the FFmpeg `geq` oval mask.
 
 The shader uses `precision highp float` (guaranteed by the preferred WebGL2 context) so the
 hash-based grain/cells keep precision. The three amounts travel to the shader through the per-frame
@@ -314,7 +336,7 @@ export in lock-step for the transitions we ship.
 
 ## 8. Remaining gaps
 
-- **Pixelate / Noise / Voronoi are fade-only in the *default* DOM preview.** Compose can't mosaic /
+- **Pixelate / Noise / Voronoi / Vignette are fade-only in the *default* DOM preview.** Compose can't mosaic /
   grain content and the web video is a DOM overlay, so the default preview shows only the
   accompanying alpha fade. The **WebGL preview** (§5.1) and the FFmpeg export both apply the real
   textured animation; switching the renderer to WebGL closes the gap.
@@ -334,8 +356,10 @@ export in lock-step for the transitions we ship.
   **shared `core` code** as a small set of orthogonal **primitives** (alpha / translate / circular
   reveal / pixelate / noise / voronoi), so the preview and FFmpeg stay in lock-step.
 - **`CIRCLE`** is a real growing circular reveal (FFmpeg `geq` alpha mask; preview
-  `CircleRevealShape` / web `clip-path`), **`PIXELATE`** **animates** the mosaic (time-varying
-  nearest-neighbor down/up-scale), and **`NOISE`** / **`VORONOI`** add real grain / voronoi cells.
+  `CircleRevealShape` / web `clip-path`), **`VIGNETTE`** is a soft-edged aspect-matched oval reveal
+  (FFmpeg `geq` / WebGL shader, with an alpha-fade fallback in the default preview), **`PIXELATE`**
+  **animates** the mosaic (time-varying nearest-neighbor down/up-scale), and **`NOISE`** /
+  **`VORONOI`** add real grain / voronoi cells.
 - The **live `PreviewPanel` applies transitions** to images (`graphicsLayer` + circle clip) and
   video (via the extended `VideoPlayer`, which honors `alpha` / offset / reveal — on web by driving
   the DOM overlay's `style.opacity` / position / `clipPath`). The **WebGL preview** additionally

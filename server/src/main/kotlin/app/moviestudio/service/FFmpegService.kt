@@ -509,6 +509,15 @@ object FFmpegService {
                         "a='if(lte(hypot(X-W/2,Y-H/2),hypot(W/2,H/2)*min(T/$transitionDur,1)),255,0)'"
                 )
             }
+            TransitionType.VIGNETTE -> {
+                // Growing centered, aspect-matched elliptical reveal with a soft feathered edge (an
+                // alpha mask), no fade — the vignette iris. The default DOM preview falls back to a
+                // plain fade; this and the WebGL shader draw the real oval.
+                videoFilters.add("format=yuva420p")
+                videoFilters.add(
+                    "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='${vignetteAlphaExpression(transitionDur)}'"
+                )
+            }
             TransitionType.VORONOI -> {
                 // Resolve out of animated voronoi cells while cross-fading in.
                 videoFilters.add("format=gbrp")
@@ -683,6 +692,33 @@ object FFmpegService {
         // Sample the (already cover-cropped) frame at the nearest seed, converted back to pixels.
         sb.append(";p(clip(ld(1)*($cell),0,W-1),clip(ld(2)*($cell),0,H-1))")
         return sb.toString()
+    }
+
+    /**
+     * The per-pixel `geq` alpha expression that reproduces the WebGL preview's VIGNETTE transition
+     * (see the fragment shader in `WebGLPreview.wasmJs.kt`): a centered, aspect-matched *ellipse*
+     * with a soft, feathered edge that grows from the center outward — a vignette iris. Each pixel's
+     * normalized elliptical distance is
+     *
+     * - `en = hypot((X-W/2)/(W/2), (Y-H/2)/(H/2)) / sqrt(2)` — 0 at the center, 1 at a corner. Each
+     *   axis is normalized by its half-extent so the reveal is an ellipse in pixel space matching the
+     *   movie's aspect, exactly like the shader's `(vPos-0.5)*2` in normalized stage space.
+     *
+     * The reveal radius grows to `1 + feather` over the window (`progress = min(T/dur, 1)`) so the
+     * corners finish fully opaque, and the alpha ramps linearly across a `feather`-wide band:
+     * `a = clip(255 * (progress*(1+feather) - en) / feather, 0, 255)`. `T` is clip-local (the chain
+     * runs before the PTS shift); the caller does not gate it because the mask saturates to fully
+     * opaque once the window ends, so the clip plays crisp afterwards.
+     */
+    internal fun vignetteAlphaExpression(transitionDur: Double): String {
+        val feather = "0.15"
+        val corner = "1.41421356" // sqrt(2): center-to-corner distance in the normalized ellipse space
+        // Aspect-matched oval: normalize each axis by its half-extent (W/2, H/2) so the reveal is an
+        // ellipse in pixel space, then divide by the corner distance so en is 0 at center, 1 at a corner.
+        val en = "hypot((X-W/2)/(W/2),(Y-H/2)/(H/2))/$corner"
+        // The reveal radius grows past 1 (up to 1+feather) so the corners are fully opaque at the end.
+        val reveal = "min(T/$transitionDur,1)*(1+$feather)"
+        return "clip(255*(($reveal)-($en))/$feather,0,255)"
     }
 
     /** The `fontfile=...:` prefix for drawtext when a usable system font is found, else empty. */

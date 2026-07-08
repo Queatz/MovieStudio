@@ -1076,6 +1076,17 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
         }
     }
 
+    // Leaving the music editor (Cancel, ✕, Esc, click-outside or after saving) must stop every
+    // track that could still be sounding: this composable's own sequencer preview loop is torn
+    // down with it on disposal, and the movie's timeline playback (video, music, voice and other
+    // audio) is paused here so nothing keeps playing behind the closed editor.
+    DisposableEffect(Unit) {
+        onDispose {
+            playing = false
+            viewModel.pause()
+        }
+    }
+
     StudioDialog(title = "Music sequencer", onDismiss = onDismiss, width = 640.dp) {
         StudioTextField(
             value = name,

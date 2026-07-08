@@ -101,8 +101,10 @@ private const val SETTLE_NANOS = 500_000_000L
         // cover-crop UV window (uUvScale/uUvOffset), the cross-fade (uAlpha), NOISE (animated grain
         // dissolve on the alpha), and the centered circular reveal (uReveal) evaluated in PIXEL
         // space (the stage is not square) as a fraction of the center-to-corner distance — matching
-        // the DOM clip-path circle and the FFmpeg geq mask. uPixelate/uNoise/uVoronoi are the
-        // shared TransitionVisual fractions (0 = crisp/clean, 1 = strongest); uSeed animates grain.
+        // the DOM clip-path circle and the FFmpeg geq mask, plus the centered aspect-matched
+        // elliptical reveal with a soft feathered edge (uVignette) — the vignette iris. uPixelate/
+        // uNoise/uVoronoi are the shared TransitionVisual fractions (0 = crisp/clean, 1 = strongest);
+        // uSeed animates grain.
         const fsSrc =
             '#ifdef GL_FRAGMENT_PRECISION_HIGH\n' +
             'precision highp float;\n' +
@@ -116,6 +118,7 @@ private const val SETTLE_NANOS = 500_000_000L
             'uniform vec2 uSize;' +
             'uniform float uAlpha;' +
             'uniform float uReveal;' +
+            'uniform float uVignette;' +
             'uniform float uPixelate;' +
             'uniform float uNoise;' +
             'uniform float uVoronoi;' +
@@ -162,6 +165,13 @@ private const val SETTLE_NANOS = 500_000_000L
             '    float d = length((vPos - vec2(0.5, 0.5)) * uSize) / length(uSize * 0.5);' +
             '    if (d > uReveal) { a = 0.0; }' +
             '  }' +
+            '  if (uVignette < 1.0) {' +
+            '    vec2 vd = (vPos - vec2(0.5, 0.5)) * 2.0;' +
+            '    float en = length(vd) / 1.41421356;' +
+            '    float feather = 0.15;' +
+            '    float reveal = uVignette * (1.0 + feather);' +
+            '    a = clamp((reveal - en) / feather, 0.0, 1.0);' +
+            '  }' +
             '  gl_FragColor = vec4(c.rgb, a);' +
             '}';
         const compile = (type, src) => {
@@ -192,6 +202,7 @@ private const val SETTLE_NANOS = 500_000_000L
             uSize: gl.getUniformLocation(prog, 'uSize'),
             uAlpha: gl.getUniformLocation(prog, 'uAlpha'),
             uReveal: gl.getUniformLocation(prog, 'uReveal'),
+            uVignette: gl.getUniformLocation(prog, 'uVignette'),
             uPixelate: gl.getUniformLocation(prog, 'uPixelate'),
             uNoise: gl.getUniformLocation(prog, 'uNoise'),
             uVoronoi: gl.getUniformLocation(prog, 'uVoronoi'),
@@ -298,6 +309,7 @@ private const val SETTLE_NANOS = 500_000_000L
                 gl.uniform2f(S.uSize, canvas.width, canvas.height);
                 gl.uniform1f(S.uAlpha, layer.alpha);
                 gl.uniform1f(S.uReveal, layer.reveal);
+                gl.uniform1f(S.uVignette, layer.vignette);
                 gl.uniform1f(S.uPixelate, layer.pixelate);
                 gl.uniform1f(S.uNoise, layer.noise);
                 gl.uniform1f(S.uVoronoi, layer.voronoi);
@@ -325,7 +337,8 @@ private const val SETTLE_NANOS = 500_000_000L
             offsetY: old ? old.offsetY : 50,
             pixelate: old ? old.pixelate : 0,
             noise: old ? old.noise : 0,
-            voronoi: old ? old.voronoi : 0
+            voronoi: old ? old.voronoi : 0,
+            vignette: old ? old.vignette : 1
         });
     }
     S.layers = next;
@@ -398,8 +411,8 @@ private const val SETTLE_NANOS = 500_000_000L
 """)
 private external fun jsWebGLSyncStructure(structJson: String, playing: Boolean)
 
-// Pushes the fast-changing per-frame values (11 numbers per layer, in stack order: position, alpha,
-// dx, dy, reveal, offsetX, offsetY, volume, pixelate, noise, voronoi) as a flat CSV — parsed with a
+// Pushes the fast-changing per-frame values (12 numbers per layer, in stack order: position, alpha,
+// dx, dy, reveal, offsetX, offsetY, volume, pixelate, noise, voronoi, vignette) as a flat CSV — parsed with a
 // cheap split, no JSON.parse and no per-tick object allocation. The structure must already be in
 // place (jsWebGLSyncStructure); if the count does not match yet, the tick is skipped and the next
 // one applies. Video layers re-seek here when they drift more than 0.5s from their target position,
@@ -411,9 +424,9 @@ private external fun jsWebGLSyncStructure(structJson: String, playing: Boolean)
     if (!S || !S.layers || S.layers.length === 0) { return; }
     const parts = csv.length ? csv.split(',') : [];
     const n = S.layers.length;
-    if (parts.length !== n * 11) { return; }
+    if (parts.length !== n * 12) { return; }
     for (let i = 0; i < n; i++) {
-        const b = i * 11;
+        const b = i * 12;
         const layer = S.layers[i];
         layer.position = parseFloat(parts[b]);
         layer.alpha = parseFloat(parts[b + 1]);
@@ -426,6 +439,7 @@ private external fun jsWebGLSyncStructure(structJson: String, playing: Boolean)
         layer.pixelate = parseFloat(parts[b + 8]);
         layer.noise = parseFloat(parts[b + 9]);
         layer.voronoi = parseFloat(parts[b + 10]);
+        layer.vignette = parseFloat(parts[b + 11]);
         if (layer.kind === 'video') {
             const entry = S.videos[layer.key];
             if (entry && entry.el) {
@@ -522,9 +536,9 @@ private fun structuralJson(layers: List<WebGLPreviewLayer>): String = buildStrin
 }
 
 /**
- * Serializes the fast-changing per-frame values as a flat CSV (11 numbers per layer, in stack order:
- * position, alpha, dx, dy, reveal, offsetX, offsetY, volume, pixelate, noise, voronoi) — cheaper to
- * build and parse than JSON and allocation-free on the JS side.
+ * Serializes the fast-changing per-frame values as a flat CSV (12 numbers per layer, in stack order:
+ * position, alpha, dx, dy, reveal, offsetX, offsetY, volume, pixelate, noise, voronoi, vignette) —
+ * cheaper to build and parse than JSON and allocation-free on the JS side.
  */
 private fun frameCsv(layers: List<WebGLPreviewLayer>): String = buildString {
     layers.forEachIndexed { index, layer ->
@@ -539,7 +553,8 @@ private fun frameCsv(layers: List<WebGLPreviewLayer>): String = buildString {
         append(layer.volume).append(',')
         append(layer.pixelateFraction).append(',')
         append(layer.noiseFraction).append(',')
-        append(layer.voronoiFraction)
+        append(layer.voronoiFraction).append(',')
+        append(layer.vignetteRevealFraction)
     }
 }
 

@@ -53,6 +53,21 @@ object JobRepository {
     }
 
     /**
+     * All jobs currently in the RUNNING state. On a fresh server start these can only be jobs that
+     * were interrupted by a crash/restart (their in-memory worker coroutines are gone), so
+     * [app.moviestudio.service.JobRecoveryService] uses this to resume or clean them up.
+     */
+    fun queryRunningJobs(): List<Job> {
+        val query = "FOR j IN $COLLECTION FILTER j.status == 'RUNNING' RETURN j"
+        val cursor = ArangoDatabase.db.query(query, RawJson::class.java)
+        val jobs = mutableListOf<Job>()
+        for (rawJson in cursor) {
+            jobs.add(json.decodeFromString(Job.serializer(), rawJson.get()))
+        }
+        return jobs
+    }
+
+    /**
      * Lists jobs for the background-generations panel: newest first, optionally restricted to a
      * movie. When [activeOnly] is set, only PENDING/RUNNING jobs are returned; [includeFailed]
      * additionally keeps FAILED jobs in that listing so the user can retry or dismiss them.

@@ -37,7 +37,12 @@ data class WebGLPreviewLayer(
     /** Grain/dissolve amount (0 = clean, 1 = fully speckled), from [TransitionVisual.noiseFraction]. */
     val noiseFraction: Float = 0f,
     /** Voronoi-cell amount (0 = crisp, 1 = coarse cells), from [TransitionVisual.voronoiFraction]. */
-    val voronoiFraction: Float = 0f
+    val voronoiFraction: Float = 0f,
+    /**
+     * Centered, aspect-matched elliptical reveal with a soft (feathered) edge — the "vignette" iris,
+     * from [TransitionVisual.vignetteRevealFraction] (1 = fully revealed / no mask, 0 = nothing).
+     */
+    val vignetteRevealFraction: Float = 1f
 )
 
 /** [WebGLPreviewLayer.kind] of a still image (texture uploaded once, cached by URL). */

@@ -6,7 +6,7 @@ Acting as an "AI Director," the application orchestrates multiple generative AI 
 
 ### ✨ Key Features
 * **Movie Skeletons (Prompt-to-Movie):** Describe a scene or a whole movie and Qwen plans placeholder items straight onto the timeline at the playhead — each one generatable (and regeneratable, with restorable history) with one click.
-* **Multi-Track Timeline Editor:** Draggable/resizable clips, a scrubbable playhead, zoom + scroll controls, per-clip transitions (alpha, noise, voronoi, slide, circle, pixelate) over overlapping media, volume, and space-bar play/pause.
+* **Multi-Track Timeline Editor:** Draggable/resizable clips, a scrubbable playhead, zoom + scroll controls, per-clip transitions (alpha, noise, voronoi, slide, circle, vignette, pixelate) over overlapping media, volume, and space-bar play/pause.
 * **Generate Anything:** WAN 2.7 video (T2V / I2V / R2V picked predictably from your inputs), images, Fun-Music songs (AI lyrics + theme + instrumental), sound effects (video ➜ audio extraction + clipping), and Qwen TTS voiceovers with word-timed transcripts and captions.
 * **Voice Suite:** Preset Qwen voices plus voice cloning, editable transcripts that re-run through Qwen for word offsets, a visual word-timing editor, and a caption editor with a font chooser.
 * **Saved Characters & Scenes:** Reusable libraries (name, description, up to 3 reference images) that plug into generations as R2V references.

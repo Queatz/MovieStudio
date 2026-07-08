@@ -223,6 +223,13 @@ data class Job(
     // Failure reason, set when the job transitions to FAILED (shown in the background-
     // generations list so the user can decide to retry or dismiss).
     val error: String? = null,
+    // The id of the in-flight asynchronous provider task (e.g. an Alibaba Model Studio /
+    // DashScope task_id) this job is currently waiting on, when the generation is executed as a
+    // remote async task. Persisted while the task is running and cleared once it completes, so a
+    // job interrupted by a server crash can be resumed by re-polling the same remote task on
+    // startup instead of being restarted from scratch (see JobRecoveryService). Null for jobs
+    // with no resumable remote task (synchronous generations, renders, skeleton planning).
+    val taskId: String? = null,
     val createdAt: Long = 0
 )
 
@@ -507,6 +514,7 @@ enum class TransitionType {
     VORONOI,
     SLIDE,
     CIRCLE,
+    VIGNETTE,
     PIXELATE,
 }
 
@@ -518,6 +526,7 @@ fun TransitionType.displayName(): String = when (this) {
     TransitionType.VORONOI -> "Voronoi cells"
     TransitionType.SLIDE -> "Slide"
     TransitionType.CIRCLE -> "Circle reveal"
+    TransitionType.VIGNETTE -> "Vignette"
     TransitionType.PIXELATE -> "Pixelate"
 }
 
@@ -569,6 +578,10 @@ const val TRANSITION_MIN_SECONDS: Double = 0.05
  *   (+X = right, +Y = down); a slide starts fully off-screen (|fraction| = 1) and settles at 0.
  * - [revealRadiusFraction]: a centered circular reveal mask, as a fraction of the distance from the
  *   center to a corner (0 = nothing shown, 1 = fully revealed / no mask).
+ * - [vignetteRevealFraction]: a centered, aspect-matched *elliptical* reveal with a soft (feathered)
+ *   edge — the "vignette" iris (0 = nothing shown, 1 = fully revealed / no mask). Unlike the hard
+ *   [revealRadiusFraction] circle, the oval matches the stage aspect and the reveal radius grows a
+ *   little past the corners so the whole frame ends fully opaque.
  * - [pixelateFraction]: mosaic amount (0 = crisp, 1 = maximally blocky).
  * - [noiseFraction]: grain/dissolve amount (0 = clean, 1 = fully speckled) applied to the clip's
  *   alpha, so the clip emerges from noise.
@@ -590,6 +603,7 @@ data class TransitionVisual(
     val translateXFraction: Float = 0f,
     val translateYFraction: Float = 0f,
     val revealRadiusFraction: Float = 1f,
+    val vignetteRevealFraction: Float = 1f,
     val pixelateFraction: Float = 0f,
     val noiseFraction: Float = 0f,
     val voronoiFraction: Float = 0f
@@ -620,6 +634,10 @@ fun TransitionSpec?.progressAt(clipLocalSeconds: Double, clipDuration: Double): 
  *   opacity (`translate = ±(1 - progress)`).
  * - [TransitionType.CIRCLE]: a centered circular reveal that grows from nothing to full
  *   (`revealRadiusFraction = progress`) at full opacity — no cross-fade.
+ * - [TransitionType.VIGNETTE]: a centered, aspect-matched elliptical reveal with a soft edge that
+ *   grows from nothing to full (`vignetteRevealFraction = progress`). The GPU-composited WebGL
+ *   preview and the FFmpeg render draw the real oval iris; the default DOM preview can only express
+ *   the accompanying `alpha = progress` cross-fade, so it falls back to a plain fade.
  * - [TransitionType.PIXELATE]: the clip resolves out of large mosaic blocks
  *   (`pixelateFraction = 1 - progress`) while it cross-fades in (`alpha = progress`).
  * - [TransitionType.NOISE]: the clip emerges from grain/dissolve speckle
@@ -646,6 +664,7 @@ fun TransitionSpec.visualAt(progress: Float): TransitionVisual {
             }
         }
         TransitionType.CIRCLE -> TransitionVisual(revealRadiusFraction = p)
+        TransitionType.VIGNETTE -> TransitionVisual(alpha = p, vignetteRevealFraction = p)
         TransitionType.PIXELATE -> TransitionVisual(alpha = p, pixelateFraction = 1f - p)
         TransitionType.NOISE -> TransitionVisual(alpha = p, noiseFraction = 1f - p)
         TransitionType.VORONOI -> TransitionVisual(alpha = p, voronoiFraction = 1f - p)
