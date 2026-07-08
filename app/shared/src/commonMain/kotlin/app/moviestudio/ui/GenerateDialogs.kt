@@ -182,6 +182,17 @@ fun GenerateMediaDialog(
     val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
     val videoAssets = viewModel.libraryAssets.filter { it.type == AssetType.VIDEO && it.ossUrl.isNotBlank() }
 
+    // Video editing repaints the base clip and keeps its length, so whenever a base video is
+    // chosen (or one is pre-selected) preset the duration to that base video's own duration.
+    LaunchedEffect(videoUrl, kind) {
+        if (kind == "video") {
+            val base = videoUrl ?: return@LaunchedEffect
+            val baseAsset = videoAssets.firstOrNull { it.ossUrl == base }
+                ?: initialAsset?.takeIf { it.ossUrl == base }
+            baseAsset?.durationSeconds?.takeIf { it > 0 }?.let { duration = it }
+        }
+    }
+
     // Placeholder assets (description only, no media yet) always fill in place — generating
     // replaces the placeholder rather than spawning a new asset. Only real media that already has
     // output is "regenerated" into a brand-new asset (leaving the original untouched).
@@ -468,21 +479,35 @@ fun GenerateMediaDialog(
             }
 
             Spacer(Modifier.height(6.dp))
-            LabeledSlider(
-                label = "Duration",
-                value = duration.toFloat(),
-                valueRange = 2f..15f,
-                valueText = "${duration.roundToInt()}s",
-                onValueChange = { duration = it.toDouble() }
-            )
+            if (modelKind == "videoedit") {
+                // Video editing repaints the base clip frame-for-frame, so the output length is
+                // fixed to the base video's — the duration is shown read-only, not adjustable.
+                Text(
+                    "Duration: ${duration.roundToInt()}s — matches the base video",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                LabeledSlider(
+                    label = "Duration",
+                    value = duration.toFloat(),
+                    valueRange = 2f..15f,
+                    valueText = "${duration.roundToInt()}s",
+                    onValueChange = { duration = it.toDouble() }
+                )
+            }
         }
 
-        DropdownSelector(
-            label = "Resolution",
-            options = if (kind == "image") SUPPORTED_IMAGE_SIZES else SUPPORTED_VIDEO_SIZES,
-            selected = resolution,
-            display = { it }
-        ) { resolution = it }
+        // Video editing inherits the base video's resolution, so the resolution picker is only
+        // shown for the kinds that actually honor it.
+        if (modelKind != "videoedit") {
+            DropdownSelector(
+                label = "Resolution",
+                options = if (kind == "image") SUPPORTED_IMAGE_SIZES else SUPPORTED_VIDEO_SIZES,
+                selected = resolution,
+                display = { it }
+            ) { resolution = it }
+        }
 
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }

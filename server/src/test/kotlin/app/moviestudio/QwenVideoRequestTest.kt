@@ -41,6 +41,12 @@ class QwenVideoRequestTest {
             .filter { it.getValue("type").jsonPrimitive.content == "reference_image" }
             .map { it.getValue("url").jsonPrimitive.content }
 
+    /** The `url` values of each `reference_video` media object in the `input.media` list. */
+    private fun JsonObject.referenceVideoUrls(): List<String> =
+        getValue("media").jsonArray.map { it.jsonObject }
+            .filter { it.getValue("type").jsonPrimitive.content == "reference_video" }
+            .map { it.getValue("url").jsonPrimitive.content }
+
     private fun ossUrl(objectKey: String): String {
         val endpointHost = OssService.endpoint.removePrefix("http://").removePrefix("https://").removeSuffix("/")
         return "https://${OssService.bucketName}.$endpointHost/$objectKey?Expires=1&Signature=old"
@@ -109,13 +115,53 @@ class QwenVideoRequestTest {
     }
 
     @Test
-    fun videoEditSendsBaseVideoUrl() {
+    fun videoEditSendsBaseVideoAsInputMediaList() {
         val setup = GenerationSetup(kind = "video", prompt = "Repaint", videoUrl = "https://oss/base.mp4")
         assertEquals("videoedit", setup.resolveVideoModelKind())
 
         val body = QwenAIService.buildVideoRequestBody(setup, "Repaint, cinematic", "videoedit", "wan2.7-videoedit")
+        val input = body.input()
 
-        assertEquals("https://oss/base.mp4", body.input().str("video_url"))
+        assertEquals(
+            listOf("https://oss/base.mp4"),
+            input.referenceVideoUrls(),
+            "video edit must send the base video as a reference_video media object under input.media",
+        )
+        assertNull(input["video_url"], "video edit must not send the legacy scalar video_url field")
+        assertNull(input["ref_images_url"], "video edit must not send the legacy ref_images_url field")
+        assertNull(input["img_url"], "video edit must not send the legacy img_url field")
+        // The edited clip inherits the base video's resolution and length, so no output size or
+        // duration parameter is sent.
+        val parameters = body.getValue("parameters").jsonObject
+        assertNull(parameters["size"], "video edit must not send an output size (it follows the base video)")
+        assertNull(parameters["duration"], "video edit must not send a duration (it follows the base video)")
+    }
+
+    @Test
+    fun videoEditSendsOptionalReferenceImagesAndFirstFrame() {
+        val setup = GenerationSetup(
+            kind = "video",
+            prompt = "Repaint",
+            videoUrl = "https://oss/base.mp4",
+            referenceImages = listOf("https://oss/ref-a.png", "https://oss/ref-b.png"),
+            imageUrl = "https://oss/first-frame.png",
+        )
+        assertEquals("videoedit", setup.resolveVideoModelKind())
+
+        val body = QwenAIService.buildVideoRequestBody(setup, "Repaint, cinematic", "videoedit", "wan2.7-videoedit")
+        val input = body.input()
+
+        assertEquals(listOf("https://oss/base.mp4"), input.referenceVideoUrls())
+        assertEquals(
+            listOf("https://oss/ref-a.png", "https://oss/ref-b.png"),
+            input.referenceUrls(),
+            "optional reference images must ride along as reference_image media objects",
+        )
+        assertEquals(
+            listOf("https://oss/first-frame.png"),
+            input.firstFrameUrls(),
+            "an optional guiding image must ride along as a first_frame media object",
+        )
     }
 
     @Test

@@ -471,7 +471,12 @@ object QwenAIService : AIGenerationService {
      *        rejected with "Field required: input.media". R2V also needs an explicit output
      *        `size` — without it the task fails with "'NoneType' object has no attribute
      *        'resolution'".
-     * - videoedit: the base `video_url`, plus optional reference images and a guiding first frame.
+     * - videoedit: the base clip as a `{ "type": "reference_video", "url": <url> }` media object
+     *        under `input.media`, plus optional `reference_image` entries and a guiding
+     *        `first_frame` entry — the same `input.media` list shape as I2V/R2V. Model Studio
+     *        rejects the legacy scalar `video_url` field with "Field required: input.media". The
+     *        edited clip inherits the source video's resolution and length, so no output `size` or
+     *        `duration` parameter is sent for it.
      */
     internal fun buildVideoRequestBody(
         setup: GenerationSetup,
@@ -515,27 +520,45 @@ object QwenAIService : AIGenerationService {
                         })
                     }
                 })
-                // Full wan2.7-videoedit support: the base video to edit, plus every optional
-                // guidance input the model accepts — reference images and a guiding first frame.
-                "videoedit" -> {
-                    put("video_url", setup.videoUrl?.let(OssService::freshDownloadUrl) ?: "")
-                    if (setup.referenceImages.isNotEmpty()) put("ref_images_url", buildJsonArray {
-                        setup.referenceImages.take(4).forEach { add(JsonPrimitive(OssService.freshDownloadUrl(it))) }
+                // WAN 2.7 video-edit expects the base video — and every optional guidance input —
+                // as a list of media objects under `input.media`, each `{ "type": ..., "url": ... }`,
+                // exactly like I2V/R2V. The base clip is a `reference_video` entry; optional
+                // reference images ride along as `reference_image` entries and an optional guiding
+                // first frame as a `first_frame` entry. Model Studio rejects the legacy scalar
+                // `video_url` / `ref_images_url` / `img_url` fields with "Field required:
+                // input.media".
+                "videoedit" -> put("media", buildJsonArray {
+                    add(buildJsonObject {
+                        put("type", "reference_video")
+                        put("url", setup.videoUrl?.let(OssService::freshDownloadUrl) ?: "")
                     })
+                    setup.referenceImages.take(3).forEach {
+                        add(buildJsonObject {
+                            put("type", "reference_image")
+                            put("url", OssService.freshDownloadUrl(it))
+                        })
+                    }
                     val imageUrl = setup.imageUrl
-                    if (!imageUrl.isNullOrBlank()) put("img_url", OssService.freshDownloadUrl(imageUrl))
-                }
+                    if (!imageUrl.isNullOrBlank()) add(buildJsonObject {
+                        put("type", "first_frame")
+                        put("url", OssService.freshDownloadUrl(imageUrl))
+                    })
+                })
             }
         }
         putJsonObject("parameters") {
-            // T2V, R2V and video-edit need an explicit output size; only I2V infers it from its
-            // first-frame image. R2V without a size fails with "'NoneType' object has no
-            // attribute 'resolution'".
-            if (modelKind != "i2v") {
+            // T2V and R2V need an explicit output size; I2V infers it from its first-frame image
+            // and video-edit inherits the source video's resolution, so neither sends a `size`.
+            // R2V without a size fails with "'NoneType' object has no attribute 'resolution'".
+            if (modelKind != "i2v" && modelKind != "videoedit") {
                 put("size", setup.resolution.ifBlank { "1280*720" })
             }
-            val dur = setup.durationSeconds.toInt()
-            if (dur in 1..15) put("duration", dur)
+            // Video-edit output length always matches the base video, so no `duration` is sent for
+            // it; the other kinds honor the requested duration.
+            if (modelKind != "videoedit") {
+                val dur = setup.durationSeconds.toInt()
+                if (dur in 1..15) put("duration", dur)
+            }
         }
     }
 
