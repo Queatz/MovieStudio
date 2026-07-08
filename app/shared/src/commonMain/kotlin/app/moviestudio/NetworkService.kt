@@ -294,11 +294,17 @@ object NetworkService {
     // ----------------------------------------------------------------------------- generation
 
     /** Queues an AI media generation (video/image/music/tts/sfx) described by [setup]. */
-    suspend fun generateMedia(movieId: String?, setup: GenerationSetup, assetId: String? = null): Job {
+    suspend fun generateMedia(
+        movieId: String?,
+        setup: GenerationSetup,
+        assetId: String? = null,
+        sourceAssetId: String? = null
+    ): Job {
         val body = buildJsonObject {
             if (movieId != null) put("movieId", movieId)
             put("setup", json.encodeToJsonElement(GenerationSetup.serializer(), setup))
             if (assetId != null) put("assetId", assetId)
+            if (sourceAssetId != null) put("sourceAssetId", sourceAssetId)
         }.toString()
         val responseText = client.post(url("/api/generate/media"), body)
         return json.decodeFromString(Job.serializer(), responseText)

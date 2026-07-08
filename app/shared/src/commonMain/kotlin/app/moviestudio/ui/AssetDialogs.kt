@@ -99,6 +99,14 @@ fun AssetDetailsDialog(
     val hasSequence = asset.type == AssetType.MUSIC &&
         asset.generationConfig?.contains("\"notes\"") == true
 
+    // True while at least one generation launched from this asset is still in flight. This checks
+    // the live job state (WebSocket push + polling) rather than anything handed over from the
+    // generate dialogs, so it also reflects jobs already running when the dialog opens and clears
+    // once they all finish. Re-query on open so a job started before the dialog opened shows up
+    // immediately instead of only on the next poll tick.
+    LaunchedEffect(asset.id) { viewModel.refreshActiveJobs() }
+    val generating = viewModel.isGeneratingForAsset(asset.id)
+
     StudioDialog(
         title = "${assetGlyph(asset.type)} ${asset.type.name.lowercase().replaceFirstChar { it.uppercase() }} asset",
         onDismiss = onDismiss,
@@ -147,14 +155,18 @@ fun AssetDetailsDialog(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             // Opens the full generation dialog for the asset's type (same as creating anew),
-            // pre-filled from the asset's stored setup.
+            // pre-filled from the asset's stored setup. Shows a spinner while any generation
+            // launched from this asset is still running.
             PillButton(
                 if (asset.isDescriptionOnly) "✨ Generate media..." else "🔄 Regenerate...",
-                compact = true
+                compact = true,
+                loading = generating
             ) { showGenerate = true }
             // Text assets can be turned into a voiceover in one click (a brand-new VOICE asset).
             if (asset.type == AssetType.TEXT) {
-                GhostPillButton("🗣️ Generate voice...", compact = true) { showGenerateVoice = true }
+                GhostPillButton("🗣️ Generate voice...", compact = true, loading = generating) {
+                    showGenerateVoice = true
+                }
             }
             if (asset.type == AssetType.VIDEO || asset.type == AssetType.IMAGE ||
                 asset.type == AssetType.VOICE) {
@@ -316,7 +328,8 @@ fun AssetDetailsDialog(
         // result as a brand-new VOICE asset (the text asset is left unchanged).
         TtsDialog(
             viewModel,
-            initialText = (asset.description ?: asset.aiPrompt).orEmpty()
+            initialText = (asset.description ?: asset.aiPrompt).orEmpty(),
+            sourceAssetId = asset.id
         ) { showGenerateVoice = false }
     }
     if (showTweak) {

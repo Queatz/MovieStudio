@@ -239,7 +239,13 @@ data class Job(
     // startup instead of being restarted from scratch (see JobRecoveryService). Null for jobs
     // with no resumable remote task (synchronous generations, renders, skeleton planning).
     val taskId: String? = null,
-    val createdAt: Long = 0
+    val createdAt: Long = 0,
+    // The library asset this generation was launched from (the asset whose details dialog opened
+    // the generate/regenerate dialog), when applicable. Lets the UI show a "generating" spinner on
+    // that asset's actions while any of its generations are still in flight, without the generate
+    // dialogs having to talk to the asset dialog directly. Null for jobs not started from an asset
+    // (e.g. a fresh library generation, final renders, skeleton planning).
+    val sourceAssetId: String? = null
 )
 
 @Serializable

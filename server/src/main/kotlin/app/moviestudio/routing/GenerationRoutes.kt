@@ -36,7 +36,13 @@ data class GenerateMediaRequest(
     val movieId: String? = null,
     val setup: GenerationSetup,
     // When set, regenerate this asset in place (previous media goes to its history).
-    val assetId: String? = null
+    val assetId: String? = null,
+    // The library asset this generation was launched from (the asset whose details dialog opened
+    // this generate/regenerate dialog), if any. Recorded on the job so the UI can track which
+    // asset's generations are still in flight. Note this differs from [assetId]: a regeneration of
+    // real media has a null [assetId] (the result becomes a brand-new asset) but still carries the
+    // originating asset here.
+    val sourceAssetId: String? = null
 )
 
 @Serializable
@@ -116,7 +122,8 @@ fun Route.generationRoutes() {
                     payload = json.encodeToString(AiJobPayload.serializer(), payload),
                     resultUrl = null,
                     label = labelFor(expanded),
-                    createdAt = System.currentTimeMillis()
+                    createdAt = System.currentTimeMillis(),
+                    sourceAssetId = request.sourceAssetId ?: request.assetId
                 )
                 JobRepository.insert(job)
                 // A new job was started: make sure the queue worker is running to pick it up.

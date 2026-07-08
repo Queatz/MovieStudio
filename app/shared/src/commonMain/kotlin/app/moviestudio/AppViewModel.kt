@@ -1420,11 +1420,17 @@ class AppViewModel : ViewModel() {
 
     // ================================================================================ generation
 
-    /** Queues an AI media generation described by [setup]; optionally regenerating [assetId]. */
-    fun generateMedia(setup: GenerationSetup, assetId: String? = null) {
+    /**
+     * Queues an AI media generation described by [setup]; optionally regenerating [assetId] in
+     * place. [sourceAssetId] records the library asset this generation was launched from (the
+     * asset whose details dialog opened the generate/regenerate dialog), so the UI can show a
+     * "generating" spinner on that asset while its generations are in flight; it defaults to
+     * [assetId] and is carried on the job even when the result becomes a brand-new asset.
+     */
+    fun generateMedia(setup: GenerationSetup, assetId: String? = null, sourceAssetId: String? = assetId) {
         viewModelScope.launch {
             try {
-                NetworkService.generateMedia(currentMovie?.id, setup, assetId)
+                NetworkService.generateMedia(currentMovie?.id, setup, assetId, sourceAssetId)
                 refreshActiveJobs()
                 rememberLastGenerationSettings(setup)
             } catch (e: Exception) {
@@ -1432,6 +1438,16 @@ class AppViewModel : ViewModel() {
             }
         }
     }
+
+    /**
+     * True while at least one background generation launched from the asset with [assetId] is
+     * still in flight (PENDING/RUNNING). Backed by [runningJobs] (WebSocket push + polling), so it
+     * reflects jobs started earlier — even before this session — as well as ones started while an
+     * asset dialog is open, and clears once they all finish. Reading it in a composable makes the
+     * caller recompose as jobs come and go.
+     */
+    fun isGeneratingForAsset(assetId: String): Boolean =
+        runningJobs.any { it.sourceAssetId == assetId }
 
     /**
      * Remembers the resolution (and, for images, the model) [setup] used, on the current movie,

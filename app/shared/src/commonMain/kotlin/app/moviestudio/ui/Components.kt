@@ -27,6 +27,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
@@ -410,33 +411,51 @@ fun RoundIconButton(
     }
 }
 
-/** Pill-shaped primary action button (clipped before clickable per project guidelines). */
+/**
+ * Pill-shaped primary action button (clipped before clickable per project guidelines). When
+ * [loading] is true a small spinner is shown before the label and the button stops responding to
+ * clicks, so it can indicate an in-flight background action (e.g. a running generation).
+ */
 @Composable
 fun PillButton(
     text: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    loading: Boolean = false,
     container: Color = MaterialTheme.colorScheme.primary,
     contentColor: Color = MaterialTheme.colorScheme.onPrimary,
     compact: Boolean = false,
     onClick: () -> Unit
 ) {
     val shape = RoundedCornerShape(50)
+    // While loading the button is inert (the action is already running) but keeps its full-color
+    // look so the spinner reads as "busy" rather than "disabled".
+    val clickable = enabled && !loading
     Box(
         modifier = modifier
             .clip(shape) // clip BEFORE clickable so hover has rounded corners
             .background(if (enabled) container else container.copy(alpha = 0.4f))
-            .clickable(enabled = enabled) { onClick() }
+            .clickable(enabled = clickable) { onClick() }
             .padding(horizontal = if (compact) 14.dp else 20.dp, vertical = if (compact) 6.dp else 10.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text,
-            color = contentColor,
-            fontSize = if (compact) 13.sp else 15.sp,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = TextAlign.Center
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (loading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(if (compact) 14.dp else 16.dp),
+                    color = contentColor,
+                    strokeWidth = 2.dp
+                )
+                Spacer(Modifier.width(if (compact) 6.dp else 8.dp))
+            }
+            Text(
+                text,
+                color = contentColor,
+                fontSize = if (compact) 13.sp else 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
@@ -446,6 +465,7 @@ fun GhostPillButton(
     text: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    loading: Boolean = false,
     compact: Boolean = false,
     onClick: () -> Unit
 ) {
@@ -453,6 +473,7 @@ fun GhostPillButton(
         text = text,
         modifier = modifier,
         enabled = enabled,
+        loading = loading,
         container = MaterialTheme.colorScheme.surfaceVariant,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         compact = compact,

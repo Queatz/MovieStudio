@@ -229,15 +229,17 @@ fun GenerateMediaDialog(
     val videoAssets = viewModel.libraryAssets.filter { it.type == AssetType.VIDEO && it.ossUrl.isNotBlank() }
 
     // Toggleable "This movie" filters for the media pickers below (base/start/end image, base
-    // video and reference images), mirroring the library panel's own filter. Each defaults to on
-    // so a picker first offers only assets created for the open movie; toggling reveals the whole
-    // library. Assets remember which movie they were created for via [Asset.movieId].
+    // video, reference images, and saved characters/scenes), mirroring the library panel's own
+    // filter. Each defaults to on so a picker first offers only items created for the open movie;
+    // toggling reveals the whole library. Assets, characters and scenes all remember which movie
+    // they were created for via their own `movieId` field.
     val currentMovieId = viewModel.currentMovie?.id
     var baseImageThisMovie by remember { mutableStateOf(true) }
     var baseVideoThisMovie by remember { mutableStateOf(true) }
     var startImageThisMovie by remember { mutableStateOf(true) }
     var endImageThisMovie by remember { mutableStateOf(true) }
     var referenceThisMovie by remember { mutableStateOf(true) }
+    var charactersScenesThisMovie by remember { mutableStateOf(true) }
 
     // Video editing repaints the base clip and keeps its length, so whenever a base video is
     // chosen (or one is pre-selected) preset the duration to that base video's own duration.
@@ -483,24 +485,33 @@ fun GenerateMediaDialog(
                 }
             }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                viewModel.characters.forEach { character ->
-                    val selected = character.id in characterIds
-                    val label = "👤 ${character.name}"
-                    if (selected) {
-                        PillButton(label, compact = true) { characterIds = characterIds - character.id }
-                    } else {
-                        GhostPillButton(label, compact = true) { characterIds = characterIds + character.id }
+                if (viewModel.characters.isNotEmpty() || viewModel.scenes.isNotEmpty()) {
+                    ThisMovieFilterButton(charactersScenesThisMovie) {
+                        charactersScenesThisMovie = !charactersScenesThisMovie
                     }
                 }
-                viewModel.scenes.forEach { scene ->
-                    val selected = scene.id in sceneIds
-                    val label = "🏞️ ${scene.name}"
-                    if (selected) {
-                        PillButton(label, compact = true) { sceneIds = sceneIds - scene.id }
-                    } else {
-                        GhostPillButton(label, compact = true) { sceneIds = sceneIds + scene.id }
+                viewModel.characters
+                    .filter { !charactersScenesThisMovie || it.movieId == currentMovieId }
+                    .forEach { character ->
+                        val selected = character.id in characterIds
+                        val label = "👤 ${character.name}"
+                        if (selected) {
+                            PillButton(label, compact = true) { characterIds = characterIds - character.id }
+                        } else {
+                            GhostPillButton(label, compact = true) { characterIds = characterIds + character.id }
+                        }
                     }
-                }
+                viewModel.scenes
+                    .filter { !charactersScenesThisMovie || it.movieId == currentMovieId }
+                    .forEach { scene ->
+                        val selected = scene.id in sceneIds
+                        val label = "🏞️ ${scene.name}"
+                        if (selected) {
+                            PillButton(label, compact = true) { sceneIds = sceneIds - scene.id }
+                        } else {
+                            GhostPillButton(label, compact = true) { sceneIds = sceneIds + scene.id }
+                        }
+                    }
                 if (viewModel.characters.isEmpty() && viewModel.scenes.isEmpty()) {
                     Text(
                         "No saved characters or scenes yet — create them in the library.",
@@ -622,8 +633,13 @@ fun GenerateMediaDialog(
                     (kind != "image" || isResolutionValidForModel(resolution, imageModel))
             ) {
                 // Editing a placeholder (or tweaking real media) fills the existing asset in place;
-                // only regenerating real media targets a brand-new asset.
-                viewModel.generateMedia(setup, assetId = if (tweak || !regenerating) initialAsset?.id else null)
+                // only regenerating real media targets a brand-new asset. Either way the job is
+                // tagged with the originating asset so its details dialog can show a spinner.
+                viewModel.generateMedia(
+                    setup,
+                    assetId = if (tweak || !regenerating) initialAsset?.id else null,
+                    sourceAssetId = initialAsset?.id
+                )
                 onDismiss()
             }
         }
@@ -1077,8 +1093,10 @@ fun GenerateMusicDialog(viewModel: AppViewModel, initialAsset: Asset? = null, on
                         gender = if (instrumental) "" else gender
                     ),
                     // Regenerating real media saves the result as a new asset; filling a placeholder
-                    // (no media yet) edits that placeholder in place.
-                    assetId = if (regenerating) null else initialAsset?.id
+                    // (no media yet) edits that placeholder in place. The job is tagged with the
+                    // originating asset either way so its details dialog can show a spinner.
+                    assetId = if (regenerating) null else initialAsset?.id,
+                    sourceAssetId = initialAsset?.id
                 )
                 onDismiss()
             }
@@ -1698,8 +1716,10 @@ fun SoundEffectDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDi
                 viewModel.generateMedia(
                     GenerationSetup(kind = "sfx", prompt = prompt, durationSeconds = duration, sfxModel = sfxModel),
                     // Regenerating real media saves the result as a new asset; filling a placeholder
-                    // (no media yet) edits that placeholder in place.
-                    assetId = if (regenerating) null else initialAsset?.id
+                    // (no media yet) edits that placeholder in place. The job is tagged with the
+                    // originating asset either way so its details dialog can show a spinner.
+                    assetId = if (regenerating) null else initialAsset?.id,
+                    sourceAssetId = initialAsset?.id
                 )
                 onDismiss()
             }
@@ -1726,6 +1746,10 @@ fun TtsDialog(
     // Pre-fills the narration text when opening the dialog without an [initialAsset] (e.g.
     // "Generate voice" from a text element). The generated voiceover is saved as a new asset.
     initialText: String = "",
+    // The library asset this dialog was launched from when there is no [initialAsset] (e.g. the
+    // text asset a "Generate voice" was spun off from). Recorded on the job so that asset's
+    // details dialog can show a spinner while the voiceover is being generated.
+    sourceAssetId: String? = null,
     onDismiss: () -> Unit
 ) {
     val initialSetup = remember(initialAsset) {
@@ -1850,8 +1874,12 @@ fun TtsDialog(
                 viewModel.generateMedia(
                     GenerationSetup(kind = "tts", prompt = text, voice = voice, instructions = instructions.trim()),
                     // Editing (tweak) or filling a placeholder (no media yet) edits the existing
-                    // asset in place; only regenerating real media targets a brand-new asset.
-                    assetId = if (tweak || !regenerating) initialAsset?.id else null
+                    // asset in place; only regenerating real media targets a brand-new asset. The
+                    // job is tagged with the originating asset (the edited/regenerated asset, or the
+                    // text asset a voiceover was spun off from) so its details dialog can show a
+                    // spinner.
+                    assetId = if (tweak || !regenerating) initialAsset?.id else null,
+                    sourceAssetId = initialAsset?.id ?: sourceAssetId
                 )
                 onDismiss()
             }

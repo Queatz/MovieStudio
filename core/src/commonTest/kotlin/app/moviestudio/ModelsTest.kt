@@ -350,6 +350,31 @@ class ModelsTest {
     }
 
     @Test
+    fun movieLastGenerationSettingsRoundTripAndLegacyMoviesDecodeAsNull() {
+        val json = Json { ignoreUnknownKeys = true }
+        // A movie's remembered last-used image/video generation settings survive a round-trip.
+        val movie = Movie(
+            id = "m1", title = "Heist", totalDuration = 42.0, status = MovieStatus.IN_PRODUCTION,
+            createdAt = 123L, aspectRatio = "16:9",
+            lastImageResolution = "1328*1328", lastImageModel = "wan2.7-image-pro",
+            lastVideoResolution = "1280*720"
+        )
+        val decoded = json.decodeFromString(Movie.serializer(), json.encodeToString(Movie.serializer(), movie))
+        assertEquals(movie, decoded)
+        assertEquals("1328*1328", decoded.lastImageResolution)
+        assertEquals("wan2.7-image-pro", decoded.lastImageModel)
+        assertEquals("1280*720", decoded.lastVideoResolution)
+        // Movies saved before these fields existed decode with them null (no crash).
+        val legacy = json.decodeFromString(
+            Movie.serializer(),
+            """{"id":"m2","title":"Old","totalDuration":0.0,"status":"DRAFT","createdAt":0}"""
+        )
+        assertNull(legacy.lastImageResolution)
+        assertNull(legacy.lastImageModel)
+        assertNull(legacy.lastVideoResolution)
+    }
+
+    @Test
     fun aiLedgerComputesPerCallCostAndTotals() {
         val ledger = listOf(
             AiLedgerEntry(description = "Refined video prompt", model = "qwen-plus", tokens = 1000, costPerToken = 0.0000004),
@@ -387,6 +412,26 @@ class ModelsTest {
             """{"id":"a2","type":"IMAGE","ossUrl":"","durationSeconds":0.0,"movieId":null,"tags":[],"aiPrompt":null}"""
         )
         assertTrue(legacy.ledger.isEmpty())
+    }
+
+    @Test
+    fun jobSourceAssetIdRoundTripsAndLegacyJobsDecodeWithNull() {
+        val json = Json { ignoreUnknownKeys = true }
+        // A job started from an asset carries that asset's id, surviving a round-trip.
+        val job = Job(
+            id = "j1", movieId = "m1", type = JobType.AI_GEN, status = JobStatus.PENDING,
+            payload = "{}", resultUrl = null, label = "Video: p", createdAt = 7L,
+            sourceAssetId = "asset-42"
+        )
+        val decoded = json.decodeFromString(Job.serializer(), json.encodeToString(Job.serializer(), job))
+        assertEquals(job, decoded)
+        assertEquals("asset-42", decoded.sourceAssetId)
+        // Jobs saved before the field existed decode with a null sourceAssetId (no crash).
+        val legacy = json.decodeFromString(
+            Job.serializer(),
+            """{"id":"j2","movieId":"m1","type":"FFMPEG_RENDER","status":"RUNNING","payload":"{}","resultUrl":null}"""
+        )
+        assertNull(legacy.sourceAssetId)
     }
 
     @Test
