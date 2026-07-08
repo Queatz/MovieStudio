@@ -231,14 +231,35 @@ actual suspend fun captureVideoFrameAndUpload(uploadUrl: String): Boolean {
 
 @JsFun("""
 (url, fileName) => {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    a.target = '_blank';
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    const saveBlob = (href, revoke) => {
+        const a = document.createElement('a');
+        a.href = href;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        if (revoke) { setTimeout(() => URL.revokeObjectURL(href), 1000); }
+    };
+    // Browsers ignore the download attribute (and thus the movie-name file name) when the href
+    // points at a cross-origin resource, e.g. our cloud-storage renders. Fetch the file into a
+    // same-origin blob URL first so the chosen file name is actually honored, and fall back to a
+    // plain link if the fetch is blocked (e.g. missing CORS headers).
+    fetch(url)
+        .then((response) => {
+            if (!response.ok) { throw new Error('download failed'); }
+            return response.blob();
+        })
+        .then((blob) => saveBlob(URL.createObjectURL(blob), true))
+        .catch(() => {
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        });
 }
 """)
 private external fun jsTriggerDownload(url: String, fileName: String)

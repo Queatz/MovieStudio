@@ -1893,9 +1893,14 @@ class AppViewModel : ViewModel() {
                         val now = NetworkService.getJobs(movieId = null, activeOnly = true, includeFailed = true)
                         activeJobs = now
                         val finished = before - now.map { it.id }.toSet()
-                        if (finished.isNotEmpty() && wsConnection == null) {
-                            // Without WS events we still want fresh media after completions, and
-                            // to reveal any newly generated asset in the library.
+                        if (finished.isNotEmpty()) {
+                            // Genuine WS safety net: a job left the active set, so it completed
+                            // (or failed). Refresh regardless of whether a live WS channel exists —
+                            // on web the socket is the ONLY event source, so if a completion frame
+                            // is ever missed (reconnect gap, dropped frame) the freshly generated
+                            // media / skeleton timeline items would otherwise never appear. Both
+                            // refreshes are idempotent, so double-firing alongside a live WS event
+                            // is harmless.
                             refreshLibraryDetectingNew()
                             refreshTimeline()
                         }
@@ -1915,20 +1920,17 @@ class AppViewModel : ViewModel() {
                 // Always refresh the library on completion; surface any freshly generated asset
                 // so the panel can scroll to it when it matches the active filters.
                 viewModelScope.launch { refreshLibraryDetectingNew() }
-                when (event.jobType) {
-                    JobType.SKELETON -> {
-                        // The server planned and inserted timeline items: reload the timeline.
-                        if (event.movieId == currentMovie?.id) refreshTimeline()
-                    }
-                    JobType.FFMPEG_RENDER -> {
-                        if (event.movieId == currentMovie?.id) {
-                            refreshRenders()
-                            refreshTimeline()
-                        }
-                    }
-                    else -> {
-                        if (event.movieId == currentMovie?.id) refreshTimeline()
-                    }
+                // Always reload the open movie's timeline on ANY completed background generation
+                // (skeleton planning, AI media (re)generation, final render). These refreshes are
+                // internally scoped to the currently open movie (refreshTimeline/refreshRenders
+                // no-op when nothing is open) and are idempotent, so we deliberately do NOT gate
+                // them on `event.movieId == currentMovie?.id`: that equality check silently
+                // suppressed the reload whenever the event's movieId was blank or didn't match
+                // exactly, leaving freshly generated media/clips off the timeline until a manual
+                // refresh. Reloading unconditionally is safe and guarantees completions populate.
+                refreshTimeline()
+                if (event.jobType == JobType.FFMPEG_RENDER) {
+                    refreshRenders()
                 }
             }
             JobStatus.FAILED -> {

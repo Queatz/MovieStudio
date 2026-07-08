@@ -208,6 +208,17 @@ fun GenerateMediaDialog(
     val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
     val videoAssets = viewModel.libraryAssets.filter { it.type == AssetType.VIDEO && it.ossUrl.isNotBlank() }
 
+    // Toggleable "This movie" filters for the media pickers below (base/start/end image, base
+    // video and reference images), mirroring the library panel's own filter. Each defaults to on
+    // so a picker first offers only assets created for the open movie; toggling reveals the whole
+    // library. Assets remember which movie they were created for via [Asset.movieId].
+    val currentMovieId = viewModel.currentMovie?.id
+    var baseImageThisMovie by remember { mutableStateOf(true) }
+    var baseVideoThisMovie by remember { mutableStateOf(true) }
+    var startImageThisMovie by remember { mutableStateOf(true) }
+    var endImageThisMovie by remember { mutableStateOf(true) }
+    var referenceThisMovie by remember { mutableStateOf(true) }
+
     // Video editing repaints the base clip and keeps its length, so whenever a base video is
     // chosen (or one is pre-selected) preset the duration to that base video's own duration.
     LaunchedEffect(videoUrl, kind) {
@@ -312,7 +323,10 @@ fun GenerateMediaDialog(
                 } else {
                     GhostPillButton("None", compact = true) { imageUrl = null }
                 }
-                imageAssets.take(12).forEach { image ->
+                if (imageAssets.isNotEmpty()) {
+                    ThisMovieFilterButton(baseImageThisMovie) { baseImageThisMovie = !baseImageThisMovie }
+                }
+                imageAssets.filter { !baseImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { image ->
                     val selected = imageUrl == image.ossUrl
                     val label = "🖼 " + (image.description ?: "image").take(18)
                     if (selected) {
@@ -345,7 +359,10 @@ fun GenerateMediaDialog(
                 } else {
                     GhostPillButton("None", compact = true) { videoUrl = null }
                 }
-                videoAssets.take(12).forEach { video ->
+                if (videoAssets.isNotEmpty()) {
+                    ThisMovieFilterButton(baseVideoThisMovie) { baseVideoThisMovie = !baseVideoThisMovie }
+                }
+                videoAssets.filter { !baseVideoThisMovie || it.movieId == currentMovieId }.take(12).forEach { video ->
                     val selected = videoUrl == video.ossUrl
                     val label = "🎬 " + (video.description ?: "video").take(18)
                     if (selected) {
@@ -375,7 +392,10 @@ fun GenerateMediaDialog(
                 } else {
                     GhostPillButton("None", compact = true) { imageUrl = null }
                 }
-                imageAssets.take(12).forEach { image ->
+                if (imageAssets.isNotEmpty()) {
+                    ThisMovieFilterButton(startImageThisMovie) { startImageThisMovie = !startImageThisMovie }
+                }
+                imageAssets.filter { !startImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { image ->
                     val selected = imageUrl == image.ossUrl
                     val label = "🖼 " + (image.description ?: "image").take(18)
                     if (selected) {
@@ -401,7 +421,10 @@ fun GenerateMediaDialog(
                     } else {
                         GhostPillButton("None", compact = true) { endImageUrl = null }
                     }
-                    imageAssets.take(12).forEach { image ->
+                    if (imageAssets.isNotEmpty()) {
+                        ThisMovieFilterButton(endImageThisMovie) { endImageThisMovie = !endImageThisMovie }
+                    }
+                    imageAssets.filter { !endImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { image ->
                         val selected = endImageUrl == image.ossUrl
                         val label = "🖼 " + (image.description ?: "image").take(18)
                         if (selected) {
@@ -414,6 +437,31 @@ fun GenerateMediaDialog(
             }
 
             SectionLabel("Characters & scenes (switches to R2V)")
+            // Preview of the selected characters and scenes: each shows its reference image (or an
+            // emoji placeholder when it has none) with a removable name chip beneath.
+            val selectedCharacters = viewModel.characters.filter { it.id in characterIds }
+            val selectedScenes = viewModel.scenes.filter { it.id in sceneIds }
+            if (selectedCharacters.isNotEmpty() || selectedScenes.isNotEmpty()) {
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    selectedCharacters.forEach { character ->
+                        ReferencePreview(
+                            emoji = "👤",
+                            name = character.name,
+                            imageUrl = character.referenceImages.firstOrNull()
+                        ) { characterIds = characterIds - character.id }
+                    }
+                    selectedScenes.forEach { scene ->
+                        ReferencePreview(
+                            emoji = "🏞️",
+                            name = scene.name,
+                            imageUrl = scene.referenceImages.firstOrNull()
+                        ) { sceneIds = sceneIds - scene.id }
+                    }
+                }
+            }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 viewModel.characters.forEach { character ->
                     val selected = character.id in characterIds
@@ -472,7 +520,10 @@ fun GenerateMediaDialog(
                         if (url != null) referenceImages = referenceImages + url
                     }
                 }
-                val visibleImages = imageAssets.take(12)
+                if (imageAssets.isNotEmpty()) {
+                    ThisMovieFilterButton(referenceThisMovie) { referenceThisMovie = !referenceThisMovie }
+                }
+                val visibleImages = imageAssets.filter { !referenceThisMovie || it.movieId == currentMovieId }.take(12)
                 visibleImages.forEach { image ->
                     val selected = image.ossUrl in referenceImages
                     val label = "📎 " + (image.description ?: "image").take(16)
@@ -570,6 +621,67 @@ fun GenerateMediaDialog(
             onResolutionChange = { resolution = it },
             onDismiss = { showModelResolution = false }
         )
+    }
+}
+
+/**
+ * A small toggleable "This movie" filter chip placed at the head of a media picker row. When
+ * [active] the picker only offers assets created for the open movie (mirroring the library panel's
+ * own filter); tapping toggles it through [onToggle] to reveal the whole library. Clipped before
+ * the clickable per the project's rounded-hover guideline.
+ */
+@Composable
+private fun ThisMovieFilterButton(active: Boolean, onToggle: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50)) // clip BEFORE clickable so the hover pill is rounded
+            .background(
+                if (active) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surfaceVariant
+            )
+            .clickable { onToggle() }
+            .padding(horizontal = 12.dp, vertical = 5.dp)
+    ) {
+        Text(
+            if (active) "✓ This movie" else "This movie",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (active) MaterialTheme.colorScheme.onPrimary
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * A compact preview of a selected character or scene shown above the "Characters & scenes" picker:
+ * its first reference image (or an emoji placeholder when it has none) with a removable name chip
+ * beneath. Removing it via the chip deselects the character/scene through [onRemove].
+ */
+@Composable
+private fun ReferencePreview(
+    emoji: String,
+    name: String,
+    imageUrl: String?,
+    onRemove: () -> Unit
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        if (imageUrl != null) {
+            ImageThumbnail(imageUrl, size = 72.dp)
+        } else {
+            // No reference image yet — a simple emoji placeholder keeps the preview consistent.
+            Box(
+                modifier = Modifier
+                    .width(72.dp)
+                    .height(72.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(emoji, fontSize = 28.sp)
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        RemovableChip("$emoji ${name.take(14)}") { onRemove() }
     }
 }
 
@@ -1497,6 +1609,10 @@ fun SoundEffectDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDi
 fun TtsDialog(
     viewModel: AppViewModel,
     initialAsset: Asset? = null,
+    // When true the dialog edits [initialAsset] in place (the previous media is pushed onto the
+    // asset's history). When false it generates: a placeholder asset (no media yet) is still filled
+    // in place, while regenerating real media saves the result as a brand-new asset.
+    tweak: Boolean = false,
     // Pre-fills the narration text when opening the dialog without an [initialAsset] (e.g.
     // "Generate voice" from a text element). The generated voiceover is saved as a new asset.
     initialText: String = "",
@@ -1530,10 +1646,31 @@ fun TtsDialog(
     val regenerating = initialAsset != null && !initialAsset.isDescriptionOnly
 
     StudioDialog(
-        title = if (regenerating) "Regenerate speech" else "Text to speech",
+        title = when {
+            tweak -> "Edit speech"
+            regenerating -> "Regenerate speech"
+            else -> "Text to speech"
+        },
         onDismiss = onDismiss,
         width = 540.dp
     ) {
+        // Explain how this differs from regenerating: editing repaints this asset in place and
+        // keeps the old version in its history, while regenerating produces a brand-new asset from
+        // these settings. Placeholders (no media yet) simply fill in place, so no note is needed.
+        if (tweak || regenerating) {
+            Text(
+                if (tweak) {
+                    "Editing changes this asset in place — the current media is saved to this " +
+                        "asset's history so you can restore it later."
+                } else {
+                    "Regenerating creates a new asset from these settings — this asset is left " +
+                        "unchanged."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(10.dp))
+        }
         StudioTextField(
             value = text,
             onValueChange = { text = it },
@@ -1593,14 +1730,18 @@ fun TtsDialog(
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
             PillButton(
-                if (regenerating) "🔄 Regenerate voiceover" else "🗣️ Generate voiceover",
+                when {
+                    tweak -> "✨ Apply edit"
+                    regenerating -> "🔄 Regenerate voiceover"
+                    else -> "🗣️ Generate voiceover"
+                },
                 enabled = text.isNotBlank()
             ) {
                 viewModel.generateMedia(
                     GenerationSetup(kind = "tts", prompt = text, voice = voice, instructions = instructions.trim()),
-                    // Regenerating real media saves the result as a new asset; filling a placeholder
-                    // (no media yet) edits that placeholder in place.
-                    assetId = if (regenerating) null else initialAsset?.id
+                    // Editing (tweak) or filling a placeholder (no media yet) edits the existing
+                    // asset in place; only regenerating real media targets a brand-new asset.
+                    assetId = if (tweak || !regenerating) initialAsset?.id else null
                 )
                 onDismiss()
             }

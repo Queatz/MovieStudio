@@ -24,6 +24,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +53,7 @@ import app.moviestudio.VideoPlayer
 import app.moviestudio.displayName
 import app.moviestudio.requestVideoFullscreen
 import app.moviestudio.triggerDownload
+import app.moviestudio.updateAudioPlayback
 
 /**
  * The movie editor: header (title, status, aspect, jobs, render), preview + library row, clip
@@ -62,6 +64,20 @@ fun EditorScreen(viewModel: AppViewModel) {
     var showJobsPanel by remember { mutableStateOf(false) }
     var showRenders by remember { mutableStateOf(false) }
     var rootOrigin by remember { mutableStateOf(Offset.Zero) }
+
+    // Leaving the movie editor (back to the dashboard) must stop every track that could still be
+    // sounding. Pausing the viewModel stops the playback ticker and the shared <video> element
+    // (VideoPlayer already hides/pauses itself on disposal), but the browser audio pool backing
+    // music/voice/other-audio clips is a persistent, platform-level resource that is only
+    // reconciled from PreviewPanel's LaunchedEffect — which simply gets cancelled, without a final
+    // "stop everything" call, when this whole screen is torn down. Explicitly emptying it here
+    // ensures nothing keeps playing behind the closed editor.
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.pause()
+            updateAudioPlayback(emptyList(), false)
+        }
+    }
 
     // Fullscreen playback: the stage fills the window, every other control disappears.
     if (viewModel.isFullscreenPlayback) {

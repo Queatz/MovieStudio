@@ -9,6 +9,7 @@ import app.moviestudio.JobStatus
 import app.moviestudio.JobType
 import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.JobRepository
+import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.service.AiJobPayload
 import app.moviestudio.service.AIGenerationService
 import app.moviestudio.storage.OssService
@@ -80,7 +81,10 @@ private fun enqueueAssetGeneration(asset: Asset): Job {
         label = "${asset.type.name.lowercase().replaceFirstChar { it.uppercase() }}: ${prompt.take(60)}",
         createdAt = System.currentTimeMillis()
     )
-    return JobRepository.insert(job)
+    val saved = JobRepository.insert(job)
+    // A new job was started: make sure the queue worker is running to pick it up.
+    JobQueueWorker.start()
+    return saved
 }
 
 fun Route.assetRoutes() {
@@ -244,6 +248,8 @@ fun Route.assetRoutes() {
                     createdAt = System.currentTimeMillis()
                 )
                 JobRepository.insert(job)
+                // A new job was started: make sure the queue worker is running to pick it up.
+                JobQueueWorker.start()
                 call.respond(HttpStatusCode.Accepted, job)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")

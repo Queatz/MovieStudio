@@ -13,6 +13,7 @@ import app.moviestudio.database.DocumentRepository
 import app.moviestudio.database.MovieRepository
 import app.moviestudio.database.JobRepository
 import app.moviestudio.database.NoteRepository
+import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.database.RenderRepository
 import app.moviestudio.database.TrackRepository
 import app.moviestudio.service.TimelineService
@@ -253,6 +254,8 @@ fun Route.movieRoutes() {
                     createdAt = System.currentTimeMillis()
                 )
                 JobRepository.insert(job)
+                // A new job was started: make sure the queue worker is running to pick it up.
+                JobQueueWorker.start()
                 call.respond(HttpStatusCode.Accepted, job)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
@@ -281,6 +284,8 @@ fun Route.movieRoutes() {
                 )
                 JobRepository.insert(job)
                 MovieRepository.update(movie.copy(status = MovieStatus.RENDERING))
+                // A new render job was started: make sure the queue worker is running to pick it up.
+                JobQueueWorker.start()
                 call.respond(HttpStatusCode.Accepted, job)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")

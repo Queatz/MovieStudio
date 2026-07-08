@@ -65,7 +65,7 @@ private fun tabLabel(tab: LibTab): String = when (tab) {
         AssetType.VIDEO -> "🎬 Video"
         AssetType.IMAGE -> "🖼️ Images"
         AssetType.MUSIC -> "🎵 Music"
-        AssetType.AUDIO -> "💥 Sound FX"
+        AssetType.AUDIO -> "💥 Sound Effect"
         AssetType.VOICE -> "🎙️ Voice"
         AssetType.TEXT -> "📝 Text"
     }

@@ -156,7 +156,8 @@ fun AssetDetailsDialog(
             if (asset.type == AssetType.TEXT) {
                 GhostPillButton("🗣️ Generate voice...", compact = true) { showGenerateVoice = true }
             }
-            if (asset.type == AssetType.VIDEO || asset.type == AssetType.IMAGE) {
+            if (asset.type == AssetType.VIDEO || asset.type == AssetType.IMAGE ||
+                asset.type == AssetType.VOICE) {
                 GhostPillButton("✏ Edit", compact = true) { showTweak = true }
             }
             GhostPillButton("➕ Add to timeline", compact = true) {
@@ -321,7 +322,10 @@ fun AssetDetailsDialog(
     if (showTweak) {
         // Tweaking edits the current asset in place, pushing its previous media onto the asset's
         // restorable history (rather than creating a new asset like regenerating does).
-        GenerateMediaDialog(viewModel, initialAsset = asset, tweak = true) { showTweak = false }
+        when (asset.type) {
+            AssetType.VOICE -> TtsDialog(viewModel, initialAsset = asset, tweak = true) { showTweak = false }
+            else -> GenerateMediaDialog(viewModel, initialAsset = asset, tweak = true) { showTweak = false }
+        }
     }
     if (showClipAudio) {
         ClipAudioDialog(viewModel, asset) { showClipAudio = false }

@@ -13,6 +13,7 @@ import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.CharacterRepository
 import app.moviestudio.database.JobRepository
 import app.moviestudio.database.SceneRepository
+import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.service.AiJobPayload
 import app.moviestudio.service.AIGenerationService
 import app.moviestudio.service.GenerationCommon
@@ -118,6 +119,8 @@ fun Route.generationRoutes() {
                     createdAt = System.currentTimeMillis()
                 )
                 JobRepository.insert(job)
+                // A new job was started: make sure the queue worker is running to pick it up.
+                JobQueueWorker.start()
                 call.respond(HttpStatusCode.Accepted, job)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")

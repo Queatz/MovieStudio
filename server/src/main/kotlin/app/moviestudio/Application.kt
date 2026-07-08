@@ -70,15 +70,18 @@ fun Application.module() {
     AIGenerationService.setInstance(QwenAIService)
     logger.info("Using QwenAIService for AI generation jobs.")
 
-    // Reconcile jobs left RUNNING by a previous (crashed/restarted) process before the worker
-    // starts polling: resumable Model Studio async tasks are re-enqueued, the rest are cleaned up.
+    // Hand the queue worker the application scope so it can be (re)started on demand. It is not
+    // started here: the worker only runs while there is work, i.e. it is kicked off when a job is
+    // started or a recovered job is re-enqueued, and stops itself once the queue drains.
+    JobQueueWorker.init(this)
+
+    // Reconcile jobs left RUNNING by a previous (crashed/restarted) process: resumable Model Studio
+    // async tasks are re-enqueued (which starts the worker), the rest are cleaned up.
     try {
         JobRecoveryService.start(this)
     } catch (e: Exception) {
         logger.error("Could not start interrupted-job recovery on startup: ${e.message}", e)
     }
-
-    JobQueueWorker.start(this)
 
     install(ContentNegotiation) {
         json(Json {

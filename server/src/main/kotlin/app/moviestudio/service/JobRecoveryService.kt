@@ -4,6 +4,7 @@ import app.moviestudio.Job
 import app.moviestudio.JobStatus
 import app.moviestudio.JobType
 import app.moviestudio.database.JobRepository
+import app.moviestudio.job.JobQueueWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -84,6 +85,10 @@ object JobRecoveryService {
                     logger.info("Resuming interrupted job {} - its Model Studio task {} is {}.", job.id, taskId, taskState)
                     // Keep the task_id so the worker re-attaches to the live task instead of resubmitting.
                     runCatching { JobRepository.update(job.copy(status = JobStatus.PENDING)) }
+                        .onSuccess {
+                            // A recovered job is back in the queue: make sure the worker is running.
+                            JobQueueWorker.start()
+                        }
                         .onFailure { logger.error("Could not re-enqueue interrupted job ${job.id}: ${it.message}", it) }
                 }
                 RecoveryAction.FAIL -> {

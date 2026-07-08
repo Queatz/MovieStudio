@@ -16,41 +16,93 @@ import org.slf4j.LoggerFactory
  * Polls the job queue and executes jobs asynchronously on the server. Every job type — AI media
  * generation, movie skeleton planning and final FFmpeg renders — reports progress through
  * [JobWebSocketManager] so clients can follow along live and react on completion.
+ *
+ * The worker is demand-driven rather than always-on: [init] hands it the application scope once on
+ * startup, and [start] (re)launches the polling loop only when a job is actually started or a
+ * recovered job is re-enqueued. The loop stops itself as soon as it finds no more PENDING jobs, so
+ * the server does not keep polling the database while the queue is idle.
  */
 object JobQueueWorker {
     private val logger = LoggerFactory.getLogger(JobQueueWorker::class.java)
+
+    // Guards [workerJob]/[scope] so a job enqueued right as the loop decides to stop can never be
+    // dropped: the loop only stops after re-checking for pending jobs under this same lock, while
+    // [start] flips the loop back on (also under the lock) for anything enqueued in the meantime.
+    private val lock = Any()
     private var workerJob: kotlinx.coroutines.Job? = null
+    private var scope: CoroutineScope? = null
 
-    fun start(scope: CoroutineScope) {
-        if (workerJob?.isActive == true) return
-        workerJob = scope.launch(Dispatchers.IO) {
-            logger.info("Starting background job queue worker loop.")
-            while (isActive) {
-                try {
-                    val pendingJobs = JobRepository.pollPendingJobs()
-                    for (job in pendingJobs) {
-                        if (!isActive) break
+    /** Remembers the application [scope] so [start] can (re)launch the polling loop on demand. */
+    fun init(scope: CoroutineScope) {
+        synchronized(lock) { this.scope = scope }
+    }
 
-                        // Atomically / CAS lock the job to RUNNING
-                        val lockedJob = JobRepository.lockJobToRunning(job.id)
-                        if (lockedJob != null) {
-                            logger.info("Successfully locked job ${job.id} to RUNNING. Delegating...")
-                            launch {
-                                executeJob(lockedJob)
+    /**
+     * (Re)launches the polling loop if it isn't already running. Called whenever a new job is
+     * started or a recovered job is re-enqueued. A [scope] may be supplied (and is remembered);
+     * otherwise the scope handed to [init] is used.
+     */
+    fun start(scope: CoroutineScope? = null) {
+        synchronized(lock) {
+            val effectiveScope = scope ?: this.scope
+            if (effectiveScope == null) {
+                logger.warn("JobQueueWorker.start() called before init(); no scope available - ignoring.")
+                return
+            }
+            this.scope = effectiveScope
+            if (workerJob?.isActive == true) return
+            workerJob = effectiveScope.launch(Dispatchers.IO) {
+                logger.info("Starting background job queue worker loop.")
+                while (isActive) {
+                    try {
+                        val pendingJobs = JobRepository.pollPendingJobs()
+                        if (pendingJobs.isEmpty()) {
+                            // Nothing left to do. Stop the loop, but only after re-checking under
+                            // the lock so a job enqueued right now (which also calls start()) is
+                            // either seen here or restarts the loop - it can't slip through.
+                            val stopped = synchronized(lock) {
+                                if (JobRepository.pollPendingJobs().isEmpty()) {
+                                    workerJob = null
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            if (stopped) {
+                                logger.info("No pending jobs found; stopping background job queue worker loop.")
+                                return@launch
+                            }
+                        } else {
+                            for (job in pendingJobs) {
+                                if (!isActive) break
+
+                                // Atomically / CAS lock the job to RUNNING
+                                val lockedJob = JobRepository.lockJobToRunning(job.id)
+                                if (lockedJob != null) {
+                                    logger.info("Successfully locked job ${job.id} to RUNNING. Delegating...")
+                                    // Run on the application scope, not as a child of the polling
+                                    // loop, so stopping the loop when the queue drains never cancels
+                                    // an in-flight job.
+                                    effectiveScope.launch {
+                                        executeJob(lockedJob)
+                                    }
+                                }
                             }
                         }
+                    } catch (e: Exception) {
+                        logger.error("Error in job queue worker loop: ${e.message}", e)
                     }
-                } catch (e: Exception) {
-                    logger.error("Error in job queue worker loop: ${e.message}", e)
+                    delay(2000) // Poll every 2 seconds
                 }
-                delay(2000) // Poll every 2 seconds
             }
         }
     }
 
     fun stop() {
-        workerJob?.cancel()
-        workerJob = null
+        synchronized(lock) {
+            workerJob?.cancel()
+            workerJob = null
+        }
     }
 
     private suspend fun broadcast(job: Job, status: JobStatus, progress: Int, message: String?, resultUrl: String? = null) {

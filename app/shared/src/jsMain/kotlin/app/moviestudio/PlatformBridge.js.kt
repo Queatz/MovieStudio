@@ -237,14 +237,35 @@ actual suspend fun captureVideoFrameAndUpload(uploadUrl: String): Boolean {
 
 private fun jsTriggerDownload(url: String, fileName: String): Unit = js("""
     (function(url, fileName) {
-        var a = document.createElement('a');
-        a.href = url;
-        a.download = fileName;
-        a.target = '_blank';
-        a.rel = 'noopener';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        function saveBlob(href, revoke) {
+            var a = document.createElement('a');
+            a.href = href;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            if (revoke) { setTimeout(function() { URL.revokeObjectURL(href); }, 1000); }
+        }
+        // Browsers ignore the download attribute (and thus the movie-name file name) when the
+        // href points at a cross-origin resource, e.g. our cloud-storage renders. Fetch the file
+        // into a same-origin blob URL first so the chosen file name is actually honored, and fall
+        // back to a plain link if the fetch is blocked (e.g. missing CORS headers).
+        fetch(url)
+            .then(function(response) {
+                if (!response.ok) { throw new Error('download failed'); }
+                return response.blob();
+            })
+            .then(function(blob) { saveBlob(URL.createObjectURL(blob), true); })
+            .catch(function() {
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = fileName;
+                a.target = '_blank';
+                a.rel = 'noopener';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            });
     })(url, fileName)
 """)
 
