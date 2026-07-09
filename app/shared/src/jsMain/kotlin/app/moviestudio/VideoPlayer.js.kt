@@ -22,11 +22,12 @@ actual fun VideoPlayer(
     offsetYFraction: Float,
     revealRadiusFraction: Float,
     volume: Float,
-    onEnded: () -> Unit
+    onEnded: () -> Unit,
+    onReady: () -> Unit
 ) {
     LaunchedEffect(Unit) {
         val setupCallback = js("""
-            function(onTimeUpdate, onEnded) {
+            function(onTimeUpdate, onEnded, onReady) {
                 let video = document.getElementById('compose-video-preview');
                 if (!video) {
                     video = document.createElement('video');
@@ -58,9 +59,14 @@ actual fun VideoPlayer(
                 video.onended = function() {
                     onEnded();
                 };
+                // Fires once the media has loaded enough to render its first frame, so callers can
+                // defer starting playback until the movie is actually ready.
+                video.onloadeddata = function() {
+                    onReady();
+                };
             }
         """)
-        setupCallback(onTimeUpdate, onEnded)
+        setupCallback(onTimeUpdate, onEnded, onReady)
     }
 
     // Update video state (src / play / pause / seek) when they change. This must NOT hide the

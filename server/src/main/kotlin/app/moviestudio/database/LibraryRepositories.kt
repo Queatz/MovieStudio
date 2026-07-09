@@ -1,14 +1,17 @@
 package app.moviestudio.database
 
 import app.moviestudio.Character
+import app.moviestudio.FontPref
 import app.moviestudio.PendingRenderUpload
 import app.moviestudio.RenderRecord
 import app.moviestudio.Scene
+import app.moviestudio.StudioFont
 import app.moviestudio.Tip
 import app.moviestudio.VoiceClone
 import app.moviestudio.VoiceDesign
 import com.arangodb.util.RawJson
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -51,6 +54,8 @@ open class SimpleCrudRepository<T>(
         ArangoDatabase.db.collection(collection.collectionName).updateDocument(idOf(entity), RawJson.of(toDoc(entity)))
         return entity
     }
+
+    fun upsert(entity: T): T = if (getById(idOf(entity)) != null) update(entity) else insert(entity)
 
     fun delete(id: String) {
         ArangoDatabase.db.collection(collection.collectionName).deleteDocument(id)
@@ -99,6 +104,27 @@ object PendingRenderUploadRepository :
 
     fun queryByMovieId(movieId: String): List<PendingRenderUpload> = queryByField("movieId", movieId)
 }
+
+/** Google Fonts variants downloaded once and re-hosted on OSS, reused across all movies. */
+object FontRepository : SimpleCrudRepository<StudioFont>(DbCollection.FONTS, StudioFont.serializer(), { it.id })
+
+/** Per-family font picker preferences (pinned state + last-used time for the "Recently used" list). */
+object FontPrefRepository : SimpleCrudRepository<FontPref>(DbCollection.FONT_PREFS, FontPref.serializer(), { it.id })
+
+/**
+ * The cached Google Fonts catalog: the raw Developer API response plus when it was fetched, so the
+ * catalog survives server restarts and is only re-fetched once its TTL (7 days) expires.
+ */
+@Serializable
+data class FontCatalogDocument(
+    val id: String = "google",
+    val fetchedAt: Long = 0,
+    val payload: String = "",
+    val createdAt: Long = 0
+)
+
+object FontCatalogRepository :
+    SimpleCrudRepository<FontCatalogDocument>(DbCollection.FONT_CATALOG, FontCatalogDocument.serializer(), { it.id })
 
 object TipRepository : SimpleCrudRepository<Tip>(DbCollection.TIPS, Tip.serializer(), { it.id }) {
     /**

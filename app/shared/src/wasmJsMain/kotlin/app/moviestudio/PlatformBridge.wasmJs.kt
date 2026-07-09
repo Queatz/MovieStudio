@@ -287,6 +287,21 @@ actual fun downloadTextFile(content: String, fileName: String) {
     jsDownloadTextFile(content, fileName)
 }
 
+@JsFun("""
+(html) => {
+    const w = window.open('', '_blank');
+    if (!w) { return; }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+}
+""")
+private external fun jsPrintDocument(html: String)
+
+actual fun printDocument(html: String) {
+    jsPrintDocument(html)
+}
+
 // ------------------------------------------------------------------------------------ fullscreen
 
 @JsFun("""

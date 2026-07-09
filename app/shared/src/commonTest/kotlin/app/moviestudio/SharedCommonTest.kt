@@ -1,8 +1,11 @@
 package app.moviestudio
 
+import app.moviestudio.ui.buildPrintableDocumentHtml
+import app.moviestudio.ui.markdownToPrintHtml
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class SharedCommonTest {
 
@@ -233,6 +236,36 @@ class SharedCommonTest {
         val clamped = movedClipGroup(movers, tracks, deltaSeconds = -100f, rowDelta = 0)
         assertEquals(0f, clamped[0].timelineStart)
         assertEquals(0f, clamped[1].timelineStart)
+    }
+
+    @Test
+    fun testMarkdownToPrintHtml() {
+        // Headings, inline styles and both list kinds render to their HTML equivalents.
+        assertEquals("<h1>Title</h1>\n", markdownToPrintHtml("# Title"))
+        assertEquals("<h3>Sub</h3>\n", markdownToPrintHtml("### Sub"))
+        assertEquals("<p><strong>bold</strong></p>\n", markdownToPrintHtml("**bold**"))
+        assertEquals("<p><em>it</em></p>\n", markdownToPrintHtml("*it*"))
+        assertEquals("<p><strong><em>bi</em></strong></p>\n", markdownToPrintHtml("***bi***"))
+        assertEquals("<p><del>gone</del></p>\n", markdownToPrintHtml("~~gone~~"))
+        assertEquals("<p><u>under</u></p>\n", markdownToPrintHtml("<u>under</u>"))
+        assertEquals("<ul>\n<li>one</li>\n<li>two</li>\n</ul>\n", markdownToPrintHtml("- one\n- two"))
+        assertEquals("<ol>\n<li>first</li>\n</ol>\n", markdownToPrintHtml("1. first"))
+    }
+
+    @Test
+    fun testMarkdownToPrintHtmlEscapesUnsafeText() {
+        // Stray angle brackets / ampersands become inert entities (no injected markup).
+        assertEquals("<p>a &lt;script&gt; &amp; b</p>\n", markdownToPrintHtml("a <script> & b"))
+    }
+
+    @Test
+    fun testBuildPrintableDocumentHtmlIsA4AndAutoPrints() {
+        val html = buildPrintableDocumentHtml("My & Doc", "# Hi")
+        assertTrue(html.contains("size: A4"), "page should be A4")
+        assertTrue(html.contains("margin: 24px auto"), "page should be horizontally centered")
+        assertTrue(html.contains("window.print()"), "page should auto-open the print dialog")
+        assertTrue(html.contains("<title>My &amp; Doc</title>"), "title should be escaped")
+        assertTrue(html.contains("<h1>Hi</h1>"), "content should be rendered from markdown")
     }
 
     private fun preloadAsset(id: String, type: AssetType, ossUrl: String) = Asset(

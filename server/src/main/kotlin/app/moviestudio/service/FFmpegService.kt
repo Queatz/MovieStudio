@@ -253,7 +253,7 @@ object FFmpegService {
                 // Padding around the caption's background box, proportional to the font size, so the
                 // burned-in box mirrors the preview's `padding(horizontal = 12.dp, vertical = 4.dp)`.
                 val boxPad = (fontSize * 0.3).toInt().coerceAtLeast(4)
-                val captionFont = fontFileArg(captions.fontFamily)
+                val captionFont = fontFileArg(captions.fontFamily, captions.fontUrl)
 
                 for (chunk in asset.wordTimings.chunked(4)) {
                     if (captionChunks >= 90) break
@@ -764,7 +764,7 @@ object FFmpegService {
         lines.forEachIndexed { index, line ->
             val yExpr = "'(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * lineSpacing).ff()}$scrollExpr'"
             layer.add(
-                "drawtext=${fontFileArg(textCfg.fontFamily)}text='${escapeDrawtext(line)}':" +
+                "drawtext=${fontFileArg(textCfg.fontFamily, textCfg.fontUrl)}text='${escapeDrawtext(line)}':" +
                     "fontcolor=$fontColor:fontsize=$fontSize:x=$xExpr:y=$yExpr"
             )
         }
@@ -891,13 +891,16 @@ object FFmpegService {
     }
 
     /**
-     * The `fontfile=...:` prefix for drawtext for the given [fontFamily] display name (one of
-     * [TEXT_FONT_FAMILIES] / [CAPTION_FONT_FAMILIES]), so the export uses the same font as the live
-     * preview. The app-bundled "Asap"/"Yuyu" fonts are extracted from the classpath (see
-     * [bundledFontFile]) and used directly; any other family (including "Default"/null) falls back
-     * to the first available system font. Returns "" when no usable font file is found at all.
+     * The `fontfile=...:` prefix for drawtext for the given [fontFamily] display name, so the
+     * export uses the same font as the live preview. A non-blank [fontUrl] (the OSS-hosted `.ttf`
+     * of a Google Fonts variant, from [TextConfig.fontUrl] / [CaptionConfig.fontUrl]) wins and is
+     * downloaded once per process (see [downloadedFontFile]); the app-bundled "Asap"/"Yuyu" fonts
+     * are extracted from the classpath (see [bundledFontFile]); any other family (including
+     * "Default"/null) falls back to the first available system font. Returns "" when no usable
+     * font file is found at all.
      */
-    private fun fontFileArg(fontFamily: String? = null): String {
+    private fun fontFileArg(fontFamily: String? = null, fontUrl: String? = null): String {
+        if (!fontUrl.isNullOrBlank()) downloadedFontFile(fontUrl)?.let { return "fontfile=$it:" }
         bundledFontFile(fontFamily)?.let { return "fontfile=$it:" }
         val candidates = listOf(
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -907,6 +910,36 @@ object FFmpegService {
         )
         val found = candidates.firstOrNull { File(it).exists() } ?: return ""
         return "fontfile=$found:"
+    }
+
+    /** Local temp-file paths of downloaded (Google Fonts) font files, keyed by OSS object key. */
+    private val downloadedFontPaths = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /**
+     * The absolute path of the OSS-hosted font file at [fontUrl], downloaded to a temp file the
+     * first time a render needs it and cached for the lifetime of the process. The cache key is
+     * the underlying OSS object key, so re-signed URLs of the same font share one download (the
+     * font itself is already persisted durably on OSS by `GoogleFontsService.ensureFont`, so this
+     * is only a local scratch copy for FFmpeg's `fontfile=`). Returns null when the download
+     * fails, so the caller falls back to a bundled/system font instead of failing the render.
+     */
+    private fun downloadedFontFile(fontUrl: String): String? {
+        val cacheKey = OssService.objectKeyFromUrl(fontUrl) ?: fontUrl.substringBefore('?')
+        downloadedFontPaths[cacheKey]?.let { return it }
+        return try {
+            val suffix = "." + cacheKey.substringAfterLast('.', "ttf").ifBlank { "ttf" }
+            val tempFile = File.createTempFile("moviestudio_font_dl_", suffix)
+            tempFile.deleteOnExit()
+            java.net.URI(fontUrl).toURL().openStream().use { input ->
+                tempFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            val path = tempFile.absolutePath
+            downloadedFontPaths[cacheKey] = path
+            path
+        } catch (e: Exception) {
+            logger.warn("Failed to download clip font '$fontUrl': ${e.message}")
+            null
+        }
     }
 
     /** Extracted temp-file paths of the app-bundled fonts, keyed by family name (extract once). */

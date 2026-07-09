@@ -4,6 +4,7 @@ import app.moviestudio.database.ArangoDatabase
 import app.moviestudio.routing.movieRoutes
 import app.moviestudio.routing.assetRoutes
 import app.moviestudio.routing.documentRoutes
+import app.moviestudio.routing.fontRoutes
 import app.moviestudio.routing.generationRoutes
 import app.moviestudio.routing.jobRoutes
 import app.moviestudio.routing.libraryRoutes
@@ -11,6 +12,8 @@ import app.moviestudio.routing.speechRoutes
 import app.moviestudio.routing.tipRoutes
 import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.service.AIGenerationService
+import app.moviestudio.service.GoogleFontsConfig
+import app.moviestudio.service.GoogleFontsService
 import app.moviestudio.service.JobRecoveryService
 import app.moviestudio.service.RenderUploadRetryService
 import app.moviestudio.service.QwenAIService
@@ -70,6 +73,12 @@ fun Application.module() {
     QwenConfig.logStatus()
     AIGenerationService.setInstance(QwenAIService)
     logger.info("Using QwenAIService for AI generation jobs.")
+
+    // Warm the Google Fonts catalog in the background. It is fetched from the Developer API at
+    // most once per TTL window (7 days by default) and cached in the database in between, so a
+    // restart never re-hits the API needlessly.
+    GoogleFontsConfig.logStatus()
+    GoogleFontsService.init(this)
 
     // Hand the queue worker the application scope so it can be (re)started on demand. It is not
     // started here: the worker only runs while there is work, i.e. it is kicked off when a job is
@@ -135,5 +144,6 @@ fun Application.module() {
         libraryRoutes()
         speechRoutes()
         tipRoutes()
+        fontRoutes()
     }
 }

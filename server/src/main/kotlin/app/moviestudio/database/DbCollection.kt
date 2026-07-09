@@ -19,7 +19,10 @@ enum class DbCollection(val collectionName: String) {
     PENDING_RENDER_UPLOADS("pendingrenderuploads"),
     NOTES("notes"),
     DOCUMENTS("documents"),
-    TIPS("tips");
+    TIPS("tips"),
+    FONTS("fonts"),
+    FONT_PREFS("fontprefs"),
+    FONT_CATALOG("fontcatalog");
 
     override fun toString(): String = collectionName
 }

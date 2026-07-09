@@ -1,8 +1,10 @@
 package app.moviestudio.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -375,6 +377,14 @@ fun MarkdownRichTextEditor(
         modifier
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.background.copy(alpha = 0.5f))
+            // The field only lays out as tall as its text, so the empty area beneath the
+            // placeholder isn't part of the text field. Make the whole surface put the caret
+            // back into the editor when clicked (no ripple: it should feel like the field).
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                enabled = enabled
+            ) { focusRequester.requestFocus() }
     ) {
         BasicTextField(
             value = state.value,
@@ -595,4 +605,155 @@ private fun buildMarkdownAnnotated(
         SpanStyle(textDecoration = TextDecoration.Underline)
     )
     style(Regex("""`[^`\n]+`"""), 1, 1, SpanStyle(fontFamily = FontFamily.Monospace))
+}
+
+// ---------------------------------------------------------------------------- printable export
+
+/** Escapes the characters that are unsafe to drop into HTML text/attributes. */
+private fun escapeHtml(text: String): String = buildString {
+    for (ch in text) {
+        when (ch) {
+            '&' -> append("&amp;")
+            '<' -> append("&lt;")
+            '>' -> append("&gt;")
+            '"' -> append("&quot;")
+            else -> append(ch)
+        }
+    }
+}
+
+/**
+ * Renders one line's inline Markdown (`***bold italic***`, `**bold**`, `*italic*`, `~~strike~~`,
+ * `<u>underline</u>`, `` `code` ``) into safe HTML. The line is HTML-escaped first (so any stray
+ * `<`/`&` in the user's text is inert); the `<u>` underline markers are preserved across escaping
+ * via sentinels so they still become real `<u>` tags. Markers are consumed exactly like the live
+ * [markdownVisualTransformation] does, keeping the printout faithful to the editor.
+ */
+private fun markdownInlineToHtml(line: String): String {
+    // Preserve the underline markers across HTML-escaping, then escape everything else.
+    var s = line
+        .replace("<u>", "\u0001").replace("<U>", "\u0001")
+        .replace("</u>", "\u0002").replace("</U>", "\u0002")
+    s = escapeHtml(s)
+
+    fun wrap(regex: Regex, prefixLen: Int, suffixLen: Int, open: String, close: String) {
+        s = regex.replace(s) { match ->
+            val value = match.value
+            open + value.substring(prefixLen, value.length - suffixLen) + close
+        }
+    }
+
+    // `***` first so it is never mistaken for a `**`/`*` run (mirrors the editor's ordering).
+    wrap(Regex("""\*\*\*(?:(?!\*\*\*).)+\*\*\*"""), 3, 3, "<strong><em>", "</em></strong>")
+    wrap(Regex("""(?<!\*)\*\*(?:(?!\*\*).)+\*\*(?!\*)"""), 2, 2, "<strong>", "</strong>")
+    wrap(Regex("""(?<![*\\])\*(?!\*)[^*\n]+\*(?!\*)"""), 1, 1, "<em>", "</em>")
+    wrap(Regex("""~~(?:(?!~~).)+~~"""), 2, 2, "<del>", "</del>")
+    wrap(Regex("""`[^`\n]+`"""), 1, 1, "<code>", "</code>")
+
+    return s.replace("\u0001", "<u>").replace("\u0002", "</u>")
+}
+
+/**
+ * Converts Markdown [markdown] into a block of HTML (`<h1>`…`<h6>`, `<ul>`/`<ol>` lists,
+ * `<p>` paragraphs) suitable for a printable page. Only the subset the editor understands is
+ * handled; everything else prints as plain paragraphs.
+ */
+fun markdownToPrintHtml(markdown: String): String {
+    val out = StringBuilder()
+    var openList: String? = null // "ul" or "ol", or null when not inside a list
+    fun closeList() {
+        openList?.let { out.append("</").append(it).append(">\n") }
+        openList = null
+    }
+    for (raw in markdown.split("\n")) {
+        val line = raw.trimEnd()
+        val heading = Regex("""^(#{1,6})\s+(.*)$""").find(line)
+        val bullet = Regex("""^[-*+]\s+(.*)$""").find(line)
+        val numbered = Regex("""^\d+\.\s+(.*)$""").find(line)
+        when {
+            line.isBlank() -> closeList()
+            heading != null -> {
+                closeList()
+                val level = heading.groupValues[1].length
+                out.append("<h").append(level).append(">")
+                    .append(markdownInlineToHtml(heading.groupValues[2]))
+                    .append("</h").append(level).append(">\n")
+            }
+            bullet != null -> {
+                if (openList != "ul") { closeList(); out.append("<ul>\n"); openList = "ul" }
+                out.append("<li>").append(markdownInlineToHtml(bullet.groupValues[1])).append("</li>\n")
+            }
+            numbered != null -> {
+                if (openList != "ol") { closeList(); out.append("<ol>\n"); openList = "ol" }
+                out.append("<li>").append(markdownInlineToHtml(numbered.groupValues[1])).append("</li>\n")
+            }
+            else -> {
+                closeList()
+                out.append("<p>").append(markdownInlineToHtml(line)).append("</p>\n")
+            }
+        }
+    }
+    closeList()
+    return out.toString()
+}
+
+/**
+ * Builds a complete, self-contained HTML page for [title] + [markdown] content, ready to open in a
+ * blank browser tab and print: the content is rendered from Markdown, laid out centered on an A4
+ * sheet, and an on-load script opens the browser's print dialog. Hand the result to
+ * [app.moviestudio.printDocument].
+ */
+fun buildPrintableDocumentHtml(title: String, markdown: String): String {
+    val safeTitle = escapeHtml(title.ifBlank { "Document" })
+    val body = markdownToPrintHtml(markdown)
+    return """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$safeTitle</title>
+<style>
+  @page { size: A4; margin: 18mm; }
+  html { background: #525659; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #111111;
+    line-height: 1.5;
+  }
+  .page {
+    box-sizing: border-box;
+    width: 210mm;
+    min-height: 297mm;
+    margin: 24px auto;
+    padding: 18mm;
+    background: #ffffff;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+    font-size: 12pt;
+  }
+  .doc-title { margin: 0 0 16px; font-size: 24pt; }
+  h1 { font-size: 22pt; }
+  h2 { font-size: 18pt; }
+  h3 { font-size: 16pt; }
+  h4, h5, h6 { font-size: 13pt; }
+  p { margin: 0 0 10px; }
+  ul, ol { margin: 0 0 10px; padding-left: 22px; }
+  li { margin: 2px 0; }
+  code { font-family: "Courier New", monospace; background: #f0f0f0; padding: 0 3px; border-radius: 3px; }
+  @media print {
+    html { background: #ffffff; }
+    .page { width: auto; min-height: 0; margin: 0; padding: 0; box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <h1 class="doc-title">$safeTitle</h1>
+    $body
+  </div>
+  <script>window.onload = function () { window.focus(); window.print(); };</script>
+</body>
+</html>
+""".trimIndent()
 }

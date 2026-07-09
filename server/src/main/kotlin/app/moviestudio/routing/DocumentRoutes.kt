@@ -9,7 +9,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 
 /** How many previous versions a document keeps in its restorable history. */
-private const val MAX_DOCUMENT_HISTORY = 30
+private const val MAX_DOCUMENT_HISTORY = 100
 
 /**
  * Minimum gap between two auto-saved history checkpoints. Auto-save fires on every typing pause,

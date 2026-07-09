@@ -541,7 +541,7 @@ fun GenerateMediaDialog(
             ) {
                 // Custom reference images: upload any picture straight from the device.
                 GhostPillButton(
-                    if (uploadingReference) "Uploading..." else "📤 Upload custom",
+                    if (uploadingReference) "Uploading..." else "📤 Upload",
                     compact = true,
                     enabled = !uploadingReference
                 ) {

@@ -11,7 +11,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 
 @JsFun("""
-(onTimeUpdate, onEnded) => {
+(onTimeUpdate, onEnded, onReady) => {
     let video = document.getElementById('compose-video-preview');
     if (!video) {
         video = document.createElement('video');
@@ -43,9 +43,14 @@ import androidx.compose.ui.platform.LocalDensity
     video.onended = () => {
         onEnded();
     };
+    // Fires once the media has loaded enough to render its first frame, so callers can defer
+    // starting playback until the movie is actually ready.
+    video.onloadeddata = () => {
+        onReady();
+    };
 }
 """)
-private external fun jsSetupVideoCallback(onTimeUpdate: (Double) -> Unit, onEnded: () -> Unit)
+private external fun jsSetupVideoCallback(onTimeUpdate: (Double) -> Unit, onEnded: () -> Unit, onReady: () -> Unit)
 
 @JsFun("""
 (url, isPlaying, playhead) => {
@@ -158,12 +163,14 @@ actual fun VideoPlayer(
     offsetYFraction: Float,
     revealRadiusFraction: Float,
     volume: Float,
-    onEnded: () -> Unit
+    onEnded: () -> Unit,
+    onReady: () -> Unit
 ) {
     LaunchedEffect(Unit) {
         jsSetupVideoCallback(
             { sec -> onTimeUpdate(sec.toFloat()) },
-            { onEnded() }
+            { onEnded() },
+            { onReady() }
         )
     }
 

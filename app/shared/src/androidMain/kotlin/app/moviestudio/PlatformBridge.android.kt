@@ -23,6 +23,10 @@ actual fun downloadTextFile(content: String, fileName: String) {
     // No-op on Android.
 }
 
+actual fun printDocument(html: String) {
+    // No-op on Android.
+}
+
 actual fun requestVideoFullscreen() {
     // No-op on Android: the preview video element is a browser feature.
 }

@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -63,6 +64,7 @@ import app.moviestudio.collectPreloadMedia
 import app.moviestudio.parseEffectsConfig
 import app.moviestudio.preloadTimelineMedia
 import app.moviestudio.progressAt
+import app.moviestudio.rememberRuntimeFontFamily
 import app.moviestudio.visualAt
 import app.moviestudio.setPreviewObjectPosition
 import app.moviestudio.setPreviewOverlayVisible
@@ -417,8 +419,9 @@ private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual, pla
             text,
             color = parseHexColor(config.color),
             fontSize = fontSizeSp,
-            fontWeight = FontWeight.Bold,
-            fontFamily = textFontFamily(config.fontFamily),
+            fontWeight = FontWeight(config.fontWeight),
+            fontStyle = if (config.fontItalic) FontStyle.Italic else FontStyle.Normal,
+            fontFamily = textFontFamily(config),
             textAlign = TextAlign.Center,
             lineHeight = lineHeightSp,
             onTextLayout = { textHeightPx = it.size.height },
@@ -517,8 +520,9 @@ private fun CaptionOverlay(active: ActiveClip, captions: CaptionConfig, playhead
             text,
             color = parseHexColor(captions.color),
             fontSize = captions.fontSizeSp.sp,
-            fontWeight = FontWeight.Bold,
-            fontFamily = captionFontFamily(captions.fontFamily),
+            fontWeight = FontWeight(captions.fontWeight),
+            fontStyle = if (captions.fontItalic) FontStyle.Italic else FontStyle.Normal,
+            fontFamily = captionFontFamily(captions),
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
@@ -534,6 +538,30 @@ fun captionFontFamily(name: String): FontFamily = when (name) {
     "Asap" -> FontFamily(Font(Res.font.asap))
     "Yuyu" -> FontFamily(Font(Res.font.yuyu))
     else -> FontFamily.Default
+}
+
+/** The [FontFamily] of a caption config, including runtime-loaded Google fonts ([CaptionConfig.fontUrl]). */
+@Composable
+fun captionFontFamily(captions: CaptionConfig): FontFamily =
+    clipFontFamily(captions.fontFamily, captions.fontUrl, captions.fontWeight, captions.fontItalic)
+
+/** The [FontFamily] of a TEXT-element config, including runtime-loaded Google fonts ([TextConfig.fontUrl]). */
+@Composable
+fun textFontFamily(config: TextConfig): FontFamily =
+    clipFontFamily(config.fontFamily, config.fontUrl, config.fontWeight, config.fontItalic)
+
+/**
+ * Resolves a clip's font. A non-blank [url] (the OSS-hosted Google Fonts variant the FFmpeg
+ * export renders with) is downloaded once per session and used as soon as it is available; the
+ * bundled mapping serves as the fallback while it loads (or when loading fails), so the preview
+ * always shows something and converges on the exact same font file as the export.
+ */
+@Composable
+fun clipFontFamily(name: String, url: String, weight: Int, italic: Boolean): FontFamily {
+    if (url.isNotBlank()) {
+        rememberRuntimeFontFamily(url, weight, italic)?.let { return it }
+    }
+    return textFontFamily(name)
 }
 
 /**

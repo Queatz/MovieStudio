@@ -214,6 +214,49 @@ object NetworkService {
         client.delete(url("/api/tips/$id"))
     }
 
+    // ------------------------------------------------------------------------------- fonts
+
+    /** Searches the Google Fonts catalog; blank filters are omitted (match everything). */
+    suspend fun searchFonts(query: String = "", subset: String = "", category: String = ""): FontSearchResponse {
+        val params = buildList {
+            if (query.isNotBlank()) add("q=${encodeQueryParam(query)}")
+            if (subset.isNotBlank()) add("subset=${encodeQueryParam(subset)}")
+            if (category.isNotBlank()) add("category=${encodeQueryParam(category)}")
+        }
+        val suffix = if (params.isEmpty()) "" else "?${params.joinToString("&")}"
+        val responseText = client.get(url("/api/fonts$suffix"))
+        return json.decodeFromString(FontSearchResponse.serializer(), responseText)
+    }
+
+    /** The user's pinned and recently used font families (studio-wide, across all movies). */
+    suspend fun getFontPrefs(): FontPrefsResponse {
+        val responseText = client.get(url("/api/fonts/prefs"))
+        return json.decodeFromString(FontPrefsResponse.serializer(), responseText)
+    }
+
+    /** Pins or unpins a font family in the picker; returns the updated pinned/recent lists. */
+    suspend fun pinFont(family: String, pinned: Boolean): FontPrefsResponse {
+        val body = buildJsonObject {
+            put("family", family)
+            put("pinned", pinned)
+        }.toString()
+        val responseText = client.post(url("/api/fonts/pin"), body)
+        return json.decodeFromString(FontPrefsResponse.serializer(), responseText)
+    }
+
+    /**
+     * Resolves a font family+variant to its durable OSS-hosted file. The server downloads the
+     * `.ttf` from Google only the first time the variant is ever requested, then reuses it.
+     */
+    suspend fun ensureFont(family: String, variant: String): StudioFont {
+        val body = buildJsonObject {
+            put("family", family)
+            put("variant", variant)
+        }.toString()
+        val responseText = client.post(url("/api/fonts/ensure"), body)
+        return json.decodeFromString(StudioFont.serializer(), responseText)
+    }
+
     // ------------------------------------------------------------------------------- assets
 
     suspend fun getLibraryAssets(movieId: String?, type: AssetType?): List<Asset> {

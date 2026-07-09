@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -22,8 +23,12 @@ actual fun VideoPlayer(
     offsetYFraction: Float,
     revealRadiusFraction: Float,
     volume: Float,
-    onEnded: () -> Unit
+    onEnded: () -> Unit,
+    onReady: () -> Unit
 ) {
+    // No real media element on the JVM placeholder — report ready immediately so callers that gate
+    // playback on load don't stay stuck waiting.
+    LaunchedEffect(url) { onReady() }
     Box(
         modifier = modifier
             .graphicsLayer {

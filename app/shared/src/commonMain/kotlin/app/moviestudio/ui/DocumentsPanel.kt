@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
 import app.moviestudio.MovieDocument
+import app.moviestudio.printDocument
 import app.moviestudio.updateAudioPlayback
 import kotlinx.coroutines.delay
 
@@ -528,6 +529,11 @@ private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieD
             )
         }
         Spacer(Modifier.width(8.dp))
+        GhostPillButton("🖨 Print", compact = true) {
+            // Open the document, rendered on a centered A4 page, in a new tab ready to print.
+            printDocument(buildPrintableDocumentHtml(freshDocument().title, state.markdown))
+        }
+        Spacer(Modifier.width(6.dp))
         GhostPillButton("🕒 History (${document.history.size})", compact = true,
             enabled = document.history.isNotEmpty()) { showHistory = true }
         Spacer(Modifier.width(6.dp))

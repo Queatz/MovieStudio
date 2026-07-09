@@ -34,6 +34,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -41,11 +42,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
 import app.moviestudio.AssetType
-import app.moviestudio.CAPTION_FONT_FAMILIES
 import app.moviestudio.CaptionConfig
 import app.moviestudio.Clip
 import app.moviestudio.TextConfig
-import app.moviestudio.TEXT_FONT_FAMILIES
 import app.moviestudio.TRANSPARENT_COLOR
 import app.moviestudio.EffectsConfig
 import app.moviestudio.MAX_CLIP_VOLUME
@@ -342,6 +341,7 @@ fun TextEditorDialog(
     var config by remember { mutableStateOf(initial) }
     // Which color the custom picker is currently editing: "text", "background" or null (closed).
     var editing by remember { mutableStateOf<String?>(null) }
+    var showFontPicker by remember { mutableStateOf(false) }
 
     StudioDialog(title = "Text style", onDismiss = onDismiss, width = 480.dp) {
         // Live preview strip (always dark, like the movie stage), filled with the chosen background.
@@ -363,8 +363,9 @@ fun TextEditorDialog(
                     "Text looks like this",
                     color = parseHexColor(config.color),
                     fontSize = (config.fontSizeSp * 0.5).sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = textFontFamily(config.fontFamily),
+                    fontWeight = FontWeight(config.fontWeight),
+                    fontStyle = if (config.fontItalic) FontStyle.Italic else FontStyle.Normal,
+                    fontFamily = textFontFamily(config),
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(horizontal = 12.dp)
                 )
@@ -372,12 +373,13 @@ fun TextEditorDialog(
         }
         Spacer(Modifier.height(12.dp))
 
-        DropdownSelector(
-            label = "Font",
-            options = TEXT_FONT_FAMILIES,
-            selected = config.fontFamily,
-            display = { it }
-        ) { config = config.copy(fontFamily = it) }
+        SectionLabel("Font")
+        FontSummaryRow(
+            family = config.fontFamily,
+            fontUrl = config.fontUrl,
+            weight = config.fontWeight,
+            italic = config.fontItalic
+        ) { showFontPicker = true }
         Spacer(Modifier.height(8.dp))
 
         LabeledSlider(
@@ -422,6 +424,54 @@ fun TextEditorDialog(
                 editing = null
             }
         )
+    }
+
+    if (showFontPicker) {
+        FontPickerDialog(
+            initialFamily = config.fontFamily,
+            initialWeight = config.fontWeight,
+            initialItalic = config.fontItalic,
+            onDismiss = { showFontPicker = false },
+            onPick = { family, fontUrl, weight, italic ->
+                config = config.copy(fontFamily = family, fontUrl = fontUrl, fontWeight = weight, fontItalic = italic)
+                showFontPicker = false
+            }
+        )
+    }
+}
+
+/**
+ * The current font of a text/caption config — the family name rendered in its own typeface plus
+ * a weight/italic summary for Google fonts — with the button that opens the [FontPickerDialog].
+ */
+@Composable
+private fun FontSummaryRow(
+    family: String,
+    fontUrl: String,
+    weight: Int,
+    italic: Boolean,
+    onChange: () -> Unit
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                family,
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = clipFontFamily(family, fontUrl, weight, italic),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (fontUrl.isNotBlank()) {
+                Text(
+                    fontVariantSummary(weight, italic),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        GhostPillButton("Change…", compact = true) { onChange() }
     }
 }
 
@@ -499,6 +549,7 @@ fun CaptionEditorDialog(
 ) {
     var config by remember { mutableStateOf(initial.copy(enabled = true)) }
     var showCustomColorPicker by remember { mutableStateOf(false) }
+    var showFontPicker by remember { mutableStateOf(false) }
 
     StudioDialog(title = "Caption editor", onDismiss = onDismiss, width = 480.dp) {
         // Live preview strip (always dark, like the movie stage).
@@ -518,8 +569,9 @@ fun CaptionEditorDialog(
                 "Captions look like this",
                 color = parseHexColor(config.color),
                 fontSize = (config.fontSizeSp * 0.6).sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = captionFontFamily(config.fontFamily),
+                fontWeight = FontWeight(config.fontWeight),
+                fontStyle = if (config.fontItalic) FontStyle.Italic else FontStyle.Normal,
+                fontFamily = captionFontFamily(config),
                 modifier = Modifier
                     .padding(8.dp)
                     .clip(RoundedCornerShape(6.dp))
@@ -529,12 +581,13 @@ fun CaptionEditorDialog(
         }
         Spacer(Modifier.height(12.dp))
 
-        DropdownSelector(
-            label = "Font",
-            options = CAPTION_FONT_FAMILIES,
-            selected = config.fontFamily,
-            display = { it }
-        ) { config = config.copy(fontFamily = it) }
+        SectionLabel("Font")
+        FontSummaryRow(
+            family = config.fontFamily,
+            fontUrl = config.fontUrl,
+            weight = config.fontWeight,
+            italic = config.fontItalic
+        ) { showFontPicker = true }
         Spacer(Modifier.height(8.dp))
 
         LabeledSlider(
@@ -606,6 +659,19 @@ fun CaptionEditorDialog(
             onPick = { hex ->
                 config = config.copy(color = hex)
                 showCustomColorPicker = false
+            }
+        )
+    }
+
+    if (showFontPicker) {
+        FontPickerDialog(
+            initialFamily = config.fontFamily,
+            initialWeight = config.fontWeight,
+            initialItalic = config.fontItalic,
+            onDismiss = { showFontPicker = false },
+            onPick = { family, fontUrl, weight, italic ->
+                config = config.copy(fontFamily = family, fontUrl = fontUrl, fontWeight = weight, fontItalic = italic)
+                showFontPicker = false
             }
         )
     }

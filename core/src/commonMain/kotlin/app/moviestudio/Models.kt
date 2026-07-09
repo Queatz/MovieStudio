@@ -726,6 +726,11 @@ fun TransitionSpec.visualAt(progress: Float): TransitionVisual {
 data class CaptionConfig(
     val enabled: Boolean = false,
     val fontFamily: String = "Default",
+    // OSS-hosted .ttf of the chosen Google Fonts variant; empty for the bundled/default families.
+    val fontUrl: String = "",
+    // Weight/italic of the chosen variant. Captions always rendered bold historically, so 700.
+    val fontWeight: Int = 700,
+    val fontItalic: Boolean = false,
     val fontSizeSp: Int = 28,
     val color: String = "#FFFFFF",
     // Vertical placement: "bottom", "center" or "top".
@@ -745,6 +750,99 @@ val TEXT_FONT_FAMILIES: List<String> = listOf(
     "Default", "Asap", "Yuyu"
 )
 
+/**
+ * The app-bundled font families (plus "Default"), offered as "Studio fonts" in the font picker.
+ * Any family outside this list is a Google Fonts family carried by [TextConfig.fontUrl] /
+ * [CaptionConfig.fontUrl].
+ */
+val BUILT_IN_FONT_FAMILIES: List<String> = listOf("Default", "Asap", "Yuyu")
+
+// ------------------------------------------------------------------------------ Google Fonts
+
+/**
+ * One family of the Google Fonts catalog, as served to the font picker. [variants] use the
+ * Google Fonts naming ("regular", "italic", "700", "700italic", ...) so the picker only offers
+ * weights/italics the family actually ships. [previewUrl] is the small "menu" subset of the font
+ * (family-name glyphs only), used to render the family name in its own typeface in the picker.
+ */
+@Serializable
+data class FontCatalogEntry(
+    val family: String,
+    val category: String = "",
+    val variants: List<String> = emptyList(),
+    val subsets: List<String> = emptyList(),
+    val previewUrl: String = ""
+)
+
+/** Result of a font-catalog search: matching families plus the filter option lists. */
+@Serializable
+data class FontSearchResponse(
+    val fonts: List<FontCatalogEntry> = emptyList(),
+    val subsets: List<String> = emptyList(),
+    val categories: List<String> = emptyList(),
+    val totalMatches: Int = 0,
+    // False when the Google Fonts catalog is unavailable (no API key and no cached copy).
+    val catalogAvailable: Boolean = true
+)
+
+/** The user's pinned and recently used font families, shown as picker sections. */
+@Serializable
+data class FontPrefsResponse(
+    val pinned: List<FontCatalogEntry> = emptyList(),
+    val recent: List<FontCatalogEntry> = emptyList()
+)
+
+/**
+ * A Google Fonts variant the server has downloaded once, re-hosted on OSS and persisted, so it is
+ * reused across all movies (both by the preview and by the FFmpeg export) without re-downloading.
+ */
+@Serializable
+data class StudioFont(
+    val id: String = "",
+    val family: String = "",
+    val variant: String = "regular",
+    val url: String = "",
+    val createdAt: Long = 0
+)
+
+/** Per-family picker preferences: pinned state and last-used time (drives "Recently used"). */
+@Serializable
+data class FontPref(
+    val id: String = "",
+    val family: String = "",
+    val pinned: Boolean = false,
+    val lastUsedAt: Long = 0,
+    val createdAt: Long = 0
+)
+
+/** The weight encoded in a Google Fonts variant name ("regular"/"italic" → 400, "700italic" → 700). */
+fun fontVariantWeight(variant: String): Int = variant.removeSuffix("italic").toIntOrNull() ?: 400
+
+/** Whether a Google Fonts variant name is italic ("italic", "500italic", ...). */
+fun fontVariantItalic(variant: String): Boolean = variant.endsWith("italic")
+
+/** The Google Fonts variant name for a weight/italic pair (400 upright → "regular"). */
+fun fontVariantName(weight: Int, italic: Boolean): String = when {
+    weight == 400 && italic -> "italic"
+    weight == 400 -> "regular"
+    italic -> "${weight}italic"
+    else -> "$weight"
+}
+
+/** Human-readable label for a font weight, matching the Google Fonts UI naming. */
+fun fontWeightLabel(weight: Int): String = when (weight) {
+    100 -> "Thin 100"
+    200 -> "ExtraLight 200"
+    300 -> "Light 300"
+    400 -> "Regular 400"
+    500 -> "Medium 500"
+    600 -> "SemiBold 600"
+    700 -> "Bold 700"
+    800 -> "ExtraBold 800"
+    900 -> "Black 900"
+    else -> "$weight"
+}
+
 /** Fully-transparent color, the default [TextConfig.backgroundColor] so nothing is drawn behind text. */
 const val TRANSPARENT_COLOR: String = "#00000000"
 
@@ -762,6 +860,11 @@ const val TRANSPARENT_COLOR: String = "#00000000"
 data class TextConfig(
     val color: String = "#FFFFFF",
     val fontFamily: String = "Default",
+    // OSS-hosted .ttf of the chosen Google Fonts variant; empty for the bundled/default families.
+    val fontUrl: String = "",
+    // Weight/italic of the chosen variant. Text elements always rendered bold historically, so 700.
+    val fontWeight: Int = 700,
+    val fontItalic: Boolean = false,
     val fontSizeSp: Int = 48,
     val backgroundColor: String = TRANSPARENT_COLOR
 )

@@ -38,6 +38,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -406,19 +407,9 @@ private fun RenderProgressDialog(viewModel: AppViewModel) {
             if (url != null) {
                 val fileName = downloadFileNameForRender(viewModel.currentMovie?.title ?: "movie", url)
                 Spacer(Modifier.height(12.dp))
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(230.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.Black)
-                ) {
-                    RenderReplayPlayer(url, fileName)
-                }
+                RenderReplayPlayer(url, fileName, videoHeight = 230.dp)
                 Spacer(Modifier.height(12.dp))
                 DialogActions {
-                    GhostPillButton("⬇ Download") { triggerDownload(url, fileName) }
-                    ActionSpacer()
                     PillButton("Done") { viewModel.clearRenderJob() }
                 }
             }
@@ -441,52 +432,74 @@ private fun downloadFileNameForRender(movieTitle: String, url: String): String {
         .map { c -> if (c.isLetterOrDigit() || c == '-' || c == '_' || c == ' ') c else ' ' }
         .joinToString("")
         .trim()
-        .replace(Regex("\\s+"), "-")
+        .replace(Regex("\\s+"), " ")
         .ifBlank { "movie-render" }
     return "$baseName.$extension"
 }
 
 /**
- * Small self-contained player used to replay a finished render inside a dialog: play/pause plus
- * fullscreen and download shortcuts for the single rendered movie.
+ * Small self-contained player used to replay a finished render inside a dialog: the movie frame
+ * with its play/pause, fullscreen and download controls laid out in a row *below* the frame (not
+ * overlaid on the movie). Playback is deferred until the media has actually loaded ([onReady]), so
+ * the movie never tries to start before its first frame is ready.
  */
 @Composable
-private fun RenderReplayPlayer(url: String, fileName: String) {
-    var playing by remember(url) { mutableStateOf(true) }
+private fun RenderReplayPlayer(url: String, fileName: String, videoHeight: Dp) {
+    // Gate playback on load: start paused and only begin once the movie is ready, so we never
+    // attempt to play an empty/unloaded <video> element (which shows a black flash / stutter).
+    var ready by remember(url) { mutableStateOf(false) }
+    var playing by remember(url) { mutableStateOf(false) }
     var position by remember(url) { mutableStateOf(0f) }
-    Box(Modifier.fillMaxSize()) {
-        VideoPlayer(
-            url = url,
-            isPlaying = playing,
-            playhead = position,
-            onTimeUpdate = { position = it },
-            modifier = Modifier.fillMaxSize()
-        )
-        RoundIconButton(
-            if (playing) "⏸" else "▶",
-            contentDescription = "Play / pause",
-            size = 38.dp,
-            background = Color.Black.copy(alpha = 0.55f),
-            tint = Color.White
-        ) { playing = !playing }
-        // Fullscreen playback and download the movie, top-right over the video.
-        Row(
-            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+    Column(Modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(videoHeight)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color.Black)
         ) {
+            VideoPlayer(
+                url = url,
+                isPlaying = playing,
+                playhead = position,
+                onTimeUpdate = { position = it },
+                onReady = {
+                    // The movie is loaded — start it now (and enable the transport controls).
+                    ready = true
+                    playing = true
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        // Transport, fullscreen and download controls, sitting below the movie frame.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            RoundIconButton(
+                if (playing) "⏸" else "▶",
+                contentDescription = "Play / pause",
+                enabled = ready,
+                size = 38.dp,
+                background = MaterialTheme.colorScheme.surfaceVariant,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            ) { playing = !playing }
+            Spacer(Modifier.weight(1f))
             RoundIconButton(
                 "⛶",
                 contentDescription = "Fullscreen",
                 size = 34.dp,
-                background = Color.Black.copy(alpha = 0.55f),
-                tint = Color.White
+                background = MaterialTheme.colorScheme.surfaceVariant,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
             ) { requestVideoFullscreen() }
             RoundIconButton(
                 "⬇",
                 contentDescription = "Download movie",
                 size = 34.dp,
-                background = Color.Black.copy(alpha = 0.55f),
-                tint = Color.White
+                background = MaterialTheme.colorScheme.surfaceVariant,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
             ) { triggerDownload(url, fileName) }
         }
     }
@@ -508,15 +521,11 @@ private fun RendersHistoryDialog(viewModel: AppViewModel, onDismiss: () -> Unit)
         } else {
             val current = replayUrl
             if (current != null) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(250.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.Black)
-                ) {
-                    RenderReplayPlayer(current, downloadFileNameForRender(movieTitle, current))
-                }
+                RenderReplayPlayer(
+                    current,
+                    downloadFileNameForRender(movieTitle, current),
+                    videoHeight = 250.dp
+                )
                 Spacer(Modifier.height(10.dp))
                 GhostPillButton("← All renders", compact = true) { replayUrl = null }
             } else {

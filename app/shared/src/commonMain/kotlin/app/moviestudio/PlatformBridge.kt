@@ -107,6 +107,15 @@ expect fun triggerDownload(url: String, fileName: String)
 expect fun downloadTextFile(content: String, fileName: String)
 
 /**
+ * Opens the fully-formed HTML page [html] in a new blank browser tab and lets the browser print
+ * it. The page carries its own A4 print stylesheet and an auto-print script (see
+ * [app.moviestudio.ui.buildPrintableDocumentHtml]), so it renders centered on an A4 sheet and the
+ * print dialog opens on load. Used to print a movie document. No-op on platforms without a browser
+ * window (desktop / Android).
+ */
+expect fun printDocument(html: String)
+
+/**
  * Requests native fullscreen playback for the movie preview's video element (the same shared
  * `<video>` the [app.moviestudio.VideoPlayer] drives). Used to watch a finished render
  * distraction-free. No-op on platforms without a fullscreen-capable video element.

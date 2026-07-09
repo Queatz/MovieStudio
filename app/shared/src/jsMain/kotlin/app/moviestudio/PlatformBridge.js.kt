@@ -291,6 +291,20 @@ actual fun downloadTextFile(content: String, fileName: String) {
     jsDownloadTextFile(content, fileName)
 }
 
+private fun jsPrintDocument(html: String): Unit = js("""
+    (function(html) {
+        var w = window.open('', '_blank');
+        if (!w) { return; }
+        w.document.open();
+        w.document.write(html);
+        w.document.close();
+    })(html)
+""")
+
+actual fun printDocument(html: String) {
+    jsPrintDocument(html)
+}
+
 // ------------------------------------------------------------------------------------ fullscreen
 
 private fun jsRequestVideoFullscreen(): Unit = js("""
