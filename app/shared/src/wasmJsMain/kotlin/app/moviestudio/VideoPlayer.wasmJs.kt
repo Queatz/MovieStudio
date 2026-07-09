@@ -5,7 +5,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -151,6 +156,9 @@ private external fun jsUpdateVideoVolume(volume: Double)
 """)
 private external fun jsHideVideo()
 
+/** The last measured (CSS-pixel) stage bounds of the shared `<video>` overlay. */
+private data class VideoBounds(val x: Double, val y: Double, val w: Double, val h: Double)
+
 @Composable
 actual fun VideoPlayer(
     url: String,
@@ -206,6 +214,20 @@ actual fun VideoPlayer(
         }
     }
 
+    // Apply the measured stage bounds (which also flips the element to `display: block`, i.e. makes
+    // it visible) to the shared <video>. Driven from Compose state so it runs as its own effect
+    // AFTER the setup effect above has created the element. Applying the bounds directly inside
+    // `onGloballyPositioned` was the bug behind "the video only appears after a resize": that layout
+    // callback fires on the first frame BEFORE the setup effect's coroutine has run, so the very
+    // first bounds update hit a not-yet-existing element and was silently dropped — leaving the
+    // element `display: none` (audio still played via the state effect) until a window/layout resize
+    // re-fired `onGloballyPositioned`. Routing it through state + an effect guarantees the element
+    // exists when the bounds are applied, so the frame shows on the first layout.
+    var bounds by remember { mutableStateOf<VideoBounds?>(null) }
+    LaunchedEffect(bounds) {
+        bounds?.let { jsUpdateVideoBounds(it.x, it.y, it.w, it.h) }
+    }
+
     // Compose Web lays out in physical pixels (CSS px × devicePixelRatio), but the <video> overlay
     // is positioned/sized in CSS pixels. Divide by the density so the element lines up with the
     // aspect-constrained stage instead of overflowing it on high-DPI (retina) displays.
@@ -214,10 +236,10 @@ actual fun VideoPlayer(
         modifier = modifier
             .background(Color.Black)
             .onGloballyPositioned { coordinates ->
-                val windowOffset = coordinates.localToWindow(androidx.compose.ui.geometry.Offset.Zero)
+                val windowOffset = coordinates.localToWindow(Offset.Zero)
                 val width = coordinates.size.width
                 val height = coordinates.size.height
-                jsUpdateVideoBounds(
+                bounds = VideoBounds(
                     (windowOffset.x / density).toDouble(),
                     (windowOffset.y / density).toDouble(),
                     (width / density).toDouble(),

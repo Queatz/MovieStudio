@@ -1658,24 +1658,23 @@ class AppViewModel : ViewModel() {
         }
     }
 
-    /** Picks an audio sample from the device, then enrolls a new cloned voice with it. */
-    fun createVoiceCloneFromDevice(name: String, onDone: (VoiceClone?) -> Unit) {
+    /**
+     * Picks an audio sample from the device and uploads it, publishing the upload progress to
+     * [uploadState] so the voice-cloning dialog can show a progress bar. Hands the uploaded sample
+     * (or null on failure/cancellation) back to [onDone] — cloning itself happens separately via
+     * [createVoiceCloneFromAudioUrl] once the user names the voice, mirroring the mic-recording flow.
+     */
+    fun uploadVoiceSample(onDone: (UploadedDeviceFile?) -> Unit) {
         viewModelScope.launch {
-            try {
-                val uploaded = withUploadProgress("Uploading voice sample") { onProgress ->
+            val uploaded = try {
+                withUploadProgress("Uploading voice sample") { onProgress ->
                     pickAndUploadDeviceFile(AssetType.AUDIO, onProgress)
                 }
-                if (uploaded == null) {
-                    onDone(null)
-                    return@launch
-                }
-                val clone = NetworkService.createVoiceClone(name, uploaded.ossUrl)
-                refreshVoices()
-                onDone(clone)
             } catch (e: Exception) {
-                errorMessage = "Voice cloning failed: ${e.message}"
-                onDone(null)
+                errorMessage = "Voice sample upload failed: ${e.message}"
+                null
             }
+            onDone(uploaded)
         }
     }
 

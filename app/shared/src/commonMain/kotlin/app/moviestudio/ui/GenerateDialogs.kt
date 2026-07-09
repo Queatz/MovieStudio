@@ -53,6 +53,12 @@ import app.moviestudio.SUPPORTED_IMAGE_MODELS
 import app.moviestudio.SUPPORTED_MUSIC_GENDERS
 import app.moviestudio.SUPPORTED_SFX_MODELS
 import app.moviestudio.SUPPORTED_VIDEO_SIZES
+import app.moviestudio.TTS_DEFAULT_PITCH
+import app.moviestudio.TTS_DEFAULT_SPEED
+import app.moviestudio.TTS_MAX_PITCH
+import app.moviestudio.TTS_MAX_SPEED
+import app.moviestudio.TTS_MIN_PITCH
+import app.moviestudio.TTS_MIN_SPEED
 import app.moviestudio.SequencerNote
 import app.moviestudio.UploadedDeviceFile
 import app.moviestudio.VOICE_INSTRUCTION_PRESETS
@@ -1774,6 +1780,9 @@ fun TtsDialog(
         )
     }
     var instructions by remember { mutableStateOf(initialSetup?.instructions ?: "") }
+    // Speech-rate (speed) and pitch multipliers applied to every voice kind before generating.
+    var speed by remember { mutableStateOf(initialSetup?.speed ?: TTS_DEFAULT_SPEED) }
+    var pitch by remember { mutableStateOf(initialSetup?.pitch ?: TTS_DEFAULT_PITCH) }
     var showVoiceLibrary by remember { mutableStateOf(false) }
 
     // Placeholder assets (description only, no media yet) generate rather than regenerate.
@@ -1859,6 +1868,31 @@ fun TtsDialog(
                 }
             }
         }
+        Spacer(Modifier.height(10.dp))
+
+        // Speed & pitch (Qwen for Default voices, CosyVoice for Cloned/Voice Design). Both are a
+        // 0.5×–2.0× multiplier; 1.0× keeps the voice's natural delivery. Snapped to 0.1× steps.
+        Row {
+            Column(Modifier.weight(1f)) {
+                LabeledSlider(
+                    label = "Speed",
+                    value = speed.toFloat(),
+                    valueRange = TTS_MIN_SPEED.toFloat()..TTS_MAX_SPEED.toFloat(),
+                    valueText = "${(speed * 10).roundToInt() / 10.0}×",
+                    onValueChange = { speed = (it * 10).roundToInt() / 10.0 }
+                )
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                LabeledSlider(
+                    label = "Pitch",
+                    value = pitch.toFloat(),
+                    valueRange = TTS_MIN_PITCH.toFloat()..TTS_MAX_PITCH.toFloat(),
+                    valueText = "${(pitch * 10).roundToInt() / 10.0}×",
+                    onValueChange = { pitch = (it * 10).roundToInt() / 10.0 }
+                )
+            }
+        }
 
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
@@ -1872,7 +1906,14 @@ fun TtsDialog(
                 enabled = text.isNotBlank()
             ) {
                 viewModel.generateMedia(
-                    GenerationSetup(kind = "tts", prompt = text, voice = voice, instructions = instructions.trim()),
+                    GenerationSetup(
+                        kind = "tts",
+                        prompt = text,
+                        voice = voice,
+                        instructions = instructions.trim(),
+                        speed = speed,
+                        pitch = pitch
+                    ),
                     // Editing (tweak) or filling a placeholder (no media yet) edits the existing
                     // asset in place; only regenerating real media targets a brand-new asset. The
                     // job is tagged with the originating asset (the edited/regenerated asset, or the
@@ -2336,8 +2377,10 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
     var working by remember { mutableStateOf(false) }
     var recording by remember { mutableStateOf(false) }
     var recordSeconds by remember { mutableStateOf(0) }
-    // The finished microphone capture, kept until the user names the voice and clones it.
-    var recordedSample by remember { mutableStateOf<UploadedDeviceFile?>(null) }
+    var uploading by remember { mutableStateOf(false) }
+    // The finished microphone capture or picked device file, kept until the user names the voice
+    // and clones it. Both the "Record your voice" and "Upload audio" options fill this same slot.
+    var voiceSample by remember { mutableStateOf<UploadedDeviceFile?>(null) }
     var deleteTarget by remember { mutableStateOf<VoiceClone?>(null) }
     val scope = rememberCoroutineScope()
 
@@ -2384,9 +2427,9 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!recording) {
-                PillButton("🔴 Record", compact = true, enabled = !working) {
+                PillButton("🔴 Record", compact = true, enabled = !working && !uploading) {
                     scope.launch {
-                        recordedSample = null
+                        voiceSample = null
                         recording = startMicRecording()
                         if (!recording) {
                             viewModel.errorMessage = "Microphone unavailable or permission denied"
@@ -2410,7 +2453,7 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
                         if (uploaded == null) {
                             viewModel.errorMessage = "Recording failed — nothing was captured"
                         } else {
-                            recordedSample = uploaded
+                            voiceSample = uploaded
                         }
                     }
                 }
@@ -2427,12 +2470,35 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
                 )
             }
         }
+
+        SectionLabel("Upload audio")
+        Text(
+            "Or pick an existing recording from your device — a clean 10–60 second clip works best.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        GhostPillButton(
+            if (uploading) "Uploading..." else "📤 Upload audio",
+            compact = true,
+            enabled = !uploading && !working && !recording
+        ) {
+            uploading = true
+            viewModel.uploadVoiceSample { uploaded ->
+                uploading = false
+                if (uploaded == null) {
+                    viewModel.errorMessage = "Upload failed — nothing was picked"
+                } else {
+                    voiceSample = uploaded
+                }
+            }
+        }
         // Live progress while a recording or a picked audio sample uploads to storage.
         viewModel.uploadState?.let { upload ->
             Spacer(Modifier.height(8.dp))
             UploadProgressBar(upload)
         }
-        recordedSample?.let { sample ->
+        voiceSample?.let { sample ->
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
@@ -2442,7 +2508,7 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
                     fontWeight = FontWeight.SemiBold
                 )
                 PillButton(
-                    if (working) "Cloning..." else "🧬 Clone from recording",
+                    if (working) "Cloning..." else "🧬 Clone this sample",
                     compact = true,
                     enabled = name.isNotBlank() && !working
                 ) {
@@ -2489,17 +2555,6 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
 
         DialogActions {
             GhostPillButton("Cancel") { onClose(null) }
-            ActionSpacer()
-            PillButton(
-                if (working) "Cloning..." else "🎤 Pick sample & clone",
-                enabled = name.isNotBlank() && !working && !recording
-            ) {
-                working = true
-                viewModel.createVoiceCloneFromDevice(name.trim()) { clone ->
-                    working = false
-                    if (clone != null) onClose(clone)
-                }
-            }
         }
     }
 

@@ -545,6 +545,16 @@ data class VoiceOptions(
 const val VOICE_SAMPLE_TEXT: String =
     "Hi there! This is a preview of how I sound. Let's make a great movie together."
 
+// TTS speech-rate (speed) and pitch bounds, shared by the sliders (client) and the request
+// builders (server). Both Qwen (preset voices) and CosyVoice (cloned/designed voices) accept a
+// 0.5×–2.0× multiplier for each, with 1.0× being the voice's natural delivery.
+const val TTS_MIN_SPEED: Double = 0.5
+const val TTS_MAX_SPEED: Double = 2.0
+const val TTS_DEFAULT_SPEED: Double = 1.0
+const val TTS_MIN_PITCH: Double = 0.5
+const val TTS_MAX_PITCH: Double = 2.0
+const val TTS_DEFAULT_PITCH: Double = 1.0
+
 // ---------------------------------------------------------------------------------------------
 // Transitions (clip overlap effects)
 // ---------------------------------------------------------------------------------------------
@@ -1101,6 +1111,13 @@ data class GenerationSetup(
     // Optional voice instructions for TTS (Qwen instruct): how the line should be delivered,
     // e.g. "happy", "sad", "excited", "whispering, slightly out of breath".
     val instructions: String = "",
+    // TTS speech-rate (speed) and pitch multipliers, adjusted before generating a voiceover.
+    // 1.0 = the voice's natural speed/pitch. Applied to Default (Qwen), Cloned and Voice Design
+    // (CosyVoice) voices alike: they ride along as the `rate`/`pitch` synthesis parameters both
+    // APIs accept, clamped to [TTS_MIN_SPEED]..[TTS_MAX_SPEED] / [TTS_MIN_PITCH]..[TTS_MAX_PITCH].
+    // Only meaningful for tts.
+    val speed: Double = TTS_DEFAULT_SPEED,
+    val pitch: Double = TTS_DEFAULT_PITCH,
     // Sound-effect-specific options: which generation mode produces the audio (see
     // [SUPPORTED_SFX_MODELS]).
     val sfxModel: String = "wan"

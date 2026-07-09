@@ -167,6 +167,14 @@ builders are pure/network-free so their shape is unit-tested. Enrollment for des
 `buildVoiceDesignRequestBody(...)` against the `voice-enrollment` model, targeting
 `QwenConfig.voiceCloneTargetModel` (`cosyvoice-v3.5-plus`).
 
+**Speed & pitch.** `TtsDialog` exposes two sliders — **Speed** and **Pitch** — that set
+`GenerationSetup.speed` / `GenerationSetup.pitch` (0.5×–2.0×, `1.0×` = the voice's natural
+delivery; bounds are the `TTS_MIN_*`/`TTS_MAX_*` constants). They apply to all three voice kinds:
+`buildTtsRequestBody(...)` forwards them to Qwen as the `parameters.rate` / `parameters.pitch`
+synthesis parameters (only when moved off the default, so a plain voiceover's request is
+unchanged), and `buildClonedVoiceTtsRequestBody(...)` forwards them to CosyVoice as
+`payload.parameters.rate` / `payload.parameters.pitch`.
+
 Relevant `QwenConfig` model names (all overridable via env):
 
 | Setting                 | Default env                    | Used for                          |

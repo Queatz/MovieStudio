@@ -69,27 +69,143 @@ data class MusicSequenceRequest(val movieId: String? = null, val sequence: Music
 private val json = Json { ignoreUnknownKeys = true }
 
 /**
+ * The most reference images WAN 2.7 R2V accepts in one generation (the `reference_image` entries
+ * under `input.media`). This is the single budget the reference photos are balanced within — see
+ * [balanceReferenceImages] — so it must stay in sync with the `take(...)` cap the R2V request
+ * builder applies (`QwenAIService.buildVideoRequestBody`).
+ */
+internal const val MAX_R2V_REFERENCE_IMAGES = 4
+
+/**
+ * A named group of reference images that must stay bound to its subject in the generation prompt.
+ * [images] are that subject's reference photos in preference order; [describe] renders the prompt
+ * sentence that introduces the subject given the 1-based indices its images ended up at in the
+ * final reference-image list. Empty indices mean the subject contributed no surviving photo, so it
+ * is introduced by name/description alone (the extra-reference-photos group has no name and renders
+ * nothing).
+ */
+internal data class ReferenceSubject(
+    val images: List<String>,
+    val describe: (imageIndices: List<Int>) -> String,
+)
+
+/** "Reference image 3" / "Reference images 3-4" for a contiguous 1-based index range (empty => ""). */
+private fun referenceImagePhrase(indices: List<Int>): String = when {
+    indices.isEmpty() -> ""
+    indices.size == 1 -> "Reference image ${indices.first()}"
+    else -> "Reference images ${indices.first()}-${indices.last()}"
+}
+
+/**
+ * Balances a limited reference-image [budget] across every selected [subjects] (the user's extra
+ * reference photos, each character and each scene) with a round-robin: the first pass gives every
+ * subject its first photo before any subject receives a second, so as many distinct selections as
+ * possible survive the cap. This replaces the previous first-come-first-served flattening where a
+ * whole character's photos (or a scene's) could be silently dropped, leaving that subject named in
+ * the prompt with no image at all. Duplicate URLs are collapsed so a photo shared by two subjects
+ * only occupies one slot.
+ *
+ * Returns the final, de-duplicated image list (each subject's images kept contiguous) paired with
+ * the prompt additions whose 1-based image references line up with that list, so every photo is
+ * explicitly bound to its character/scene name instead of landing in an anonymous pool.
+ */
+internal fun balanceReferenceImages(
+    subjects: List<ReferenceSubject>,
+    budget: Int = MAX_R2V_REFERENCE_IMAGES,
+): Pair<List<String>, String> {
+    // Round-robin selection: one fresh image per subject per pass until the budget is spent.
+    val picked = List(subjects.size) { mutableListOf<String>() }
+    val seen = mutableSetOf<String>()
+    val cursors = IntArray(subjects.size)
+    var total = 0
+    var progressed = true
+    while (total < budget && progressed) {
+        progressed = false
+        for (i in subjects.indices) {
+            if (total >= budget) break
+            val images = subjects[i].images
+            // Advance past already-picked / duplicate URLs to this subject's next fresh photo.
+            while (cursors[i] < images.size && images[cursors[i]] in seen) cursors[i]++
+            if (cursors[i] < images.size) {
+                seen.add(images[cursors[i]])
+                picked[i].add(images[cursors[i]])
+                cursors[i]++
+                total++
+                progressed = true
+            }
+        }
+    }
+
+    // Emit the surviving images grouped by subject (contiguous) and build the matching prompt text
+    // referencing each subject's 1-based image indices.
+    val finalImages = mutableListOf<String>()
+    val prompt = StringBuilder()
+    for (i in subjects.indices) {
+        val start = finalImages.size + 1
+        finalImages.addAll(picked[i])
+        val indices = (start until start + picked[i].size).toList()
+        prompt.append(subjects[i].describe(indices))
+    }
+    return finalImages to prompt.toString()
+}
+
+/**
  * Expands character/scene references into concrete reference images + prompt context so the
  * generation service only deals with plain URLs and text. The original ids stay on the setup so
  * the generation can be re-edited later.
+ *
+ * The reference-image slots are shared fairly across every selection (extra reference photos, each
+ * character and each scene) via [balanceReferenceImages], guaranteeing at least one photo from each
+ * selection survives before any subject contributes a second — even when the user picks more
+ * subjects than WAN can accept. Each surviving photo is bound to its subject's name in the prompt
+ * (e.g. `Reference image 1 shows character "Alice": ...`) so the model no longer has to guess which
+ * anonymous photo belongs to which name.
  */
 private fun expandReferences(setup: GenerationSetup): GenerationSetup {
     if (setup.characterIds.isEmpty() && setup.sceneIds.isEmpty()) return setup
-    val referenceImages = setup.referenceImages.toMutableList()
-    val promptAdditions = StringBuilder()
+
+    val subjects = mutableListOf<ReferenceSubject>()
+
+    // The user's extra reference photos are one selection: they carry no name, so they are simply
+    // included (up to their share of the budget) with no prompt sentence of their own.
+    if (setup.referenceImages.isNotEmpty()) {
+        subjects.add(ReferenceSubject(images = setup.referenceImages) { "" })
+    }
+
     for (id in setup.characterIds) {
         val character = CharacterRepository.getById(id) ?: continue
-        referenceImages.addAll(character.referenceImages)
-        promptAdditions.append(" Featuring character \"${character.name}\": ${character.description}.")
+        subjects.add(
+            ReferenceSubject(images = character.referenceImages) { indices ->
+                val phrase = referenceImagePhrase(indices)
+                if (phrase.isEmpty()) {
+                    " Featuring character \"${character.name}\": ${character.description}."
+                } else {
+                    val verb = if (indices.size == 1) "shows" else "show"
+                    " $phrase $verb character \"${character.name}\": ${character.description}."
+                }
+            }
+        )
     }
+
     for (id in setup.sceneIds) {
         val scene = SceneRepository.getById(id) ?: continue
-        referenceImages.addAll(scene.referenceImages)
-        promptAdditions.append(" Set in \"${scene.name}\": ${scene.description}.")
+        subjects.add(
+            ReferenceSubject(images = scene.referenceImages) { indices ->
+                val phrase = referenceImagePhrase(indices)
+                if (phrase.isEmpty()) {
+                    " Set in \"${scene.name}\": ${scene.description}."
+                } else {
+                    val verb = if (indices.size == 1) "shows" else "show"
+                    " $phrase $verb the scene \"${scene.name}\": ${scene.description}."
+                }
+            }
+        )
     }
+
+    val (referenceImages, promptAdditions) = balanceReferenceImages(subjects)
     return setup.copy(
         prompt = (setup.prompt + promptAdditions).trim(),
-        referenceImages = referenceImages.distinct().take(6)
+        referenceImages = referenceImages
     )
 }
 

@@ -9,6 +9,12 @@ import app.moviestudio.GenerationSetup
 import app.moviestudio.Job
 import app.moviestudio.QWEN_VOICE_CATALOG
 import app.moviestudio.SUPPORTED_IMAGE_MODELS
+import app.moviestudio.TTS_DEFAULT_PITCH
+import app.moviestudio.TTS_DEFAULT_SPEED
+import app.moviestudio.TTS_MAX_PITCH
+import app.moviestudio.TTS_MAX_SPEED
+import app.moviestudio.TTS_MIN_PITCH
+import app.moviestudio.TTS_MIN_SPEED
 import app.moviestudio.VOICE_SAMPLE_TEXT
 import app.moviestudio.VoiceClone
 import app.moviestudio.VoiceDesign
@@ -896,6 +902,17 @@ object QwenAIService : AIGenerationService {
                 put("voice", voice)
                 if (instructions.isNotBlank()) put("instruct", instructions)
             }
+            // Speed/pitch ride along as the qwen-tts `rate`/`pitch` synthesis parameters. Only
+            // emitted when the user moved a slider off its 1.0× default, so a plain voiceover
+            // sends the exact same body as before.
+            val rate = setup.speed.coerceIn(TTS_MIN_SPEED, TTS_MAX_SPEED)
+            val pitch = setup.pitch.coerceIn(TTS_MIN_PITCH, TTS_MAX_PITCH)
+            if (rate != TTS_DEFAULT_SPEED || pitch != TTS_DEFAULT_PITCH) {
+                putJsonObject("parameters") {
+                    if (rate != TTS_DEFAULT_SPEED) put("rate", rate)
+                    if (pitch != TTS_DEFAULT_PITCH) put("pitch", pitch)
+                }
+            }
         }
 
     /**
@@ -927,6 +944,11 @@ object QwenAIService : AIGenerationService {
                     put("text_type", "PlainText")
                     put("format", "mp3")
                     put("sample_rate", 24_000)
+                    // CosyVoice honors a 0.5×–2.0× speech `rate` (speed) and `pitch`; both default
+                    // to 1.0× (the enrolled voice's natural delivery). Sent for every clone/design
+                    // synthesis so the user's chosen speed/pitch is applied.
+                    put("rate", setup.speed.coerceIn(TTS_MIN_SPEED, TTS_MAX_SPEED))
+                    put("pitch", setup.pitch.coerceIn(TTS_MIN_PITCH, TTS_MAX_PITCH))
                 }
             }
         }
@@ -965,7 +987,7 @@ object QwenAIService : AIGenerationService {
 
     /**
      * Sound-effect generation. The mode is picked by [GenerationSetup.sfxModel], both DashScope
-     * modes backed by the same verified [QwenConfig.audioModel] (`fun-audiogen-v1`):
+     * modes backed by the same [QwenConfig.audioModel] (`thinksound-v1`, Alibaba ThinkSound):
      * - "fun-audiogen": synthesizes the audio directly from the text prompt.
      * - "fun-audiogen-vd": video-driven, scores a freshly generated WAN source video with
      *   audio matching its visuals.
@@ -979,7 +1001,22 @@ object QwenAIService : AIGenerationService {
         }
     }
 
-    /** Direct text-to-audio: synthesizes the sound effect straight from the text prompt. */
+    /**
+     * Direct text-to-audio: synthesizes the sound effect straight from the text prompt.
+     *
+     * ThinkSound ([QwenConfig.audioModel]) is a generative-audio model on the DashScope `aigc`
+     * `audio-generation/audio-synthesis` endpoint, so — exactly like the WAN video models and the
+     * video-driven sibling [executeSoundEffectAudioGenVd] — it is invoked as an ASYNCHRONOUS task:
+     * the request is submitted with the `X-DashScope-Async: enable` header, returns a `task_id`,
+     * and the generated audio URL is read once the polled task succeeds (see
+     * [runAsyncGenerationTask]).
+     *
+     * Note it is NOT synchronous like Fun-Music ([executeMusic]) even though both are "audio":
+     * Fun-Music lives on a different, genuinely synchronous endpoint (`/services/audio/music/
+     * generation`). Calling ThinkSound synchronously (no async header) makes DashScope resolve the
+     * model against its synchronous registry, which does not host it and answers HTTP 404
+     * `InvalidParameter: "Model not exist."` — the failure this async path fixes.
+     */
     private suspend fun executeSoundEffectAudioGen(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         onProgress(15, "Generating sound effect with ${QwenConfig.audioModel}...")
@@ -1026,7 +1063,7 @@ object QwenAIService : AIGenerationService {
     }
 
     /** The DashScope request body shared by the text-to-audio and video-driven sound-effect modes. */
-    private fun audioGenRequestBody(model: String, setup: GenerationSetup, videoUrl: String?) = buildJsonObject {
+    internal fun audioGenRequestBody(model: String, setup: GenerationSetup, videoUrl: String?) = buildJsonObject {
         put("model", model)
         putJsonObject("input") {
             put("prompt", setup.prompt)

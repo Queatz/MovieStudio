@@ -5,10 +5,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+
+/** The last measured (CSS-pixel) stage bounds of the shared `<video>` overlay. */
+private data class VideoBounds(val x: Double, val y: Double, val w: Double, val h: Double)
 
 @Composable
 actual fun VideoPlayer(
@@ -160,6 +168,48 @@ actual fun VideoPlayer(
         }
     }
 
+    // Apply the measured stage bounds (which also flips the element to `display: block`, i.e. makes
+    // it visible) to the shared <video>. Driven from Compose state so it runs as its own effect
+    // AFTER the setup effect above has created the element. Applying the bounds directly inside
+    // `onGloballyPositioned` was the bug behind "the video only appears after a resize": that layout
+    // callback fires on the first frame BEFORE the setup effect's coroutine has run, so the very
+    // first bounds update hit a not-yet-existing element and was silently dropped — leaving the
+    // element `display: none` (audio still played via the state effect) until a window/layout resize
+    // re-fired `onGloballyPositioned`. Routing it through state + an effect guarantees the element
+    // exists when the bounds are applied, so the frame shows on the first layout.
+    var bounds by remember { mutableStateOf<VideoBounds?>(null) }
+    LaunchedEffect(bounds) {
+        val b = bounds ?: return@LaunchedEffect
+        val updateBounds = js("""
+            function(x, y, w, h) {
+                const video = document.getElementById('compose-video-preview');
+                if (video) {
+                    // Remember the un-transformed stage bounds so the transition (opacity +
+                    // slide offset + circular reveal) can be re-applied over them
+                    // independently of layout.
+                    video.dataset.baseX = x;
+                    video.dataset.baseY = y;
+                    video.dataset.baseW = w;
+                    video.dataset.baseH = h;
+                    const dx = parseFloat(video.dataset.trDx || '0');
+                    const dy = parseFloat(video.dataset.trDy || '0');
+                    const op = video.dataset.trOp || '1';
+                    const rev = parseFloat(video.dataset.trReveal || '1');
+                    video.style.left = (x + dx * w) + 'px';
+                    video.style.top = (y + dy * h) + 'px';
+                    video.style.width = w + 'px';
+                    video.style.height = h + 'px';
+                    video.style.opacity = op;
+                    const cp = rev >= 1 ? 'none' : ('circle(' + (rev * Math.hypot(w / 2, h / 2)) + 'px at 50% 50%)');
+                    video.style.clipPath = cp;
+                    video.style.webkitClipPath = cp;
+                    video.style.display = 'block';
+                }
+            }
+        """)
+        updateBounds(b.x, b.y, b.w, b.h)
+    }
+
     // Compose Web lays out in physical pixels (CSS px × devicePixelRatio), but the <video> overlay
     // is positioned/sized in CSS pixels. Divide by the density so the element lines up with the
     // aspect-constrained stage instead of overflowing it on high-DPI (retina) displays.
@@ -168,37 +218,10 @@ actual fun VideoPlayer(
         modifier = modifier
             .background(Color.Black)
             .onGloballyPositioned { coordinates ->
-                val windowOffset = coordinates.localToWindow(androidx.compose.ui.geometry.Offset.Zero)
+                val windowOffset = coordinates.localToWindow(Offset.Zero)
                 val width = coordinates.size.width
                 val height = coordinates.size.height
-                val updateBounds = js("""
-                    function(x, y, w, h) {
-                        const video = document.getElementById('compose-video-preview');
-                        if (video) {
-                            // Remember the un-transformed stage bounds so the transition (opacity +
-                            // slide offset + circular reveal) can be re-applied over them
-                            // independently of layout.
-                            video.dataset.baseX = x;
-                            video.dataset.baseY = y;
-                            video.dataset.baseW = w;
-                            video.dataset.baseH = h;
-                            const dx = parseFloat(video.dataset.trDx || '0');
-                            const dy = parseFloat(video.dataset.trDy || '0');
-                            const op = video.dataset.trOp || '1';
-                            const rev = parseFloat(video.dataset.trReveal || '1');
-                            video.style.left = (x + dx * w) + 'px';
-                            video.style.top = (y + dy * h) + 'px';
-                            video.style.width = w + 'px';
-                            video.style.height = h + 'px';
-                            video.style.opacity = op;
-                            const cp = rev >= 1 ? 'none' : ('circle(' + (rev * Math.hypot(w / 2, h / 2)) + 'px at 50% 50%)');
-                            video.style.clipPath = cp;
-                            video.style.webkitClipPath = cp;
-                            video.style.display = 'block';
-                        }
-                    }
-                """)
-                updateBounds(
+                bounds = VideoBounds(
                     (windowOffset.x / density).toDouble(),
                     (windowOffset.y / density).toDouble(),
                     (width / density).toDouble(),

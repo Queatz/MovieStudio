@@ -3,6 +3,7 @@ package app.moviestudio
 import app.moviestudio.service.QwenAIService
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
@@ -41,6 +42,61 @@ class QwenTtsRequestTest {
             .input()
 
         assertEquals("excited", input.str("instruct"))
+    }
+
+    @Test
+    fun presetVoiceOmitsSpeedAndPitchParametersWhenLeftAtDefault() {
+        // A plain voiceover (sliders untouched at 1.0×) must send the exact same body as before —
+        // no `parameters` block at all.
+        val setup = GenerationSetup(kind = "tts", prompt = "Hello there")
+
+        val body = QwenAIService.buildTtsRequestBody(setup, "Cherry", "qwen3-tts-flash", instructions = "")
+
+        assertNull(body["parameters"])
+    }
+
+    @Test
+    fun presetVoiceCarriesAdjustedSpeedAndPitchAsRateAndPitchParameters() {
+        val setup = GenerationSetup(kind = "tts", prompt = "Hello there", speed = 1.5, pitch = 0.8)
+
+        val parameters = QwenAIService
+            .buildTtsRequestBody(setup, "Cherry", "qwen3-tts-flash", instructions = "")
+            .getValue("parameters").jsonObject
+
+        assertEquals(1.5, parameters.getValue("rate").jsonPrimitive.double)
+        assertEquals(0.8, parameters.getValue("pitch").jsonPrimitive.double)
+    }
+
+    @Test
+    fun presetVoiceClampsSpeedAndPitchToSupportedRange() {
+        val setup = GenerationSetup(kind = "tts", prompt = "Hi", speed = 9.0, pitch = 0.01)
+
+        val parameters = QwenAIService
+            .buildTtsRequestBody(setup, "Cherry", "qwen3-tts-flash", instructions = "")
+            .getValue("parameters").jsonObject
+
+        assertEquals(TTS_MAX_SPEED, parameters.getValue("rate").jsonPrimitive.double)
+        assertEquals(TTS_MIN_PITCH, parameters.getValue("pitch").jsonPrimitive.double)
+    }
+
+    @Test
+    fun clonedVoiceCarriesSpeedAndPitchAsRateAndPitchParameters() {
+        // CosyVoice (cloned + designed voices) always carries rate/pitch; default is 1.0×.
+        val defaults = QwenAIService
+            .buildClonedVoiceTtsRequestBody(GenerationSetup(kind = "tts", prompt = "Line"), "cosyvoice-x", "cosyvoice-v3.5-plus")
+            .payload().getValue("parameters").jsonObject
+        assertEquals(1.0, defaults.getValue("rate").jsonPrimitive.double)
+        assertEquals(1.0, defaults.getValue("pitch").jsonPrimitive.double)
+
+        val adjusted = QwenAIService
+            .buildClonedVoiceTtsRequestBody(
+                GenerationSetup(kind = "tts", prompt = "Line", speed = 0.75, pitch = 1.3),
+                "cosyvoice-x",
+                "cosyvoice-v3.5-plus"
+            )
+            .payload().getValue("parameters").jsonObject
+        assertEquals(0.75, adjusted.getValue("rate").jsonPrimitive.double)
+        assertEquals(1.3, adjusted.getValue("pitch").jsonPrimitive.double)
     }
 
     @Test
