@@ -197,4 +197,18 @@ class FFmpegServiceErrorTest {
             "a tall block ($blockHeight px) must overflow the safe area so it can scroll"
         )
     }
+
+    @Test
+    fun appBundledFontsAreOnTheServerClasspath() {
+        // The render uses the app-bundled Asap/Yuyu fonts (matching the preview) by extracting them
+        // from the server's classpath resources for FFmpeg drawtext. If they were not packaged with
+        // the server the render would silently fall back to a system font — the bug this guards.
+        for (font in listOf("/fonts/asap.ttf", "/fonts/yuyu.ttf")) {
+            val stream = FFmpegService::class.java.getResourceAsStream(font)
+            assertNotNull(stream, "bundled font resource must be on the server classpath: $font")
+            stream.use {
+                assertTrue(it.readBytes().isNotEmpty(), "bundled font must not be empty: $font")
+            }
+        }
+    }
 }

@@ -531,12 +531,8 @@ private fun CaptionOverlay(active: ActiveClip, captions: CaptionConfig, playhead
 /** Maps a caption font-family display name to a usable [FontFamily]. */
 @Composable
 fun captionFontFamily(name: String): FontFamily = when (name) {
-    "Serif" -> FontFamily.Serif
-    "Sans serif" -> FontFamily.SansSerif
-    "Monospace" -> FontFamily.Monospace
-    "Cursive" -> FontFamily.Cursive
-    "Asap (my font)" -> FontFamily(Font(Res.font.asap))
-    "Yuyu (my font)" -> FontFamily(Font(Res.font.yuyu))
+    "Asap" -> FontFamily(Font(Res.font.asap))
+    "Yuyu" -> FontFamily(Font(Res.font.yuyu))
     else -> FontFamily.Default
 }
 
@@ -548,10 +544,6 @@ fun captionFontFamily(name: String): FontFamily = when (name) {
  */
 @Composable
 fun textFontFamily(name: String): FontFamily = when (name) {
-    "Serif" -> FontFamily.Serif
-    "Sans serif" -> FontFamily.SansSerif
-    "Monospace" -> FontFamily.Monospace
-    "Cursive" -> FontFamily.Cursive
     "Asap" -> FontFamily(Font(Res.font.asap))
     "Yuyu" -> FontFamily(Font(Res.font.yuyu))
     else -> FontFamily.Default

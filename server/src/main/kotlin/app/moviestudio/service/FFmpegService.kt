@@ -250,6 +250,10 @@ object FFmpegService {
                 }
                 val fontSize = (captions.fontSizeSp * canvasHeight / 480.0).toInt().coerceIn(12, 120)
                 val color = captions.color.removePrefix("#").ifBlank { "FFFFFF" }
+                // Padding around the caption's background box, proportional to the font size, so the
+                // burned-in box mirrors the preview's `padding(horizontal = 12.dp, vertical = 4.dp)`.
+                val boxPad = (fontSize * 0.3).toInt().coerceAtLeast(4)
+                val captionFont = fontFileArg(captions.fontFamily)
 
                 for (chunk in asset.wordTimings.chunked(4)) {
                     if (captionChunks >= 90) break
@@ -263,9 +267,13 @@ object FFmpegService {
                     ) continue
                     val text = chunk.joinToString(" ") { it.word }
                     val nextTag = "v_cap_${captionChunks++}"
+                    // The translucent black background box matches the preview's caption chip
+                    // (`Color.Black.copy(alpha = 0.45f)`); drawtext boxes have square corners, so the
+                    // preview's rounded corners are the only cosmetic difference.
                     filters.add(
-                        "[$currentVideoTag]drawtext=${fontFileArg()}text='${escapeDrawtext(text)}':" +
+                        "[$currentVideoTag]drawtext=${captionFont}text='${escapeDrawtext(text)}':" +
                             "fontcolor=0x$color:fontsize=$fontSize:borderw=2:bordercolor=black@0.7:" +
+                            "box=1:boxcolor=black@0.45:boxborderw=$boxPad:" +
                             "x=(w-text_w)/2:y=$yExpr:enable='between(t,${visStart.ff()},${visEnd.ff()})'[$nextTag]"
                     )
                     currentVideoTag = nextTag
@@ -756,7 +764,7 @@ object FFmpegService {
         lines.forEachIndexed { index, line ->
             val yExpr = "'(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * lineSpacing).ff()}$scrollExpr'"
             layer.add(
-                "drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
+                "drawtext=${fontFileArg(textCfg.fontFamily)}text='${escapeDrawtext(line)}':" +
                     "fontcolor=$fontColor:fontsize=$fontSize:x=$xExpr:y=$yExpr"
             )
         }
@@ -882,8 +890,15 @@ object FFmpegService {
         return "clip(255*(($reveal)-($en))/$feather,0,255)"
     }
 
-    /** The `fontfile=...:` prefix for drawtext when a usable system font is found, else empty. */
-    private fun fontFileArg(): String {
+    /**
+     * The `fontfile=...:` prefix for drawtext for the given [fontFamily] display name (one of
+     * [TEXT_FONT_FAMILIES] / [CAPTION_FONT_FAMILIES]), so the export uses the same font as the live
+     * preview. The app-bundled "Asap"/"Yuyu" fonts are extracted from the classpath (see
+     * [bundledFontFile]) and used directly; any other family (including "Default"/null) falls back
+     * to the first available system font. Returns "" when no usable font file is found at all.
+     */
+    private fun fontFileArg(fontFamily: String? = null): String {
+        bundledFontFile(fontFamily)?.let { return "fontfile=$it:" }
         val candidates = listOf(
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -892,6 +907,38 @@ object FFmpegService {
         )
         val found = candidates.firstOrNull { File(it).exists() } ?: return ""
         return "fontfile=$found:"
+    }
+
+    /** Extracted temp-file paths of the app-bundled fonts, keyed by family name (extract once). */
+    private val bundledFontPaths = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /**
+     * The absolute path to an app-bundled font ("Asap"/"Yuyu"), extracted from the server's
+     * classpath resources (under `fonts/`) to a temp file the first time it is requested so
+     * FFmpeg's `drawtext` (which needs a real file path) can read it. The result is cached so the
+     * font is only extracted once. Returns null for any other family (including "Default"/null) or
+     * when the resource is missing / extraction fails, so the caller falls back to a system font.
+     */
+    private fun bundledFontFile(fontFamily: String?): String? {
+        val resource = when (fontFamily) {
+            "Asap" -> "/fonts/asap.ttf"
+            "Yuyu" -> "/fonts/yuyu.ttf"
+            else -> return null
+        }
+        bundledFontPaths[fontFamily]?.let { return it }
+        return try {
+            val stream = FFmpegService::class.java.getResourceAsStream(resource)
+                ?: return null
+            val tempFile = File.createTempFile("moviestudio_font_${fontFamily}_", ".ttf")
+            tempFile.deleteOnExit()
+            stream.use { input -> tempFile.outputStream().use { output -> input.copyTo(output) } }
+            val path = tempFile.absolutePath
+            bundledFontPaths[fontFamily!!] = path
+            path
+        } catch (e: Exception) {
+            logger.warn("Failed to extract bundled font '$fontFamily': ${e.message}")
+            null
+        }
     }
 
     /**

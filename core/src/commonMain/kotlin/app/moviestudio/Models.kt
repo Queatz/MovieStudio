@@ -742,7 +742,7 @@ val CAPTION_FONT_FAMILIES: List<String> = listOf(
  * generic families, so a first-class text element can pick a serif/monospace look too.
  */
 val TEXT_FONT_FAMILIES: List<String> = listOf(
-    "Default", "Serif", "Sans serif", "Monospace", "Cursive", "Asap", "Yuyu"
+    "Default", "Asap", "Yuyu"
 )
 
 /** Fully-transparent color, the default [TextConfig.backgroundColor] so nothing is drawn behind text. */
