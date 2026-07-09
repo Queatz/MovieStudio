@@ -690,6 +690,10 @@ object FFmpegService {
      * color / font size, then the clip's transition applied via [buildTransitionFilters] and the
      * whole layer PTS-shifted to [start] and overlaid between [start] and [end] — mirroring the
      * styled text preview so the export matches it.
+     *
+     * Text that fits stays vertically centered. Text that overflows the canvas height instead
+     * scrolls smoothly from its top to its bottom (plus ~2 extra blank lines so the last line can
+     * be read) across the clip's duration — the same behavior as the preview's `TextClip`.
      */
     private fun renderTextElementLayer(
         filters: MutableList<String>,
@@ -708,21 +712,49 @@ object FFmpegService {
         // Font size is authored relative to a TEXT_REFERENCE_HEIGHT-tall canvas (same as the preview).
         val fontSize = (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(8, canvasHeight)
         // Wrap within a horizontally padded safe area (mirrors the preview's horizontal padding on
-        // TextClip) so wrapped lines never reach/overflow the frame's edges.
+        // TextClip) so wrapped lines never reach/overflow the frame's edges. Vertically the block is
+        // allowed to grow past the canvas (a generous line cap keeps the full text) — that overflow
+        // is exactly what the scroll below animates, mirroring the preview's unbounded TextClip.
         val wrapWidth = textSafeAreaWrapWidth(canvasWidth, fontSize)
-        val lines = wrapText(rawText, wrapWidth, 8)
+        val lines = wrapText(rawText, wrapWidth, 40)
         val fontColor = ffmpegDrawtextColor(textCfg.color)
         val bgColor = ffmpegColorHex(textCfg.backgroundColor)
         val bgAlpha = ffmpegColorAlpha(textCfg.backgroundColor)
-        val lineSpacing = textLineSpacing(canvasHeight, fontSize, lines.size)
+        // Natural, uncompressed line spacing so a tall block genuinely overflows the canvas and
+        // scrolls. Compressing it to fit (as we used to) kept every block inside the frame, so the
+        // scroll term below was always ~0 and the text never moved.
+        val lineSpacing = textLineSpacing(fontSize)
         val xExpr = textSafeAreaXExpr(canvasWidth)
 
+        // Vertical scroll for overflowing text — mirrors TextClip in the preview. The block's full
+        // height is the constant inter-line spacing plus the runtime single-line `text_h`; when it
+        // exceeds the canvas height (`h`) the text overflows and scrolls from its top down past its
+        // bottom across the clip instead of staying centered. `t` here is clip-local (the layer is
+        // PTS-shifted to `start` only afterwards), so progress = min(t/duration,1).
+        val blockConstPx = (lines.size - 1) * lineSpacing
+        val blockHeightExpr = "(${blockConstPx.ff()}+text_h)"
+        val overflowExpr = "max(0,$blockHeightExpr-h)"
+        // When it overflows, pad ~2 (blank) line-heights above the first line AND scroll ~2 extra
+        // past the last, so the viewer has a moment to start and finish reading (the preview's
+        // topPadPx / bottomPadPx). `gt` is 1 only while overflowing, so text that fits gets no
+        // padding/extra scroll and stays centered.
+        val padPerSideExpr = "2*${lineSpacing.ff()}*gt($blockHeightExpr,h)"
+        val scrollExtentExpr = "($overflowExpr+2*$padPerSideExpr)"
+        // translationY: 0 (centered) when it fits; otherwise ramps the block from half its overflow
+        // plus 2 blank lines above (progress 0) down past its bottom + 2 blank lines (progress 1).
+        val scrollExpr = if (duration > 0.0) {
+            "+($overflowExpr*0.5+$padPerSideExpr-min(t/${duration.ff()},1)*$scrollExtentExpr)"
+        } else {
+            ""
+        }
+
         val layer = mutableListOf<String>()
-        // Draw each wrapped line, centered, stacking symmetrically around the vertical center. The
-        // x position is clamped into the horizontally padded safe area as a hard guarantee against
-        // overflow (the wrap estimate above is only a heuristic and actual glyph metrics can vary).
+        // Draw each wrapped line, centered, stacking symmetrically around the vertical center (plus
+        // the shared scroll offset above). The x position is clamped into the horizontally padded
+        // safe area as a hard guarantee against overflow (the wrap estimate above is only a
+        // heuristic and actual glyph metrics can vary).
         lines.forEachIndexed { index, line ->
-            val yExpr = "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * lineSpacing).ff()}"
+            val yExpr = "'(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * lineSpacing).ff()}$scrollExpr'"
             layer.add(
                 "drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
                     "fontcolor=$fontColor:fontsize=$fontSize:x=$xExpr:y=$yExpr"
@@ -945,17 +977,14 @@ object FFmpegService {
     }
 
     /**
-     * The vertical spacing (px) between stacked TEXT element lines: normally `fontSize * 1.25`, but
-     * compressed (never expanded) so a tall multi-line block of [lineCount] lines still fits inside
-     * a vertically padded safe area of [canvasHeight] instead of its top/bottom lines running past
-     * the frame edges.
+     * The natural vertical spacing (px) between stacked TEXT element lines: `fontSize * 1.25`.
+     *
+     * It is intentionally NOT compressed to squeeze a multi-line block inside the canvas. A tall
+     * block is meant to overflow the frame and scroll (see [renderTextElementLayer]), exactly like
+     * the preview's unbounded `TextClip`. Compressing it kept every block inside the safe area,
+     * which pinned the scroll offset to ~0 so overflowing text never moved.
      */
-    internal fun textLineSpacing(canvasHeight: Int, fontSize: Int, lineCount: Int): Double {
-        val idealLineSpacing = fontSize * 1.25
-        if (lineCount <= 1) return idealLineSpacing
-        val maxBlockHeight = (canvasHeight - 2 * textSafeAreaPadding(canvasHeight)).coerceAtLeast(fontSize).toDouble()
-        return minOf(idealLineSpacing, maxBlockHeight / (lineCount - 1))
-    }
+    internal fun textLineSpacing(fontSize: Int): Double = fontSize * 1.25
 
     /**
      * The `drawtext` `x=` expression for a TEXT element line: centered by default, but clamped into

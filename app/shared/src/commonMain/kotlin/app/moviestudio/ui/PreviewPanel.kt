@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -208,7 +209,7 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                             when {
                                 // Styled text elements render (with transitions) on top of the GPU
                                 // composite, just like description cards do.
-                                active.asset.isTextElement -> TextClip(active, active.transitionVisual(playhead))
+                                active.asset.isTextElement -> TextClip(active, active.transitionVisual(playhead), playhead)
                                 active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
                             }
                         }
@@ -221,7 +222,7 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                             when {
                                 // A first-class text element: styled text over its own background,
                                 // fading / sliding in like any other visual clip.
-                                active.asset.isTextElement -> TextClip(active, transitionVisual)
+                                active.asset.isTextElement -> TextClip(active, transitionVisual, playhead)
                                 // A clip with no media yet is a description card: large centered text.
                                 active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
                                 // Still images: plain Compose AsyncImage, center-cropped + offset.
@@ -362,11 +363,20 @@ private fun ClipImage(active: ActiveClip, transitionVisual: TransitionVisual) {
  * show through). The size is relative to a [TEXT_REFERENCE_HEIGHT] canvas and scaled to the actual
  * stage height so the preview matches the FFmpeg render. The [transitionVisual] fades / slides /
  * circle-reveals it in over whatever plays beneath, exactly like [ClipImage].
+ *
+ * Text that fits stays vertically centered. Text that overflows the stage height instead scrolls
+ * smoothly across the clip's duration (driven by [playhead]) — starting ~2 blank lines above its
+ * first line and ending ~2 blank lines below its last line — so the viewer has a moment to start
+ * and finish reading and all of it can be read within the timeline item.
  */
 @Composable
-private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual) {
+private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual, playhead: Float) {
     val config = parseEffectsConfig(active.clip.effectsConfig).text ?: TextConfig()
     val text = (active.asset.description ?: active.asset.aiPrompt).orEmpty()
+    // Clip-local progress (0..1) across the timeline item, used to scroll overflowing text.
+    val clipDuration = (active.clip.trimOut - active.clip.trimIn).toDouble()
+    val clipLocal = (playhead - active.clip.timelineStart).toDouble()
+    val progress = if (clipDuration > 0.0) (clipLocal / clipDuration).coerceIn(0.0, 1.0).toFloat() else 0f
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
@@ -381,14 +391,28 @@ private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual) {
                     Modifier.clip(CircleRevealShape(transitionVisual.revealRadiusFraction))
                 else Modifier
             )
-            .background(parseHexColor(config.backgroundColor)),
+            .background(parseHexColor(config.backgroundColor))
+            // Keep the scrolling (overflowing) text inside the movie frame.
+            .clipToBounds(),
         contentAlignment = Alignment.Center
     ) {
         // Font size is authored relative to a TEXT_REFERENCE_HEIGHT-tall canvas; scale it to the
         // real stage height so the same config looks identical in the preview and the export.
-        val fontSizeSp = with(LocalDensity.current) {
+        val lineHeightSp = with(LocalDensity.current) {
             (config.fontSizeSp / TEXT_REFERENCE_HEIGHT * constraints.maxHeight).toFloat().toSp()
-        }
+        } * 1.2f
+        val fontSizeSp = lineHeightSp / 1.2f
+        val lineHeightPx = with(LocalDensity.current) { lineHeightSp.toPx() }
+        // The text's full (unbounded) height, so we can tell when it overflows the stage height.
+        var textHeightPx by remember { mutableStateOf(0) }
+        val overflowPx = (textHeightPx - constraints.maxHeight).coerceAtLeast(0).toFloat()
+        // When the text overflows, pad ~2 (blank) line-heights above the first line AND scroll ~2
+        // extra line-heights past the last line, so the viewer has a moment to start reading the
+        // first line and to finish reading the last one. When it fits (overflow = 0) there is no
+        // padding/extra scroll and the text stays centered.
+        val topPadPx = if (overflowPx > 0f) lineHeightPx * 2f else 0f
+        val bottomPadPx = if (overflowPx > 0f) lineHeightPx * 2f else 0f
+        val scrollExtentPx = overflowPx + topPadPx + bottomPadPx
         Text(
             text,
             color = parseHexColor(config.color),
@@ -396,8 +420,17 @@ private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual) {
             fontWeight = FontWeight.Bold,
             fontFamily = textFontFamily(config.fontFamily),
             textAlign = TextAlign.Center,
-            lineHeight = fontSizeSp * 1.2f,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
+            lineHeight = lineHeightSp,
+            onTextLayout = { textHeightPx = it.size.height },
+            modifier = Modifier
+                .fillMaxWidth()
+                .wrapContentHeight(unbounded = true)
+                .padding(horizontal = 24.dp)
+                // Centered when it fits (overflow = 0); otherwise scroll from ~2 blank lines above
+                // its top (progress 0) down past its bottom + ~2 blank lines (progress 1) across the
+                // clip. With Center alignment the text starts offset by half its overflow plus the
+                // top pad, then travels the whole overflow PLUS ~2 blank lines top and bottom.
+                .graphicsLayer { translationY = overflowPx * 0.5f + topPadPx - progress * scrollExtentPx }
         )
     }
 }

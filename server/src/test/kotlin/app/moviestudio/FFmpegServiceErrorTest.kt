@@ -173,28 +173,28 @@ class FFmpegServiceErrorTest {
     }
 
     @Test
-    fun textLineSpacingKeepsASingleLineAtTheIdealSpacing() {
-        // A single line has nothing to overflow vertically, so spacing is untouched.
-        assertEquals(48 * 1.25, FFmpegService.textLineSpacing(canvasHeight = 720, fontSize = 48, lineCount = 1))
+    fun textLineSpacingIsTheNaturalIdealSpacing() {
+        // The spacing is the natural fontSize*1.25, independent of line count / canvas height.
+        assertEquals(48 * 1.25, FFmpegService.textLineSpacing(fontSize = 48))
     }
 
     @Test
-    fun textLineSpacingCompressesManyLinesToFitInsideTheSafeArea() {
-        // 8 lines at a large font size would, at the ideal fontSize*1.25 spacing, stack far taller
-        // than the frame — the top/bottom lines would run past the canvas edges. Spacing must shrink
-        // so the whole block still fits inside the vertically padded safe area.
-        val canvasHeight = 480
+    fun textLineSpacingIsNotCompressedSoTallBlocksCanOverflowAndScroll() {
+        // Regression guard for the "text doesn't scroll" bug: spacing must NOT be squeezed to fit a
+        // tall multi-line block inside the frame. It stays at the natural ideal even for many lines,
+        // so the block overflows the canvas — which is exactly what drives the vertical scroll in
+        // renderTextElementLayer. Compressing it (as we used to) pinned the scroll offset to ~0.
         val fontSize = 100
-        val lineCount = 8
+        val spacing = FFmpegService.textLineSpacing(fontSize)
+        assertEquals(fontSize * 1.25, spacing, "spacing must stay at the natural ideal, not compress")
+
+        // 8 such lines stack far taller than a short canvas' safe area — i.e. they overflow and scroll.
+        val canvasHeight = 480
         val padding = FFmpegService.textSafeAreaPadding(canvasHeight)
-
-        val spacing = FFmpegService.textLineSpacing(canvasHeight, fontSize, lineCount)
-        val blockHeight = (lineCount - 1) * spacing
-
-        assertTrue(spacing < fontSize * 1.25, "spacing must be compressed below the ideal for a tall block")
+        val blockHeight = (8 - 1) * spacing
         assertTrue(
-            blockHeight <= (canvasHeight - 2 * padding) + 0.001,
-            "the stacked block ($blockHeight px) must fit inside the padded safe area"
+            blockHeight > (canvasHeight - 2 * padding),
+            "a tall block ($blockHeight px) must overflow the safe area so it can scroll"
         )
     }
 }
