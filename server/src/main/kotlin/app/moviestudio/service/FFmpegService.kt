@@ -1,10 +1,12 @@
 package app.moviestudio.service
 
 import app.moviestudio.*
+import app.moviestudio.config.Env
 import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.ClipRepository
 import app.moviestudio.database.MovieRepository
 import app.moviestudio.database.JobRepository
+import app.moviestudio.database.PendingRenderUploadRepository
 import app.moviestudio.database.RenderRepository
 import app.moviestudio.database.TrackRepository
 import app.moviestudio.routing.JobWebSocketManager
@@ -394,43 +396,26 @@ object FFmpegService {
 
             onProgress(90, "Uploading rendered movie to Alibaba Cloud OSS...")
 
-            val uploadedUrl = OssService.uploadFile(
-                "renders/${job.movieId}/${UUID.randomUUID()}.mp4",
-                outputFile
-            )
-
-            // Every render is kept: replayable and downloadable at any time.
-            RenderRepository.insert(
-                RenderRecord(
-                    id = UUID.randomUUID().toString(),
-                    movieId = job.movieId,
-                    url = uploadedUrl,
-                    durationSeconds = totalDuration,
-                    aspectRatio = movie.aspectRatio,
-                    createdAt = System.currentTimeMillis()
+            val objectKey = "renders/${job.movieId}/${UUID.randomUUID()}.mp4"
+            val uploadedUrl = try {
+                OssService.uploadFile(objectKey, outputFile)
+            } catch (e: Exception) {
+                // The render itself succeeded but the upload to OSS failed (e.g. a transient
+                // network/credentials issue). Don't discard the finished movie: copy it to a
+                // durable location and record it so RenderUploadRetryService can upload it later.
+                // Leave the movie in RENDERING and the job RUNNING; the retry worker finalizes both
+                // once the upload eventually succeeds.
+                logger.error(
+                    "Failed to upload rendered movie for job ${job.id}; persisting it locally to retry the upload later.",
+                    e
                 )
-            )
-
-            // The movie leaves RENDERING once the render finishes.
-            MovieRepository.getById(job.movieId)?.let { current ->
-                if (current.status == MovieStatus.RENDERING) {
-                    MovieRepository.update(current.copy(status = MovieStatus.COMPLETED))
-                }
+                persistPendingUpload(job, objectKey, outputFile, totalDuration, movie.aspectRatio, e)
+                onProgress(90, "Upload to storage failed; the movie was saved locally and will be uploaded automatically once storage is reachable.")
+                logger.info("FFmpeg render job ${job.id} finished rendering but its upload is pending retry.")
+                return
             }
 
-            JobRepository.update(job.copy(status = JobStatus.COMPLETED, resultUrl = uploadedUrl))
-
-            JobWebSocketManager.broadcast(
-                JobProgressEvent(
-                    jobId = job.id,
-                    movieId = job.movieId,
-                    status = JobStatus.COMPLETED,
-                    progress = 100,
-                    message = "Rendering completed successfully",
-                    resultUrl = uploadedUrl,
-                    jobType = JobType.FFMPEG_RENDER
-                )
-            )
+            finalizeSuccessfulUpload(job.id, job.movieId, uploadedUrl, totalDuration, movie.aspectRatio)
 
             logger.info("FFmpeg render job ${job.id} completed successfully. resultUrl: $uploadedUrl")
         } catch (e: Exception) {
@@ -452,6 +437,150 @@ object FFmpegService {
             } catch (e: Exception) {
                 logger.error("Failed to clean up scratch temp directory: ${tempDir.absolutePath}", e)
             }
+        }
+    }
+
+    /**
+     * The durable directory where rendered movies whose OSS upload failed are kept while they wait
+     * to be re-uploaded. Configurable via `PENDING_RENDER_DIR`; defaults to a stable folder under
+     * the system temp dir (which, unlike the per-render scratch dir, is not deleted after a render).
+     */
+    private val pendingUploadDir: File by lazy {
+        val configured = Env.get(
+            "PENDING_RENDER_DIR",
+            File(System.getProperty("java.io.tmpdir"), "moviestudio_pending_renders").absolutePath
+        )
+        File(configured).apply { runCatching { mkdirs() } }
+    }
+
+    /**
+     * Copies a finished render whose OSS upload failed into [pendingUploadDir] and records a
+     * [PendingRenderUpload] so [RenderUploadRetryService] can retry the upload later. The durable
+     * copy (not the caller's scratch temp dir, which is cleaned up) is what the retry worker uploads.
+     */
+    private suspend fun persistPendingUpload(
+        job: Job,
+        objectKey: String,
+        outputFile: File,
+        durationSeconds: Double,
+        aspectRatio: String,
+        cause: Exception
+    ) {
+        val id = UUID.randomUUID().toString()
+        val durableFile = File(pendingUploadDir, "$id.mp4")
+        withContext(Dispatchers.IO) {
+            outputFile.copyTo(durableFile, overwrite = true)
+            PendingRenderUploadRepository.insert(
+                PendingRenderUpload(
+                    id = id,
+                    jobId = job.id,
+                    movieId = job.movieId,
+                    objectKey = objectKey,
+                    localFilePath = durableFile.absolutePath,
+                    durationSeconds = durationSeconds,
+                    aspectRatio = aspectRatio,
+                    lastError = cause.message,
+                    createdAt = System.currentTimeMillis()
+                )
+            )
+        }
+        logger.info("Persisted pending render upload $id for job ${job.id} at ${durableFile.absolutePath}")
+        // Make sure the retry worker is running so this upload is re-attempted periodically.
+        RenderUploadRetryService.start()
+    }
+
+    /**
+     * Records the completed [RenderRecord], marks the movie COMPLETED (if still RENDERING) and the
+     * job COMPLETED with its [uploadedUrl], and broadcasts the success event. Shared by the initial
+     * render and [RenderUploadRetryService] so a retried upload finishes exactly like a first-try one.
+     */
+    suspend fun finalizeSuccessfulUpload(
+        jobId: String,
+        movieId: String,
+        uploadedUrl: String,
+        durationSeconds: Double,
+        aspectRatio: String
+    ) {
+        withContext(Dispatchers.IO) {
+            // Every render is kept: replayable and downloadable at any time.
+            RenderRepository.insert(
+                RenderRecord(
+                    id = UUID.randomUUID().toString(),
+                    movieId = movieId,
+                    url = uploadedUrl,
+                    durationSeconds = durationSeconds,
+                    aspectRatio = aspectRatio,
+                    createdAt = System.currentTimeMillis()
+                )
+            )
+
+            // The movie leaves RENDERING once the render finishes.
+            MovieRepository.getById(movieId)?.let { current ->
+                if (current.status == MovieStatus.RENDERING) {
+                    MovieRepository.update(current.copy(status = MovieStatus.COMPLETED))
+                }
+            }
+
+            JobRepository.getById(jobId)?.let { current ->
+                JobRepository.update(current.copy(status = JobStatus.COMPLETED, resultUrl = uploadedUrl, error = null))
+            }
+        }
+
+        JobWebSocketManager.broadcast(
+            JobProgressEvent(
+                jobId = jobId,
+                movieId = movieId,
+                status = JobStatus.COMPLETED,
+                progress = 100,
+                message = "Rendering completed successfully",
+                resultUrl = uploadedUrl,
+                jobType = JobType.FFMPEG_RENDER
+            )
+        )
+    }
+
+    /**
+     * Retries the OSS upload for a single [PendingRenderUpload]. On success the render is finalized
+     * (see [finalizeSuccessfulUpload]), the durable local file and the pending record are removed,
+     * and `true` is returned. On failure the record's attempt counters/error are updated and `false`
+     * is returned so the caller keeps it for the next retry sweep. A pending record whose local file
+     * has gone missing is dropped (returns `true`) since it can never be uploaded.
+     */
+    suspend fun retryPendingUpload(pending: PendingRenderUpload): Boolean {
+        val file = File(pending.localFilePath)
+        if (!file.exists()) {
+            logger.warn(
+                "Pending render upload ${pending.id} references a missing local file (${pending.localFilePath}); dropping it."
+            )
+            withContext(Dispatchers.IO) { runCatching { PendingRenderUploadRepository.delete(pending.id) } }
+            return true
+        }
+        return try {
+            logger.info("Retrying OSS upload for pending render ${pending.id} (job ${pending.jobId}), attempt ${pending.attempts + 1}.")
+            val uploadedUrl = withContext(Dispatchers.IO) { OssService.uploadFile(pending.objectKey, file) }
+            finalizeSuccessfulUpload(
+                pending.jobId, pending.movieId, uploadedUrl, pending.durationSeconds, pending.aspectRatio
+            )
+            withContext(Dispatchers.IO) {
+                runCatching { file.delete() }
+                runCatching { PendingRenderUploadRepository.delete(pending.id) }
+            }
+            logger.info("Pending render ${pending.id} uploaded successfully on retry. resultUrl: $uploadedUrl")
+            true
+        } catch (e: Exception) {
+            logger.warn("Retry of pending render upload ${pending.id} failed: ${e.message}")
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    PendingRenderUploadRepository.update(
+                        pending.copy(
+                            attempts = pending.attempts + 1,
+                            lastAttemptAt = System.currentTimeMillis(),
+                            lastError = e.message
+                        )
+                    )
+                }
+            }
+            false
         }
     }
 

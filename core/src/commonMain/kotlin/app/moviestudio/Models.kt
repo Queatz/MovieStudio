@@ -360,6 +360,37 @@ data class RenderRecord(
 )
 
 /**
+ * A rendered movie that finished encoding but could NOT be uploaded to object storage (Alibaba
+ * OSS) — e.g. a transient network/credentials failure. The finished file is copied to a durable
+ * local directory ([localFilePath]) and this record captures everything needed to finish the
+ * render later: which [jobId]/[movieId] it belongs to, the intended storage [objectKey], and the
+ * render metadata ([durationSeconds]/[aspectRatio]) that will populate the eventual [RenderRecord].
+ *
+ * A background retry worker periodically re-attempts the upload; [attempts]/[lastAttemptAt]/
+ * [lastError] track its progress so failures are visible and back-off can be applied.
+ */
+@Serializable
+data class PendingRenderUpload(
+    val id: String,
+    val jobId: String,
+    val movieId: String,
+    // The object-storage key the file should be uploaded under (kept stable across retries so a
+    // half-finished upload is simply overwritten rather than orphaned).
+    val objectKey: String,
+    // Absolute path to the durably-stored rendered file awaiting upload.
+    val localFilePath: String,
+    val durationSeconds: Double,
+    val aspectRatio: String,
+    // How many upload attempts have been made so far (0 before the first retry).
+    val attempts: Int = 0,
+    // When the last upload attempt ran (epoch millis; 0 if never retried yet).
+    val lastAttemptAt: Long = 0,
+    // The most recent upload failure reason, for diagnostics/visibility.
+    val lastError: String? = null,
+    val createdAt: Long = 0
+)
+
+/**
  * Quick-pick voice instruction presets offered by the TTS dialog (Qwen instruct). The user can
  * also type any free-form instruction instead.
  */

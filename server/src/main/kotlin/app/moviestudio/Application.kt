@@ -12,6 +12,7 @@ import app.moviestudio.routing.tipRoutes
 import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.service.AIGenerationService
 import app.moviestudio.service.JobRecoveryService
+import app.moviestudio.service.RenderUploadRetryService
 import app.moviestudio.service.QwenAIService
 import app.moviestudio.service.QwenConfig
 import app.moviestudio.storage.OssService
@@ -81,6 +82,17 @@ fun Application.module() {
         JobRecoveryService.start(this)
     } catch (e: Exception) {
         logger.error("Could not start interrupted-job recovery on startup: ${e.message}", e)
+    }
+
+    // Periodically re-upload any rendered movies whose upload to OSS previously failed. The render
+    // files are persisted locally, so a transient storage outage never loses a finished movie. Like
+    // the job worker this is demand-driven: init() hands it the scope, start() picks up anything
+    // left over from a previous run and it stops itself once nothing is pending.
+    RenderUploadRetryService.init(this)
+    try {
+        RenderUploadRetryService.start(this)
+    } catch (e: Exception) {
+        logger.error("Could not start render-upload retry worker on startup: ${e.message}", e)
     }
 
     install(ContentNegotiation) {

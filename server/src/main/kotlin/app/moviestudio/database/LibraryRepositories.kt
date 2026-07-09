@@ -1,6 +1,7 @@
 package app.moviestudio.database
 
 import app.moviestudio.Character
+import app.moviestudio.PendingRenderUpload
 import app.moviestudio.RenderRecord
 import app.moviestudio.Scene
 import app.moviestudio.Tip
@@ -86,6 +87,17 @@ object VoiceDesignRepository : SimpleCrudRepository<VoiceDesign>(DbCollection.VO
 
 object RenderRepository : SimpleCrudRepository<RenderRecord>(DbCollection.RENDERS, RenderRecord.serializer(), { it.id }) {
     fun queryByMovieId(movieId: String): List<RenderRecord> = queryByField("movieId", movieId)
+}
+
+/**
+ * Stores renders whose upload to object storage failed, so a background worker can retry the
+ * upload later. Listed oldest-first ([defaultSort]) so retries are processed in FIFO order.
+ */
+object PendingRenderUploadRepository :
+    SimpleCrudRepository<PendingRenderUpload>(DbCollection.PENDING_RENDER_UPLOADS, PendingRenderUpload.serializer(), { it.id }) {
+    override val defaultSort = "d.createdAt ASC"
+
+    fun queryByMovieId(movieId: String): List<PendingRenderUpload> = queryByField("movieId", movieId)
 }
 
 object TipRepository : SimpleCrudRepository<Tip>(DbCollection.TIPS, Tip.serializer(), { it.id }) {
