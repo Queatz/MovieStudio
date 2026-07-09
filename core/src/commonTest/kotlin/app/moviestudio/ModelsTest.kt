@@ -435,6 +435,27 @@ class ModelsTest {
     }
 
     @Test
+    fun movieTimelineViewRoundTripsAndLegacyMoviesDecodeWithDefaults() {
+        val json = Json { ignoreUnknownKeys = true }
+        // A movie remembers its last timeline scroll offset and zoom, surviving a round-trip.
+        val movie = Movie(
+            id = "m1", title = "My Movie", totalDuration = 12.0, status = MovieStatus.DRAFT,
+            createdAt = 5L, lastTimelineOffset = 8.5f, lastTimelineZoom = 64f
+        )
+        val decoded = json.decodeFromString(Movie.serializer(), json.encodeToString(Movie.serializer(), movie))
+        assertEquals(movie, decoded)
+        assertEquals(8.5f, decoded.lastTimelineOffset)
+        assertEquals(64f, decoded.lastTimelineZoom)
+        // Movies saved before these fields existed decode with the default view (offset 0, zoom 20).
+        val legacy = json.decodeFromString(
+            Movie.serializer(),
+            """{"id":"m2","title":"Old","totalDuration":0.0,"status":"DRAFT","createdAt":1}"""
+        )
+        assertEquals(Movie.DEFAULT_TIMELINE_OFFSET, legacy.lastTimelineOffset)
+        assertEquals(Movie.DEFAULT_TIMELINE_ZOOM, legacy.lastTimelineZoom)
+    }
+
+    @Test
     fun imageModelLookupFallsBackToTheDefaultModel() {
         // A known id resolves to its model (case-insensitively).
         assertEquals(IMAGE_MODEL_WAN_PRO, imageModelById("wan2.7-image-pro"))

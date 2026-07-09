@@ -74,6 +74,7 @@ import androidx.compose.ui.window.Dialog
 import app.moviestudio.AiChatMessage
 import app.moviestudio.NetworkService
 import app.moviestudio.UploadState
+import app.moviestudio.isFromIme
 import app.moviestudio.VideoPlayer
 import app.moviestudio.startRealtimeSpeechInput
 import app.moviestudio.stopRealtimeSpeechInput
@@ -199,6 +200,10 @@ fun StudioTextField(
             // Ctrl+Enter submits the field (e.g. sends a chat message) without inserting a
             // newline via the normal Enter key.
             .onPreviewKeyEvent { keyEvent ->
+                // Let IME composition keystrokes (e.g. Vietnamese Telex) flow straight to the
+                // input method: inspecting/consuming them commits the composing region per key
+                // so accents never fold onto their base letter.
+                if (keyEvent.isFromIme()) return@onPreviewKeyEvent false
                 when (keyEvent.type) {
                     // Alt+Enter opens the AI prompt dialog (chat with the AI, then insert its
                     // result). Enabled by default; skipped only when [aiGenerate] is null.

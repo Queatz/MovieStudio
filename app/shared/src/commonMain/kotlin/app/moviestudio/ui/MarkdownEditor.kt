@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.sp
 import app.moviestudio.AiChatMessage
 import app.moviestudio.NetworkService
 import app.moviestudio.installMarkdownShortcutGuard
+import app.moviestudio.isFromIme
 import app.moviestudio.startRealtimeSpeechInput
 import app.moviestudio.stopRealtimeSpeechInput
 import kotlinx.coroutines.withTimeoutOrNull
@@ -407,6 +408,10 @@ fun MarkdownRichTextEditor(
                 // browser/OS never runs its own default for them — e.g. Ctrl+B toggling the
                 // bookmarks bar, Ctrl+U opening "view source", or the letter leaking in as text.
                 .onPreviewKeyEvent { event ->
+                    // Let IME composition keystrokes (e.g. Vietnamese Telex) flow straight to the
+                    // input method: inspecting/consuming them commits the composing region per key
+                    // so accents never fold onto their base letter.
+                    if (event.isFromIme()) return@onPreviewKeyEvent false
                     if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                     val shortcut = event.isCtrlPressed || event.isMetaPressed
                     when {

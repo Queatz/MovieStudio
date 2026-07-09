@@ -53,10 +53,18 @@ data class Movie(
     val lastImageModel: String? = null,
     // Last resolution ("W*H") used to generate a video for this movie, remembered so the
     // generate-video dialog pre-selects it next time. Null until a video has been generated.
-    val lastVideoResolution: String? = null
+    val lastVideoResolution: String? = null,
+    // Last horizontal scroll offset (in seconds) of this movie's timeline, remembered so the
+    // editor restores the same view when the movie is reopened.
+    val lastTimelineOffset: Float = DEFAULT_TIMELINE_OFFSET,
+    // Last timeline zoom (pixels per second) used for this movie, remembered so the editor
+    // restores the same zoom level when the movie is reopened.
+    val lastTimelineZoom: Float = DEFAULT_TIMELINE_ZOOM
 ) {
     companion object {
         const val DEFAULT_ASPECT_RATIO: String = "16:9"
+        const val DEFAULT_TIMELINE_OFFSET: Float = 0f
+        const val DEFAULT_TIMELINE_ZOOM: Float = 20f
     }
 }
 

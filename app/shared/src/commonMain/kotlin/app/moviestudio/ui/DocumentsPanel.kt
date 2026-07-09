@@ -461,9 +461,19 @@ private fun DocumentsEmptyState(viewModel: AppViewModel) {
 private fun ColumnScope.DocumentEditor(viewModel: AppViewModel, document: MovieDocument) {
     val state = remember(document.id) { MarkdownEditorState(document.content) }
     val editorFocusRequester = remember(document.id) { FocusRequester() }
-    var editingTitle by remember(document.id) { mutableStateOf(false) }
+    // A freshly created document opens with its title input shown and focused, ready to be named.
+    var editingTitle by remember(document.id) {
+        mutableStateOf(viewModel.newlyCreatedDocumentId == document.id)
+    }
     var titleDraft by remember(document.id) { mutableStateOf(document.title) }
     var showHistory by remember(document.id) { mutableStateOf(false) }
+
+    // Consume the "just created" flag so re-opening the document later shows the static title.
+    LaunchedEffect(document.id) {
+        if (viewModel.newlyCreatedDocumentId == document.id) {
+            viewModel.newlyCreatedDocumentId = null
+        }
+    }
 
     fun freshDocument(): MovieDocument =
         viewModel.documents.firstOrNull { it.id == document.id } ?: document

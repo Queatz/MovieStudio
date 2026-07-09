@@ -1,5 +1,7 @@
 package app.moviestudio
 
+import androidx.compose.ui.input.key.KeyEvent
+
 /**
  * Platform bridge for capabilities that need direct browser APIs on web targets. Non-web
  * platforms provide graceful no-op fallbacks (the app then relies on polling, etc.).
@@ -194,3 +196,26 @@ interface KeyGuardHandle {
  * without a browser, where these shortcuts have no default browser action to suppress.
  */
 expect fun installMarkdownShortcutGuard(isActive: () -> Boolean): KeyGuardHandle
+
+/**
+ * True when this key event is part of an in-progress IME text composition — e.g. a Vietnamese
+ * Telex sequence (`a`+`s` → `á`, `d`+`d` → `đ`), Pinyin, or a dead-key accent. Composing
+ * keystrokes must reach the browser/OS input method untouched: any Compose key handler that
+ * inspects or consumes them commits/clears the composing region per keystroke, so the raw ASCII
+ * keys land verbatim instead of folding into the intended glyph.
+ *
+ * On web targets this reads the underlying DOM `KeyboardEvent` (`isComposing`, or the
+ * Chromium `keyCode === 229` composing sentinel). Always `false` on platforms whose IME does not
+ * route composing keystrokes through Compose's hardware-key pipeline (Android / desktop), where
+ * the text field handles composition itself.
+ *
+ * Call it as the very first line of any `onPreviewKeyEvent` handler on an editable field and bail
+ * out (`return false`) when it is true, so composition keeps working:
+ * ```
+ * .onPreviewKeyEvent { event ->
+ *     if (event.isFromIme()) return@onPreviewKeyEvent false
+ *     // ...real shortcut handling...
+ * }
+ * ```
+ */
+expect fun KeyEvent.isFromIme(): Boolean

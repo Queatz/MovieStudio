@@ -663,3 +663,31 @@ actual fun installMarkdownShortcutGuard(isActive: () -> Boolean): KeyGuardHandle
         }
     }
 }
+
+// Compose surfaces the web key event as a skiko wrapper, not the raw DOM `KeyboardEvent`, so its
+// `isComposing` flag isn't reachable from Kotlin. Instead track IME composition globally: a
+// capture-phase `compositionstart`/`compositionend` pair on the document flips a flag that stays
+// true for the whole composition (e.g. a Vietnamese Telex sequence). Installed once, lazily.
+private var imeTrackerInstalled = false
+
+@JsFun("""
+() => {
+    if (window.__msImeTrackerInstalled) return;
+    window.__msImeTrackerInstalled = true;
+    window.__msImeComposing = false;
+    document.addEventListener('compositionstart', () => { window.__msImeComposing = true; }, true);
+    document.addEventListener('compositionend', () => { window.__msImeComposing = false; }, true);
+}
+""")
+private external fun jsInstallImeTracker()
+
+@JsFun("() => (!!window.__msImeComposing)")
+private external fun jsIsImeComposing(): Boolean
+
+actual fun androidx.compose.ui.input.key.KeyEvent.isFromIme(): Boolean {
+    if (!imeTrackerInstalled) {
+        jsInstallImeTracker()
+        imeTrackerInstalled = true
+    }
+    return jsIsImeComposing()
+}

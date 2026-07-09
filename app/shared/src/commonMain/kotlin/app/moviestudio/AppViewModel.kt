@@ -155,13 +155,48 @@ class AppViewModel : ViewModel() {
     /** The document open in the editor, or null for the documents empty state. */
     var selectedDocumentId by mutableStateOf<String?>(null)
 
+    /** A just-created document whose editor should open with its title input shown and focused. */
+    var newlyCreatedDocumentId by mutableStateOf<String?>(null)
+
     // -------------------------------------------------------------------------------- playback
     var playhead by mutableStateOf(0f)
         private set
     var isPlaying by mutableStateOf(false)
         private set
-    var zoomScale by mutableStateOf(20f) // pixels per second on the timeline
-    var scrollOffset by mutableStateOf(0f) // timeline horizontal scroll, in seconds
+    private val _zoomScale = mutableStateOf(Movie.DEFAULT_TIMELINE_ZOOM)
+
+    /**
+     * Timeline zoom (pixels per second). Changing it schedules a debounced save to the open movie
+     * so the zoom is restored the next time the movie is opened (see [scheduleTimelineViewPersist]).
+     */
+    var zoomScale: Float
+        get() = _zoomScale.value
+        set(value) {
+            if (_zoomScale.value != value) {
+                _zoomScale.value = value
+                scheduleTimelineViewPersist()
+            }
+        }
+
+    private val _scrollOffset = mutableStateOf(Movie.DEFAULT_TIMELINE_OFFSET)
+
+    /**
+     * Timeline horizontal scroll (in seconds). Changing it schedules a debounced save to the open
+     * movie so the offset is restored the next time the movie is opened (see
+     * [scheduleTimelineViewPersist]).
+     */
+    var scrollOffset: Float
+        get() = _scrollOffset.value
+        set(value) {
+            if (_scrollOffset.value != value) {
+                _scrollOffset.value = value
+                scheduleTimelineViewPersist()
+            }
+        }
+
+    // Debounces persisting the timeline scroll/zoom so dragging a slider (or the playhead
+    // auto-follow while playing) doesn't spam the server with movie updates.
+    private var timelineViewPersistJob: CoroutineJob? = null
 
     private val _selectedClipIds = mutableStateOf<Set<String>>(emptySet())
 
@@ -307,6 +342,12 @@ class AppViewModel : ViewModel() {
         currentScreen = Screen.EDITOR
         playhead = 0f
         isPlaying = false
+        // Restore the movie's last timeline view (scroll offset + zoom). Assigned to the backing
+        // state directly and any pending save is cancelled, so reloading never re-persists them.
+        timelineViewPersistJob?.cancel()
+        timelineViewPersistJob = null
+        _scrollOffset.value = movie.lastTimelineOffset
+        _zoomScale.value = movie.lastTimelineZoom
         selectedClipId = null
         selectedNoteId = null
         timelineNotes = emptyList()
@@ -325,6 +366,9 @@ class AppViewModel : ViewModel() {
 
     fun goToDashboard() {
         isPlaying = false
+        // Flush any pending (debounced) timeline view save before the movie is cleared, so a
+        // last-moment scroll/zoom change made just before leaving isn't lost.
+        flushTimelineViewPersist()
         currentScreen = Screen.DASHBOARD
         currentMovie = null
         timeline = null
@@ -346,6 +390,37 @@ class AppViewModel : ViewModel() {
             } catch (e: Exception) {
                 errorMessage = "Failed to update movie: ${e.message}"
             }
+        }
+    }
+
+    /**
+     * Persists the current timeline view (scroll offset + zoom) onto the open movie, debounced so
+     * dragging a slider — or the playhead auto-follow while playing — doesn't spam the server. The
+     * movie is only saved when the values actually differ from what it already stores.
+     */
+    private fun scheduleTimelineViewPersist() {
+        val movieId = currentMovie?.id ?: return
+        timelineViewPersistJob?.cancel()
+        timelineViewPersistJob = viewModelScope.launch {
+            delay(700)
+            val movie = currentMovie ?: return@launch
+            if (movie.id != movieId) return@launch
+            if (movie.lastTimelineOffset != scrollOffset || movie.lastTimelineZoom != zoomScale) {
+                updateMovie(movie.copy(lastTimelineOffset = scrollOffset, lastTimelineZoom = zoomScale))
+            }
+        }
+    }
+
+    /**
+     * Persists a pending timeline view change immediately, cancelling the debounce. Used when the
+     * movie is about to be closed so a scroll/zoom change made right before leaving still saves.
+     */
+    private fun flushTimelineViewPersist() {
+        timelineViewPersistJob?.cancel()
+        timelineViewPersistJob = null
+        val movie = currentMovie ?: return
+        if (movie.lastTimelineOffset != scrollOffset || movie.lastTimelineZoom != zoomScale) {
+            updateMovie(movie.copy(lastTimelineOffset = scrollOffset, lastTimelineZoom = zoomScale))
         }
     }
 
@@ -922,6 +997,7 @@ class AppViewModel : ViewModel() {
                 val saved = NetworkService.createDocument(movieId, document)
                 documents = documents + saved
                 selectedDocumentId = saved.id
+                newlyCreatedDocumentId = saved.id
             } catch (e: Exception) {
                 errorMessage = "Failed to create document: ${e.message}"
             }

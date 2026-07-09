@@ -64,3 +64,7 @@ actual fun installMarkdownShortcutGuard(isActive: () -> Boolean): KeyGuardHandle
     object : KeyGuardHandle {
         override fun dispose() {}
     }
+
+// The desktop text field handles IME composition itself; composing keystrokes do not flow
+// through Compose's hardware-key pipeline, so nothing to guard against here.
+actual fun androidx.compose.ui.input.key.KeyEvent.isFromIme(): Boolean = false
