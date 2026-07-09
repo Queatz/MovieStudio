@@ -2875,7 +2875,7 @@ fun NewTextAssetDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
-            PillButton("Add text", enabled = text.isNotBlank()) {
+            PillButton("Add text", enabled = true) {
                 viewModel.addTextAsset(text.trim())
                 onDismiss()
             }
