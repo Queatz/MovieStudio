@@ -64,20 +64,52 @@ actual fun connectJobEvents(wsUrl: String, onMessage: (String) -> Unit): JobEven
     const items = JSON.parse(itemsJson);
     if (!window.__msAudioPool) { window.__msAudioPool = {}; }
     const pool = window.__msAudioPool;
+    // A shared WebAudio context lets clip volume exceed 100%: an HTMLMediaElement's `.volume` is
+    // hard-capped at 1.0 by the browser, but a GainNode's gain is not — so we route every pooled
+    // element through a GainNode and set the (possibly > 1) gain there, matching the FFmpeg render
+    // which allows up to 200% (MAX_CLIP_VOLUME). Falls back to the capped element volume if
+    // WebAudio (or the media-element source, e.g. on a CORS failure) is unavailable.
+    if (window.__msAudioCtx === undefined) {
+        try { window.__msAudioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+        catch (e) { window.__msAudioCtx = null; }
+    }
+    const ctx = window.__msAudioCtx;
+    if (ctx && ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} }
     const wanted = {};
     for (const item of items) {
         wanted[item.key] = true;
-        let audio = pool[item.key];
-        if (!audio) {
-            audio = new Audio();
+        let entry = pool[item.key];
+        if (!entry) {
+            const audio = new Audio();
             audio.preload = 'auto';
-            pool[item.key] = audio;
+            audio.crossOrigin = 'anonymous';
+            entry = { audio: audio, gain: null };
+            if (ctx) {
+                try {
+                    const source = ctx.createMediaElementSource(audio);
+                    const gain = ctx.createGain();
+                    source.connect(gain);
+                    gain.connect(ctx.destination);
+                    entry.source = source;
+                    entry.gain = gain;
+                } catch (e) { entry.gain = null; }
+            }
+            pool[item.key] = entry;
         }
+        const audio = entry.audio;
         if (audio.getAttribute('data-src') !== item.url) {
             audio.setAttribute('data-src', item.url);
             audio.src = item.url;
         }
-        audio.volume = Math.max(0, Math.min(1, item.volume));
+        const vol = Math.max(0, item.volume);
+        if (entry.gain) {
+            // The element passes the full signal; the GainNode applies the (possibly > 1) gain.
+            audio.volume = 1;
+            try { entry.gain.gain.value = vol; } catch (e) {}
+        } else {
+            // No WebAudio graph: fall back to the element volume (still capped at 1.0).
+            audio.volume = Math.min(1, vol);
+        }
         const drift = Math.abs(audio.currentTime - item.positionSeconds);
         if (drift > 0.35) {
             try { audio.currentTime = item.positionSeconds; } catch (e) {}
@@ -90,7 +122,9 @@ actual fun connectJobEvents(wsUrl: String, onMessage: (String) -> Unit): JobEven
     }
     for (const key in pool) {
         if (!wanted[key]) {
-            try { pool[key].pause(); } catch (e) {}
+            try { pool[key].audio.pause(); } catch (e) {}
+            try { if (pool[key].source) { pool[key].source.disconnect(); } } catch (e) {}
+            try { if (pool[key].gain) { pool[key].gain.disconnect(); } } catch (e) {}
             delete pool[key];
         }
     }

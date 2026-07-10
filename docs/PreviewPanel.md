@@ -216,28 +216,34 @@ whether the user is playing or scrubbing.
 Because the master clock jumps between clips (playing or scrubbing), media that is only fetched
 *when* the playhead reaches its clip stalls the preview: a `<video>` `src` swap re-buffers, a
 freshly-created `<audio>` re-downloads and an uncached image pops in late. To keep the preview
-smooth, `PreviewPanel` preloads **every** media file on the timeline up front and keeps it
-persistently buffered for the session:
+smooth, `PreviewPanel` preloads the media playing in the **next minute** from the current playhead
+position and keeps that sliding window buffered. Movies have no fixed length and can run very long,
+so warming the *entire* timeline up front would fetch/decode everything at once — instead only the
+media the playhead is about to reach is kept warm:
 
 ```kotlin
-val preloadItems = remember(timeline, viewModel.libraryAssets) {
-    collectPreloadMedia(timeline, viewModel.libraryAssets)
+val preloadFromSeconds = playhead.toInt()
+val preloadItems = remember(timeline, viewModel.libraryAssets, preloadFromSeconds) {
+    collectPreloadMedia(timeline, viewModel.libraryAssets, preloadFromSeconds.toFloat())
 }
 LaunchedEffect(preloadItems) { preloadTimelineMedia(preloadItems) }
 ```
 
-- `collectPreloadMedia(timeline, assets)` (in `PlatformBridge.kt`) is a pure, unit-tested function
-  that walks every clip, resolves its `Asset` and returns each **distinct** media URL once (blank
+- `collectPreloadMedia(timeline, assets, fromSeconds, windowSeconds = PRELOAD_WINDOW_SECONDS)` (in
+  `PlatformBridge.kt`) is a pure, unit-tested function that walks every clip, keeps only those whose
+  time range overlaps the window `[fromSeconds, fromSeconds + windowSeconds]` (default 60 s),
+  resolves each surviving clip's `Asset` and returns each **distinct** media URL once (blank
   `ossUrl` description-only clips skipped), tagged with a `PreloadKind` (`VIDEO` / `IMAGE` / `AUDIO`)
-  derived from the asset type. It is keyed on `timeline` + `libraryAssets`, so it recomputes only
-  when the set of timeline media changes — never on a plain playhead tick.
+  derived from the asset type. It is keyed on `timeline` + `libraryAssets` + the playhead
+  **quantized to whole seconds**, so it recomputes at most once per second as playback advances —
+  never on every playhead tick.
 - `preloadTimelineMedia(items)` (the platform bridge) reconciles a **session-lived pool keyed by
   URL** (`window.__msPreloadPool`) of hidden, CORS-loaded `<video>`/`<audio>` elements
   (`preload='auto'`, muted) and decoded `<img>` loaders. Warming these keeps the browser's HTTP
   cache and decode buffers primed, so the shared preview `<video>`, the `<audio>` playback pool
   (§4) and Coil image loads (§5.1) all resolve **instantly** from cache instead of loading on
-  demand. URLs no longer on the timeline are released on the next reconcile. No-op on
-  desktop/Android (no DOM).
+  demand. URLs no longer in the current window (e.g. clips the playhead has moved past) are released
+  on the next reconcile. No-op on desktop/Android (no DOM).
 
 This runs from `PreviewPanel` specifically (not the timeline editor), so it also warms the media for
 the distraction-free `fullscreen` playback mode, where the timeline panel is not composed.

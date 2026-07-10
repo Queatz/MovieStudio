@@ -168,6 +168,45 @@ class SharedCommonTest {
     }
 
     @Test
+    fun testCollectPreloadMediaOnlyWarmsUpcomingWindow() {
+        val assets = listOf(
+            preloadAsset("a", AssetType.VIDEO, "https://oss/a.mp4"),
+            preloadAsset("b", AssetType.VIDEO, "https://oss/b.mp4"),
+            preloadAsset("c", AssetType.VIDEO, "https://oss/c.mp4"),
+            preloadAsset("d", AssetType.VIDEO, "https://oss/d.mp4")
+        )
+        // A long timeline: one clip per 30s-slot on a single track.
+        val timeline = timelineOf(
+            preloadTrack("t", TrackType.VIDEO, 0) to listOf(
+                // Already finished before the current position (ends at 5s).
+                preloadClip("c0", "t", "a").copy(timelineStart = 0f, trimIn = 0f, trimOut = 5f),
+                // Playing under / just after the current position (100s..130s).
+                preloadClip("c1", "t", "b").copy(timelineStart = 100f, trimIn = 0f, trimOut = 30f),
+                // Starts within the next minute (140s), so still worth warming.
+                preloadClip("c2", "t", "c").copy(timelineStart = 140f, trimIn = 0f, trimOut = 20f),
+                // Far in the future (starts at 500s): must NOT be preloaded yet.
+                preloadClip("c3", "t", "d").copy(timelineStart = 500f, trimIn = 0f, trimOut = 20f)
+            )
+        )
+
+        // From 110s, only the clips overlapping [110, 170] are warmed — the finished clip and the
+        // far-future clip are skipped.
+        assertEquals(
+            listOf(
+                PreloadMediaItem("https://oss/b.mp4", PreloadKind.VIDEO),
+                PreloadMediaItem("https://oss/c.mp4", PreloadKind.VIDEO)
+            ),
+            collectPreloadMedia(timeline, assets, fromSeconds = 110f)
+        )
+
+        // Default position (0s) warms only the media in the first minute.
+        assertEquals(
+            listOf(PreloadMediaItem("https://oss/a.mp4", PreloadKind.VIDEO)),
+            collectPreloadMedia(timeline, assets)
+        )
+    }
+
+    @Test
     fun testToggledSelection() {
         // Toggling adds a missing id and removes a present one, leaving the rest untouched.
         assertEquals(setOf("a"), toggledSelection(emptySet(), "a"))

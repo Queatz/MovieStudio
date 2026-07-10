@@ -54,18 +54,43 @@ data class PreloadMediaItem(
 )
 
 /**
- * Every distinct, media-bearing asset referenced by [timeline]'s clips, each tagged with the
- * [PreloadKind] to preload it as (derived from the asset's [AssetType]). Description-only clips
- * (blank `ossUrl`) are skipped and each URL appears once, in first-seen order. Pure and
- * deterministic, so it is unit-testable and its result can be handed to [preloadTimelineMedia].
+ * How far ahead of the current timeline position [collectPreloadMedia] warms media by default: the
+ * next minute. Movies have no fixed length and can run very long, so preloading the *entire*
+ * timeline up front would fetch/decode everything at once; only the media that plays soon is worth
+ * keeping warm.
  */
-fun collectPreloadMedia(timeline: MovieTimeline?, assets: List<Asset>): List<PreloadMediaItem> {
+const val PRELOAD_WINDOW_SECONDS: Float = 60f
+
+/**
+ * Every distinct, media-bearing asset referenced by [timeline]'s clips that plays within the next
+ * [windowSeconds] starting at [fromSeconds] (the current timeline position) — i.e. whose clip
+ * overlaps the window `[fromSeconds, fromSeconds + windowSeconds]` — each tagged with the
+ * [PreloadKind] to preload it as (derived from the asset's [AssetType]). This bounded window keeps
+ * preloading cheap on very long movies (instead of fetching/decoding the whole timeline at once)
+ * while still warming what the playhead is about to reach. Clips entirely before or after the
+ * window are skipped, as are description-only clips (blank `ossUrl`); each URL appears once, in
+ * first-seen order. Pure and deterministic, so it is unit-testable and its result can be handed to
+ * [preloadTimelineMedia].
+ */
+fun collectPreloadMedia(
+    timeline: MovieTimeline?,
+    assets: List<Asset>,
+    fromSeconds: Float = 0f,
+    windowSeconds: Float = PRELOAD_WINDOW_SECONDS
+): List<PreloadMediaItem> {
     if (timeline == null) return emptyList()
     val assetsById = assets.associateBy { it.id }
+    val windowStart = fromSeconds
+    val windowEnd = fromSeconds + windowSeconds
     val seen = HashSet<String>()
     val result = ArrayList<PreloadMediaItem>()
     timeline.tracks.forEach { trackWithClips ->
         trackWithClips.clips.forEach { clip ->
+            // Only warm clips that overlap the upcoming window; skip those already finished or
+            // still more than a window away.
+            val clipStart = clip.timelineStart
+            val clipEnd = clip.timelineStart + (clip.trimOut - clip.trimIn)
+            if (clipStart >= windowEnd || clipEnd <= windowStart) return@forEach
             val asset = assetsById[clip.assetId] ?: return@forEach
             val url = asset.ossUrl
             if (url.isBlank() || !seen.add(url)) return@forEach
@@ -81,11 +106,11 @@ fun collectPreloadMedia(timeline: MovieTimeline?, assets: List<Asset>): List<Pre
 }
 
 /**
- * Preloads — and keeps warm for the rest of the session — every media file on the current timeline
- * ([items], typically from [collectPreloadMedia]). On web targets this maintains a pool of hidden,
- * CORS-loaded `<video>` / `<audio>` elements and `<img>` loaders keyed by URL, so that when the
- * playhead reaches a clip its media is already fetched/decoded and preview playback starts
- * instantly. Repeated calls reconcile the pool with [items]; media no longer on the timeline is
+ * Preloads — and keeps warm — the media files in [items] (typically the upcoming-window set from
+ * [collectPreloadMedia]). On web targets this maintains a pool of hidden, CORS-loaded `<video>` /
+ * `<audio>` elements and `<img>` loaders keyed by URL, so that when the playhead reaches a clip its
+ * media is already fetched/decoded and preview playback starts instantly. Repeated calls reconcile
+ * the pool with [items]; media no longer in [items] (e.g. clips the playhead has moved past) is
  * released. No-op on platforms without a DOM (desktop / Android), where images already stream
  * through Coil.
  */
