@@ -55,6 +55,44 @@ object MediaUtil {
         }
     }
 
+    /**
+     * Grabs a single still frame from the video [input] as a JPEG next to it and returns that
+     * image file, or null when extraction fails (no video stream / ffmpeg unavailable).
+     *
+     * When [atStart] the very first frame is captured (used as an I2V end frame); otherwise the
+     * last frame is captured (used as an I2V start frame). The last frame is grabbed by seeking to
+     * a few seconds before the end (`-sseof`) and letting each decoded frame overwrite the output
+     * (`-update 1`), so the final frame written is the clip's last one — this needs no prior
+     * knowledge of the exact duration and tolerates very short clips.
+     */
+    suspend fun extractFrame(input: File, atStart: Boolean): File? = withContext(Dispatchers.IO) {
+        val suffix = if (atStart) "_first" else "_last"
+        val output = File(input.parentFile, input.nameWithoutExtension + suffix + ".jpg")
+        val args = if (atStart) {
+            listOf(ffmpegBinary, "-y", "-i", input.absolutePath, "-frames:v", "1", "-q:v", "2", output.absolutePath)
+        } else {
+            listOf(ffmpegBinary, "-y", "-sseof", "-3", "-i", input.absolutePath, "-update", "1", "-q:v", "2", output.absolutePath)
+        }
+        try {
+            val process = ProcessBuilder(args).redirectErrorStream(true).start()
+            val log = process.inputStream.bufferedReader().readText()
+            val finished = process.waitFor(120, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                logger.warn("Frame extraction timed out for ${input.name}")
+                return@withContext null
+            }
+            if (process.exitValue() != 0 || !output.exists() || output.length() == 0L) {
+                logger.warn("Frame extraction failed for ${input.name}: ${log.takeLast(400)}")
+                return@withContext null
+            }
+            output
+        } catch (e: Exception) {
+            logger.warn("Frame extraction unavailable (${e.message}); is ffmpeg installed?")
+            null
+        }
+    }
+
     /** True when the local media [file] contains at least one audio stream (ffprobe). */
     suspend fun probeHasAudio(file: File): Boolean = withContext(Dispatchers.IO) {
         val args = listOf(

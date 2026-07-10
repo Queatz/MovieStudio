@@ -132,8 +132,14 @@ fun GenerateMediaDialog(
     }
     // Optional end image (I2V last frame): the clip interpolates from the start image to it.
     var endImageUrl by remember { mutableStateOf(initialSetup.endImageUrl) }
+    // Optional videos used as the I2V start/end frames instead of a still image: the start frame is
+    // the source video's LAST frame and the end frame is the source video's FIRST frame (the server
+    // extracts the still frame before generating). Mutually exclusive with the still start/end
+    // image above — picking one clears the other for that slot.
+    var startFrameVideoUrl by remember { mutableStateOf(initialSetup.startFrameVideoUrl) }
+    var endFrameVideoUrl by remember { mutableStateOf(initialSetup.endFrameVideoUrl) }
     var videoUrl by remember {
-        mutableStateOf(if (baseVideo) initialAsset!!.ossUrl else initialSetup.videoUrl)
+        mutableStateOf(if (baseVideo) initialAsset.ossUrl else initialSetup.videoUrl)
     }
     var characterIds by remember { mutableStateOf(initialSetup.characterIds) }
     var sceneIds by remember { mutableStateOf(initialSetup.sceneIds) }
@@ -186,13 +192,20 @@ fun GenerateMediaDialog(
         )
     }
 
+    // A start frame is present when either a still start image or a start-frame video is chosen;
+    // the end frame (still image or video) is only meaningful once a start frame exists (I2V).
+    val hasStartFrame = imageUrl != null || startFrameVideoUrl != null
     val setup = GenerationSetup(
         kind = kind,
         prompt = prompt,
         negativePrompt = negativePrompt,
         imageUrl = imageUrl,
-        // The end image only applies to image-to-video generation (a start image is present).
-        endImageUrl = if (kind == "video" && imageUrl != null) endImageUrl else null,
+        // The end image only applies to image-to-video generation (a start frame is present).
+        endImageUrl = if (kind == "video" && hasStartFrame) endImageUrl else null,
+        // Video-sourced I2V start/end frames only apply to video generation, and the end frame
+        // only once a start frame is present.
+        startFrameVideoUrl = if (kind == "video") startFrameVideoUrl else null,
+        endFrameVideoUrl = if (kind == "video" && hasStartFrame) endFrameVideoUrl else null,
         // The base video only applies to video generation (switches to the video-edit model).
         videoUrl = if (kind == "video") videoUrl else null,
         referenceImages = referenceImages,
@@ -408,19 +421,32 @@ fun GenerateMediaDialog(
                 }
             }
 
-            SectionLabel("Start image (switches to I2V)")
-            // Preview of the currently attached start image.
+            SectionLabel("Start image or video (switches to I2V)")
+            // Preview of the currently attached start frame: a still image, or the source video
+            // whose LAST frame will be used as the first frame.
             imageUrl?.let { url ->
                 ImageThumbnail(url, size = 96.dp) { imageUrl = null }
                 Spacer(Modifier.height(6.dp))
             }
+            startFrameVideoUrl?.let { url ->
+                Text(
+                    "Using the last frame of this video as the start frame.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                VideoPreview(url, Modifier.fillMaxWidth())
+                Spacer(Modifier.height(6.dp))
+            }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (imageUrl == null) {
+                if (imageUrl == null && startFrameVideoUrl == null) {
                     PillButton("None", compact = true) { }
                 } else {
-                    GhostPillButton("None", compact = true) { imageUrl = null }
+                    GhostPillButton("None", compact = true) {
+                        imageUrl = null
+                        startFrameVideoUrl = null
+                    }
                 }
-                if (imageAssets.isNotEmpty()) {
+                if (imageAssets.isNotEmpty() || videoAssets.isNotEmpty()) {
                     ThisMovieFilterButton(startImageThisMovie) { startImageThisMovie = !startImageThisMovie }
                 }
                 imageAssets.filter { !startImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { image ->
@@ -429,27 +455,58 @@ fun GenerateMediaDialog(
                     if (selected) {
                         PillButton(label, compact = true) { imageUrl = null }
                     } else {
-                        GhostPillButton(label, compact = true) { imageUrl = image.ossUrl }
+                        GhostPillButton(label, compact = true) {
+                            imageUrl = image.ossUrl
+                            // The start frame is either a still image or a video, never both.
+                            startFrameVideoUrl = null
+                        }
+                    }
+                }
+                // A video contributes its LAST frame as the start frame (continue from where the
+                // clip ended).
+                videoAssets.filter { !startImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { video ->
+                    val selected = startFrameVideoUrl == video.ossUrl
+                    val label = "🎬 " + (video.description ?: "video").take(18)
+                    if (selected) {
+                        PillButton(label, compact = true) { startFrameVideoUrl = null }
+                    } else {
+                        GhostPillButton(label, compact = true) {
+                            startFrameVideoUrl = video.ossUrl
+                            imageUrl = null
+                        }
                     }
                 }
             }
 
             // End image: an optional last frame for I2V — the clip interpolates from the start
-            // image to it. Only offered once a start image (I2V) is chosen.
-            if (imageUrl != null) {
-                SectionLabel("End image (optional — I2V last frame)")
-                // Preview of the currently attached end image.
+            // frame to it. It can be a still image or a video (whose FIRST frame is used, to lead
+            // into where that clip begins). Only offered once a start frame (I2V) is chosen.
+            if (hasStartFrame) {
+                SectionLabel("End image or video (optional — I2V last frame)")
+                // Preview of the currently attached end frame.
                 endImageUrl?.let { url ->
                     ImageThumbnail(url, size = 96.dp) { endImageUrl = null }
                     Spacer(Modifier.height(6.dp))
                 }
+                endFrameVideoUrl?.let { url ->
+                    Text(
+                        "Using the first frame of this video as the end frame.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    VideoPreview(url, Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(6.dp))
+                }
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (endImageUrl == null) {
+                    if (endImageUrl == null && endFrameVideoUrl == null) {
                         PillButton("None", compact = true) { }
                     } else {
-                        GhostPillButton("None", compact = true) { endImageUrl = null }
+                        GhostPillButton("None", compact = true) {
+                            endImageUrl = null
+                            endFrameVideoUrl = null
+                        }
                     }
-                    if (imageAssets.isNotEmpty()) {
+                    if (imageAssets.isNotEmpty() || videoAssets.isNotEmpty()) {
                         ThisMovieFilterButton(endImageThisMovie) { endImageThisMovie = !endImageThisMovie }
                     }
                     imageAssets.filter { !endImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { image ->
@@ -458,7 +515,25 @@ fun GenerateMediaDialog(
                         if (selected) {
                             PillButton(label, compact = true) { endImageUrl = null }
                         } else {
-                            GhostPillButton(label, compact = true) { endImageUrl = image.ossUrl }
+                            GhostPillButton(label, compact = true) {
+                                endImageUrl = image.ossUrl
+                                // The end frame is either a still image or a video, never both.
+                                endFrameVideoUrl = null
+                            }
+                        }
+                    }
+                    // A video contributes its FIRST frame as the end frame (lead into where the
+                    // clip begins).
+                    videoAssets.filter { !endImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { video ->
+                        val selected = endFrameVideoUrl == video.ossUrl
+                        val label = "🎬 " + (video.description ?: "video").take(18)
+                        if (selected) {
+                            PillButton(label, compact = true) { endFrameVideoUrl = null }
+                        } else {
+                            GhostPillButton(label, compact = true) {
+                                endFrameVideoUrl = video.ossUrl
+                                endImageUrl = null
+                            }
                         }
                     }
                 }

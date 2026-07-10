@@ -1097,6 +1097,16 @@ data class GenerationSetup(
     // start image ([imageUrl], the first frame) and ends on this one (the last frame). Only used
     // for I2V, i.e. alongside a start [imageUrl].
     val endImageUrl: String? = null,
+    // Optional video sources for the I2V start/end frames. Instead of a still image, the user can
+    // pick a video: its LAST frame becomes the start frame ([startFrameVideoUrl]) and another
+    // video's FIRST frame becomes the end frame ([endFrameVideoUrl]) — so a clip can continue from
+    // where another one ended, or lead into where another one begins. The server extracts the
+    // still frame from the video and feeds it as a regular image to I2V generation (see
+    // QwenAIService.executeVideo); the resolved frame fills [imageUrl]/[endImageUrl] at request
+    // time. When set, [startFrameVideoUrl] takes precedence over [imageUrl] for the start frame
+    // (and [endFrameVideoUrl] over [endImageUrl] for the end frame).
+    val startFrameVideoUrl: String? = null,
+    val endFrameVideoUrl: String? = null,
     // A base video to edit (switches video generation to the wan2.7-videoedit model).
     val videoUrl: String? = null,
     val referenceImages: List<String> = emptyList(),
@@ -1135,7 +1145,8 @@ data class GenerationSetup(
         kind != "video" -> kind
         videoUrl != null -> "videoedit"
         referenceImages.isNotEmpty() || characterIds.isNotEmpty() || sceneIds.isNotEmpty() -> "r2v"
-        imageUrl != null -> "i2v"
+        // A still start image or a video whose last frame is used as the start frame both drive I2V.
+        imageUrl != null || startFrameVideoUrl != null -> "i2v"
         else -> "t2v"
     }
 }

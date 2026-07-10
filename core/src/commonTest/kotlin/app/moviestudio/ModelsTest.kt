@@ -249,6 +249,12 @@ class ModelsTest {
         assertEquals("t2v", GenerationSetup(kind = "video", prompt = "p").resolveVideoModelKind())
         // Start image -> I2V.
         assertEquals("i2v", GenerationSetup(kind = "video", prompt = "p", imageUrl = "u").resolveVideoModelKind())
+        // A video used as the start frame (its last frame is extracted) -> I2V, just like a still
+        // start image.
+        assertEquals(
+            "i2v",
+            GenerationSetup(kind = "video", prompt = "p", startFrameVideoUrl = "clip.mp4").resolveVideoModelKind()
+        )
         // Reference images / characters / scenes -> R2V (takes precedence).
         assertEquals(
             "r2v",

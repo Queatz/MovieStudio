@@ -441,8 +441,18 @@ object QwenAIService : AIGenerationService {
         onProgress(12, "Refining prompt with Qwen...")
         val refinedPrompt = refinePrompt(setup.prompt, "video", ledger)
 
+        // When the I2V start/end frame comes from a video rather than a still image, extract the
+        // frame (the source video's last frame for the start, its first frame for the end), re-host
+        // it on OSS and feed it as a regular image. Only I2V consumes a first/last frame, so this
+        // is skipped for the other kinds (their frame images would be ignored anyway).
+        val effectiveSetup = if (modelKind == "i2v") {
+            resolveVideoFrameSources(setup, job.movieId, onProgress)
+        } else {
+            setup
+        }
+
         onProgress(20, "Submitting $modelKind task ($model)...")
-        val requestBody = buildVideoRequestBody(setup, refinedPrompt, modelKind, model)
+        val requestBody = buildVideoRequestBody(effectiveSetup, refinedPrompt, modelKind, model)
         val mediaUrl = runAsyncGenerationTask(
             submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/video-generation/video-synthesis",
             requestBody = requestBody,
@@ -456,6 +466,63 @@ object QwenAIService : AIGenerationService {
         onProgress(85, "Uploading generated video to Alibaba OSS...")
         val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "video", "mp4", setup.durationSeconds.takeIf { it > 0 } ?: 5.0)
         GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
+    }
+
+    /**
+     * Resolves any video-sourced I2V start/end frames in [setup] into still images the request
+     * body can send as regular `first_frame`/`last_frame` images.
+     *
+     * The start frame ([GenerationSetup.startFrameVideoUrl]) is the LAST frame of its source video
+     * (so a new clip continues from where that one ended) and the end frame
+     * ([GenerationSetup.endFrameVideoUrl]) is the FIRST frame of its source video (so a new clip
+     * leads into where that one begins). Each extracted frame is re-hosted on OSS and folded into a
+     * copy of the setup as [GenerationSetup.imageUrl]/[GenerationSetup.endImageUrl], taking
+     * precedence over any still image the user also had. The returned copy is only used to build
+     * the outgoing request; the original setup (with the video URLs) is what gets persisted, so a
+     * retry re-extracts the frames.
+     */
+    private suspend fun resolveVideoFrameSources(
+        setup: GenerationSetup,
+        movieId: String,
+        onProgress: suspend (Int, String) -> Unit,
+    ): GenerationSetup {
+        val startVideo = setup.startFrameVideoUrl?.takeIf { it.isNotBlank() }
+        val endVideo = setup.endFrameVideoUrl?.takeIf { it.isNotBlank() }
+        if (startVideo == null && endVideo == null) return setup
+
+        onProgress(16, "Extracting start/end frames from video...")
+        val startImageUrl = startVideo
+            ?.let { extractVideoFrameToOss(it, movieId, atStart = false) }
+            ?: setup.imageUrl
+        val endImageUrl = endVideo
+            ?.let { extractVideoFrameToOss(it, movieId, atStart = true) }
+            ?: setup.endImageUrl
+        return setup.copy(imageUrl = startImageUrl, endImageUrl = endImageUrl)
+    }
+
+    /**
+     * Downloads [videoUrl], extracts a single still frame (the first frame when [atStart], else the
+     * last frame) with ffmpeg and re-hosts it on our OSS bucket, returning the image URL. Throws
+     * when the frame cannot be extracted so the generation fails loudly rather than silently
+     * dropping the requested start/end frame.
+     */
+    private suspend fun extractVideoFrameToOss(videoUrl: String, movieId: String, atStart: Boolean): String {
+        val freshUrl = OssService.freshDownloadUrl(videoUrl)
+        val videoFile = MediaUtil.downloadToTemp(freshUrl, ".mp4")
+        try {
+            val frameFile = MediaUtil.extractFrame(videoFile, atStart)
+                ?: throw IllegalStateException(
+                    "Could not extract the ${if (atStart) "first" else "last"} frame from video $videoUrl"
+                )
+            try {
+                val objectKey = "ai-generated/$movieId/frame-${UUID.randomUUID()}.jpg"
+                return OssService.uploadFile(objectKey, frameFile)
+            } finally {
+                withContext(Dispatchers.IO) { runCatching { if (frameFile.exists()) frameFile.delete() } }
+            }
+        } finally {
+            withContext(Dispatchers.IO) { runCatching { if (videoFile.exists()) videoFile.delete() } }
+        }
     }
 
     /**
