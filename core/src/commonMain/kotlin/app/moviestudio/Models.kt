@@ -1184,12 +1184,12 @@ val SUPPORTED_ASPECT_RATIOS: List<String> = listOf("16:9", "9:16", "1:1", "4:3",
 
 /**
  * Video generation sizes supported by the WAN 2.7 family (480p / 720p / 1080p tiers, landscape,
- * portrait and square variants).
+ * portrait, square and 21:9 ultrawide variants).
  */
 val SUPPORTED_VIDEO_SIZES: List<String> = listOf(
-    "1280*720", "720*1280", "960*960",
-    "1920*1080", "1080*1920", "1440*1440",
-    "832*480", "480*832", "624*624"
+    "1280*720", "720*1280", "960*960", "1680*720", "720*1680",
+    "1920*1080", "1080*1920", "1440*1440", "2520*1080", "1080*2520",
+    "832*480", "480*832", "624*624", "1120*480", "480*1120"
 )
 
 /**
@@ -1201,6 +1201,7 @@ val SUPPORTED_IMAGE_SIZES: List<String> = listOf(
     "1024*1024", "1280*720", "720*1280", "768*1024", "1024*768",
     "960*960", "1920*1080", "1080*1920", "1440*1440",
     "832*480", "480*832", "624*624",
+    "1680*720", "720*1680", "2520*1080", "1080*2520", "1120*480", "480*1120",
     "1328*1328", "1664*928", "928*1664", "1472*1140", "1140*1472"
 )
 
@@ -1490,4 +1491,43 @@ fun MovieTimeline.calculatedDuration(): Double {
     val noteEnd = notes.maxOfOrNull { it.atSeconds } ?: 0.0
     val end = maxOf(clipEnd, noteEnd)
     return if (end < 0.0) 0.0 else end
+}
+
+/** The natural end of a clip on the timeline: where its media/text stops (seconds). */
+fun Clip.timelineEnd(): Float = timelineStart + (trimOut - trimIn)
+
+/**
+ * The largest gap (seconds) between two consecutive visual clips on the same track that the
+ * renderer and the live preview will "bridge" — holding the earlier clip's LAST frame until the
+ * next clip begins — instead of letting the black stage show through.
+ *
+ * Gaps this small are almost always unintended sub-frame slivers: two clips the user placed
+ * back-to-back end up a hair apart because of float drift or a free-drag that didn't quite snap.
+ * When such a sliver happens to straddle a render/preview frame sample, that one frame finds NO
+ * clip under it and falls through to the black base — the "black frame between videos" bug. Bridging
+ * these slivers removes the flash; anything larger is treated as a deliberate gap and stays black.
+ */
+const val MAX_BRIDGE_GAP_SECONDS: Float = 0.05f
+
+/**
+ * The time (seconds on the timeline) up to which [clip] should keep being shown, given the other
+ * [trackClips] on its own track. This is normally the clip's own [timelineEnd], but when the next
+ * clip on the track starts just a sliver later (a gap of at most [MAX_BRIDGE_GAP_SECONDS]) the end
+ * is stretched to that next clip's start, so the previous frame is held across the sliver rather
+ * than the black stage peeking through for a single frame. Shared by [app.moviestudio.ui] preview
+ * and the FFmpeg export so the two bridge identically.
+ *
+ * Only clips that start at or after this clip's natural end are considered (an overlapping later
+ * clip never shortens it), and a gap larger than [MAX_BRIDGE_GAP_SECONDS] — a deliberate gap — is
+ * left untouched.
+ */
+fun bridgedClipEnd(clip: Clip, trackClips: List<Clip>): Float {
+    val naturalEnd = clip.timelineEnd()
+    val nextStart = trackClips.asSequence()
+        .filter { it.id != clip.id }
+        .map { it.timelineStart }
+        .filter { it >= naturalEnd }
+        .minOrNull() ?: return naturalEnd
+    val gap = nextStart - naturalEnd
+    return if (gap in 0f..MAX_BRIDGE_GAP_SECONDS) nextStart else naturalEnd
 }

@@ -68,6 +68,18 @@ active clip we look up its `Asset` and remember the owning track's `type` and `z
 downstream is a filter over this `activeClips` list, so **all tracks are considered** — not just the
 top one.
 
+**Gap bridging (no black flash between back-to-back clips).** For `VIDEO`-track (visual) clips the
+end of that window is not the raw natural end but `bridgedClipEnd(clip, trackClips)` (in
+`core/Models.kt`): when the next clip on the same track starts only a *sub-frame sliver* later
+(≤ `MAX_BRIDGE_GAP_SECONDS`, an unintended gap from float drift / a free-drag that didn't quite
+snap), the previous clip stays active until that next clip begins, so its last frame is held instead
+of the black stage flashing through for a single frame. Anything larger is a deliberate gap and
+stays black. Audio tracks keep the raw natural end (a sliver of silence is inaudible and must not
+overlap the next sound). The FFmpeg export bridges identically — its per-clip `overlay`
+`enable='between(t,start,bridgedEnd)'` window is stretched the same way and the media overlay uses
+`eof_action=repeat`, so it holds the clip's last frame across the sliver rather than dropping to the
+black canvas.
+
 ---
 
 ## 4. The compositing model

@@ -119,6 +119,25 @@ object StudioDialogTracker {
 }
 
 /**
+ * Tracks how many inline [VideoPreview]s are currently mounted. On web the preview player is a
+ * single shared native `<video>` overlay drawn ABOVE the whole UI; a [VideoPreview] opened inside a
+ * [StudioDialog] reuses that very element. `PreviewPanel` normally hides that overlay (via
+ * [app.moviestudio.setPreviewOverlayVisible]) while any dialog is open so it can't cover the dialog
+ * — but that also blanks a [VideoPreview] living inside the dialog (its audio still plays, so the
+ * frame just goes black). `PreviewPanel` therefore keeps the overlay visible whenever [anyActive] is
+ * true, even while a dialog is open.
+ */
+object VideoPreviewTracker {
+    var activeCount by mutableStateOf(0)
+        private set
+
+    val anyActive: Boolean get() = activeCount > 0
+
+    fun onPreviewMounted() { activeCount++ }
+    fun onPreviewUnmounted() { activeCount = maxOf(0, activeCount - 1) }
+}
+
+/**
  * The app-wide text input: large rounded corners and a 50% white-alpha background (global theme
  * rules), plus focus bookkeeping for the space-bar playback shortcut.
  *
@@ -816,6 +835,12 @@ fun VideoPreview(
 ) {
     var playing by remember(url) { mutableStateOf(false) }
     var playhead by remember(url) { mutableStateOf(0f) }
+    // Claim the shared <video> overlay for as long as this preview is on screen, so PreviewPanel
+    // keeps it visible even though this preview lives inside a dialog (see [VideoPreviewTracker]).
+    DisposableEffect(Unit) {
+        VideoPreviewTracker.onPreviewMounted()
+        onDispose { VideoPreviewTracker.onPreviewUnmounted() }
+    }
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally

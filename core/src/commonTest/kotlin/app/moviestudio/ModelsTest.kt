@@ -235,6 +235,37 @@ class ModelsTest {
     }
 
     @Test
+    fun bridgedClipEndHoldsPreviousClipAcrossSubFrameGaps() {
+        // A clip's natural end is timelineStart + (trimOut - trimIn).
+        val a = Clip("a", "t1", "a1", timelineStart = 0f, trimIn = 0f, trimOut = 2f, effectsConfig = "{}")
+        assertEquals(2f, a.timelineEnd(), 0.0001f)
+
+        // Exactly adjacent: no gap to bridge, so the end stays the natural end.
+        val bAdjacent = Clip("b", "t1", "a2", timelineStart = 2f, trimIn = 0f, trimOut = 3f, effectsConfig = "{}")
+        assertEquals(2f, bridgedClipEnd(a, listOf(a, bAdjacent)), 0.0001f)
+
+        // A sub-frame sliver (<= MAX_BRIDGE_GAP_SECONDS) is bridged: hold `a` until `b` begins.
+        val bSliver = Clip("b", "t1", "a2", timelineStart = 2.02f, trimIn = 0f, trimOut = 3f, effectsConfig = "{}")
+        assertEquals(2.02f, bridgedClipEnd(a, listOf(a, bSliver)), 0.0001f)
+
+        // A gap larger than the threshold is a deliberate gap and is left as the natural end.
+        val bFarGap = Clip("b", "t1", "a2", timelineStart = 2.5f, trimIn = 0f, trimOut = 3f, effectsConfig = "{}")
+        assertEquals(2f, bridgedClipEnd(a, listOf(a, bFarGap)), 0.0001f)
+
+        // The last clip on a track (no following clip) keeps its natural end.
+        assertEquals(2f, bridgedClipEnd(a, listOf(a)), 0.0001f)
+
+        // An overlapping later clip (starts before `a` ends) never shortens `a`.
+        val overlapping = Clip("b", "t1", "a2", timelineStart = 1.5f, trimIn = 0f, trimOut = 3f, effectsConfig = "{}")
+        assertEquals(2f, bridgedClipEnd(a, listOf(a, overlapping)), 0.0001f)
+
+        // The NEAREST following clip's start wins when several follow within the window.
+        val near = Clip("near", "t1", "a3", timelineStart = 2.03f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}")
+        val far = Clip("far", "t1", "a4", timelineStart = 2.04f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}")
+        assertEquals(2.03f, bridgedClipEnd(a, listOf(a, far, near)), 0.0001f)
+    }
+
+    @Test
     fun aspectRatioParsingFallsBackTo16x9() {
         assertEquals(16f / 9f, aspectRatioToFloat("16:9"))
         assertEquals(1f, aspectRatioToFloat("1:1"))

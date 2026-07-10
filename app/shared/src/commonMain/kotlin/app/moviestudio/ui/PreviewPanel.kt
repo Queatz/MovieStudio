@@ -59,8 +59,10 @@ import app.moviestudio.WebGLPreviewLayer
 import app.moviestudio.WebGLPreviewSurface
 import app.moviestudio.isWebGLPreviewSupported
 import app.moviestudio.aspectRatioToFloat
+import app.moviestudio.bridgedClipEnd
 import app.moviestudio.calculatedDuration
 import app.moviestudio.collectPreloadMedia
+import app.moviestudio.timelineEnd
 import app.moviestudio.parseEffectsConfig
 import app.moviestudio.preloadTimelineMedia
 import app.moviestudio.progressAt
@@ -113,13 +115,22 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
         preloadTimelineMedia(preloadItems)
     }
 
-    // Resolve everything currently under the playhead.
+    // Resolve everything currently under the playhead. A VISUAL (VIDEO-track) clip is held until
+    // the next clip on its track begins when only a sub-frame sliver separates them — see
+    // [bridgedClipEnd] — so the black stage never flashes between two videos the user placed
+    // back-to-back. Audio tracks use the natural end (a sliver of silence is inaudible and must not
+    // overlap the next sound).
     val activeClips = remember(timeline, playhead, viewModel.libraryAssets) {
         val result = mutableListOf<ActiveClip>()
         timeline?.tracks?.forEach { trackWithClips ->
-            trackWithClips.clips.forEach { clip ->
-                val length = clip.trimOut - clip.trimIn
-                if (playhead >= clip.timelineStart && playhead < clip.timelineStart + length) {
+            val trackClips = trackWithClips.clips
+            trackClips.forEach { clip ->
+                val end = if (trackWithClips.track.type == TrackType.VIDEO) {
+                    bridgedClipEnd(clip, trackClips)
+                } else {
+                    clip.timelineEnd()
+                }
+                if (playhead >= clip.timelineStart && playhead < end) {
                     val asset = viewModel.assetById(clip.assetId)
                     if (asset != null) {
                         result.add(ActiveClip(clip, asset, trackWithClips.track.type, trackWithClips.track.zIndex))
@@ -170,10 +181,13 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
     // VideoPlayer), so any StudioDialog opened while it is showing would otherwise be hidden
     // underneath it. Hide the overlay while any dialog is open and restore it once none remain.
     // The WebGL renderer composites entirely inside the Compose canvas and never needs this.
+    // Exception: an inline VideoPreview reuses that SAME shared <video> element, so while one is
+    // mounted (VideoPreviewTracker.anyActive) the overlay must stay visible even with a dialog open
+    // — otherwise the dialog's preview goes black while its audio keeps playing.
     val usingDefaultRenderer = !(viewModel.previewUseWebGL && isWebGLPreviewSupported())
-    LaunchedEffect(usingDefaultRenderer, StudioDialogTracker.anyOpen) {
+    LaunchedEffect(usingDefaultRenderer, StudioDialogTracker.anyOpen, VideoPreviewTracker.anyActive) {
         if (usingDefaultRenderer) {
-            setPreviewOverlayVisible(!StudioDialogTracker.anyOpen)
+            setPreviewOverlayVisible(!StudioDialogTracker.anyOpen || VideoPreviewTracker.anyActive)
         }
     }
 

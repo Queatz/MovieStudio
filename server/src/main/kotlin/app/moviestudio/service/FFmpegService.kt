@@ -137,6 +137,10 @@ object FFmpegService {
                         .thenBy { it.timelineStart }
                 )
 
+            // Clips grouped by their track, so each clip's coverage can be held until the NEXT clip
+            // on its own track begins when only a sub-frame sliver separates them (see below).
+            val clipsByTrack = clips.groupBy { it.trackId }
+
             var currentVideoTag = "0:v"
             var chain = 0
             for (clip in videoClips) {
@@ -145,6 +149,12 @@ object FFmpegService {
                 if (duration <= 0) continue
                 val start = clip.timelineStart.toDouble()
                 val end = start + duration
+                // How long this clip stays on screen: its natural end, stretched to the next clip's
+                // start when only a sub-frame sliver separates them, so the black canvas never peeks
+                // through between two clips placed back-to-back (mirrors the preview's active-clip
+                // window via the shared [bridgedClipEnd]). The video overlay below holds its last
+                // frame (eof_action=repeat) across any such sliver.
+                val displayEnd = bridgedClipEnd(clip, clipsByTrack[clip.trackId] ?: listOf(clip)).toDouble()
                 val effects = parseEffectsConfig(clip.effectsConfig)
                 val rawEffects = try {
                     json.parseToJsonElement(clip.effectsConfig).jsonObject
@@ -160,7 +170,7 @@ object FFmpegService {
                         // layer (a color source + drawtext) so transitions apply to it like any clip.
                         currentVideoTag = renderTextElementLayer(
                             filters, currentVideoTag, clip, asset, effects,
-                            start, end, duration, canvasWidth, canvasHeight
+                            start, displayEnd, duration, canvasWidth, canvasHeight
                         )
                         continue
                     }
@@ -175,7 +185,7 @@ object FFmpegService {
                         filters.add(
                             "[$tag]drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
                                 "fontcolor=white:fontsize=${canvasHeight / 14}:x=(w-text_w)/2:y=$yExpr:" +
-                                "enable='between(t,${start.ff()},${end.ff()})'[$outTag]"
+                                "enable='between(t,${start.ff()},${displayEnd.ff()})'[$outTag]"
                         )
                         tag = outTag
                     }
@@ -228,8 +238,12 @@ object FFmpegService {
                 filters.add("[$idx:v]${videoFilters.joinToString(",")}[$trimmedTag]")
 
                 val nextVideoTag = "v_overlaid_${clip.id}"
+                // eof_action=repeat holds this clip's LAST decoded frame once its (trimmed) content
+                // ends, instead of dropping to the black canvas — so a sub-frame content tail, and
+                // any bridged sliver up to displayEnd, keep showing the frame rather than flashing
+                // black between this clip and the next.
                 filters.add(
-                    "[$currentVideoTag][$trimmedTag]overlay=eof_action=pass:enable='between(t,${start.ff()},${end.ff()})'$overlayExtra[$nextVideoTag]"
+                    "[$currentVideoTag][$trimmedTag]overlay=eof_action=repeat:enable='between(t,${start.ff()},${displayEnd.ff()})'$overlayExtra[$nextVideoTag]"
                 )
                 currentVideoTag = nextVideoTag
             }
