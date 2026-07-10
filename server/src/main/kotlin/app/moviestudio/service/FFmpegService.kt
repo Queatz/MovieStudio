@@ -242,17 +242,32 @@ object FFmpegService {
                 val captions = parseEffectsConfig(clip.effectsConfig).captions ?: continue
                 if (!captions.enabled || asset.wordTimings.isEmpty()) continue
 
-                val yExpr = when (captions.position) {
-                    "top" -> "h/10"
-                    "center" -> "(h-text_h)/2"
-                    else -> "h-h/6"
-                }
                 val fontSize = (captions.fontSizeSp * canvasHeight / 480.0).toInt().coerceIn(12, 120)
                 val color = captions.color.removePrefix("#").ifBlank { "FFFFFF" }
-                // Padding around the caption's background box, proportional to the font size, so the
-                // burned-in box mirrors the preview's `padding(horizontal = 12.dp, vertical = 4.dp)`.
-                val boxPad = (fontSize * 0.3).toInt().coerceAtLeast(4)
                 val captionFont = fontFileArg(captions.fontFamily, captions.fontUrl)
+                // Padding around the caption text, proportional to the font size, mirroring the
+                // preview chip's `padding(horizontal = 12.dp, vertical = 4.dp)` (roughly a 3:1 ratio).
+                val padH = (fontSize * 0.4).toInt().coerceAtLeast(6)
+                val padV = (fontSize * 0.2).toInt().coerceAtLeast(3)
+                // Estimated single-line text height (drawtext's text_h is ~1.2x the font size).
+                val textH = (fontSize * 1.2).toInt()
+                val boxHeight = textH + 2 * padV
+                // Corner radius mirrors the preview chip's RoundedCornerShape(8.dp), scaled to the
+                // render canvas the same way the font size is (both authored against a 480px stage).
+                val baseRadius = (8.0 * canvasHeight / 480.0).toInt().coerceAtLeast(2)
+                // Translucent black background (matches the preview's `Color.Black.copy(alpha=0.45f)`).
+                val boxAlpha255 = (0.45 * 255).toInt()
+
+                // Where the whole caption chip (box + text baked in) sits vertically. `h` here is the
+                // overlay input's height, i.e. the chip's own `boxHeight`, so `(H-h)/2` centers the
+                // chip in the frame; the top/bottom variants offset it by `padV` so the text inside
+                // ends up at the same line it used to. The text is centered WITHIN the chip below, so
+                // this only positions the chip — it never affects text-vs-box vertical alignment.
+                val boxYExpr = when (captions.position) {
+                    "top" -> "H/10-$padV"
+                    "center" -> "(H-h)/2"
+                    else -> "H-H/6-$padV"
+                }
 
                 for (chunk in asset.wordTimings.chunked(4)) {
                     if (captionChunks >= 90) break
@@ -265,15 +280,39 @@ object FFmpegService {
                         visStart >= (clip.timelineStart + (clip.trimOut - clip.trimIn)).toDouble()
                     ) continue
                     val text = chunk.joinToString(" ") { it.word }
-                    val nextTag = "v_cap_${captionChunks++}"
-                    // The translucent black background box matches the preview's caption chip
-                    // (`Color.Black.copy(alpha = 0.45f)`); drawtext boxes have square corners, so the
-                    // preview's rounded corners are the only cosmetic difference.
+                    val chunkIdx = captionChunks++
+
+                    // Rounded background behind the caption. `drawtext`'s own `box=` only draws SQUARE
+                    // corners, so instead we build a box-sized color layer, round its corners with a
+                    // `geq` alpha mask and overlay it behind the text (the issue's workaround) — giving
+                    // the same rounded chip as the preview. The box is sized to an ESTIMATE of the text
+                    // width (drawtext's exact `text_w` isn't known here); a small over-estimate merely
+                    // leaves a little extra side padding, while both stay horizontally centered.
+                    val estTextWidth = (text.length * fontSize * 0.6).toInt()
+                    val boxWidth = (estTextWidth + 2 * padH).coerceIn(2 * padH + 1, canvasWidth)
+                    val radius = minOf(baseRadius, boxHeight / 2, boxWidth / 2).coerceAtLeast(1)
+
+                    val boxTag = "v_capbox_$chunkIdx"
+                    val nextTag = "v_cap_$chunkIdx"
+
+                    // Build the whole caption chip as one canvas-independent layer: a box-sized
+                    // color plane, its corners rounded by a `geq` alpha mask, with the text drawn
+                    // ON the plane and centered inside it via drawtext's OWN `text_h`
+                    // (`y=(h-text_h)/2`). Baking the text into the box this way keeps it perfectly
+                    // centered regardless of any text-height estimate — the box position below only
+                    // moves the finished chip, it can no longer misalign the text vs the box.
                     filters.add(
-                        "[$currentVideoTag]drawtext=${captionFont}text='${escapeDrawtext(text)}':" +
+                        "color=c=black:s=${boxWidth}x${boxHeight}:r=30:d=${totalDuration.ff()},format=yuva420p," +
+                            "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':" +
+                            "a='${roundedRectAlphaExpression(radius, boxAlpha255)}'," +
+                            "drawtext=${captionFont}text='${escapeDrawtext(text)}':" +
                             "fontcolor=0x$color:fontsize=$fontSize:borderw=2:bordercolor=black@0.7:" +
-                            "box=1:boxcolor=black@0.45:boxborderw=$boxPad:" +
-                            "x=(w-text_w)/2:y=$yExpr:enable='between(t,${visStart.ff()},${visEnd.ff()})'[$nextTag]"
+                            "x=(w-text_w)/2:y=(h-text_h)/2[$boxTag]"
+                    )
+                    // Overlay the finished chip at the caption position, only during its window.
+                    filters.add(
+                        "[$currentVideoTag][$boxTag]overlay=x=(W-w)/2:y=$boxYExpr:" +
+                            "enable='between(t,${visStart.ff()},${visEnd.ff()})'[$nextTag]"
                     )
                     currentVideoTag = nextTag
                 }
@@ -892,6 +931,22 @@ object FFmpegService {
         // The reveal radius grows past 1 (up to 1+feather) so the corners are fully opaque at the end.
         val reveal = "min(T/$transitionDur,1)*(1+$feather)"
         return "clip(255*(($reveal)-($en))/$feather,0,255)"
+    }
+
+    /**
+     * The per-pixel `geq` alpha expression for a rounded rectangle with the given corner [radius]
+     * (in pixels), evaluated over the box layer's own `WxH`: pixels inside the rounded body get
+     * [alpha] (0..255), pixels beyond the rounded corners get 0. Used to give burned-in captions
+     * the same rounded, translucent background as the live preview's caption chip
+     * (`RoundedCornerShape(8.dp)` + `Color.Black.copy(alpha=0.45f)`), which `drawtext`'s own `box=`
+     * option cannot produce (it only draws square corners — see the issue). Mirrors the community
+     * workaround: a pixel in a corner region is opaque only when it lies within [radius] of that
+     * corner's rounding center; everywhere else in the rectangle is opaque.
+     */
+    internal fun roundedRectAlphaExpression(radius: Int, alpha: Int): String {
+        val r = radius.coerceAtLeast(1)
+        return "if(gt(abs(W/2-X),W/2-$r)*gt(abs(H/2-Y),H/2-$r)," +
+            "if(lte(hypot($r-(W/2-abs(W/2-X)),$r-(H/2-abs(H/2-Y))),$r),$alpha,0),$alpha)"
     }
 
     /**

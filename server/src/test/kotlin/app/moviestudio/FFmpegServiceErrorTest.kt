@@ -93,6 +93,30 @@ class FFmpegServiceErrorTest {
     }
 
     @Test
+    fun roundedRectAlphaMaskRoundsCornersAndKeepsTheBodyOpaque() {
+        // Captions get their rounded background from a geq alpha mask (drawtext's own box= can only
+        // draw square corners). The body of the box keeps the translucent alpha; only the four
+        // corner regions are cut away outside the rounding radius.
+        val alpha = (0.45 * 255).toInt()
+        val expr = FFmpegService.roundedRectAlphaExpression(radius = 12, alpha = alpha)
+
+        assertTrue(expr.contains("hypot("), "corners are rounded via a circular distance test")
+        assertTrue(expr.contains("12"), "the corner radius must be embedded in the expression")
+        // A pixel outside the corner radius is transparent (0); everything else keeps the box alpha.
+        assertTrue(expr.contains(",$alpha,0)"), "a pixel beyond the corner radius is transparent, got: $expr")
+        assertTrue(expr.trimEnd().endsWith(",$alpha)"), "pixels off the corners keep the box alpha, got: $expr")
+    }
+
+    @Test
+    fun roundedRectAlphaRadiusIsClampedToAtLeastOne() {
+        // A zero/negative radius would make the corner math degenerate; it is clamped to >= 1 so the
+        // generated expression stays valid.
+        val expr = FFmpegService.roundedRectAlphaExpression(radius = 0, alpha = 255)
+        assertFalse(expr.contains("W/2-0"), "radius 0 must be clamped, not used verbatim, got: $expr")
+        assertTrue(expr.contains("W/2-1"), "radius clamps to 1, got: $expr")
+    }
+
+    @Test
     fun textColorHelpersConvertHexToFfmpegColorAndAlpha() {
         // #RRGGBB is opaque; the FFmpeg literal drops the leading '#' and adds a 0x prefix.
         assertEquals("0xFF0000", FFmpegService.ffmpegColorHex("#FF0000"))
