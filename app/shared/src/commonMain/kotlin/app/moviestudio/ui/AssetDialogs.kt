@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -226,16 +227,18 @@ fun AssetDetailsDialog(
         // section markers, e.g. "[verse]"), shown read-only for MUSIC assets that have them.
         if (asset.type == AssetType.MUSIC && !asset.lyrics.isNullOrBlank()) {
             SectionLabel("Lyrics")
-            Text(
-                asset.lyrics!!.trim(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                    .padding(horizontal = 10.dp, vertical = 8.dp)
-            )
+            SelectionContainer {
+                Text(
+                    asset.lyrics!!.trim(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                )
+            }
         }
 
         // ------------------------------------------------------------------ voice: transcript

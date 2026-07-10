@@ -265,7 +265,7 @@ private fun NoteRow(
 
 /** Add/edit dialog for a note: the text is the note — notes stay text-only. */
 @Composable
-private fun NoteEditorDialog(
+internal fun NoteEditorDialog(
     title: String,
     initialText: String,
     atSeconds: Double,

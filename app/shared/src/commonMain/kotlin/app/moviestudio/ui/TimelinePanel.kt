@@ -548,6 +548,9 @@ private fun TimelineCanvas(
     var showDescribe by remember { mutableStateOf(false) }
     var showNewText by remember { mutableStateOf(false) }
 
+    // Double-clicking the ruler/header bar opens the add-note dialog pinned at that position.
+    var addNoteAtSeconds by remember { mutableStateOf<Double?>(null) }
+
     // Latest state, readable from inside the long-lived pointerInput(Unit) handlers. The
     // timeline itself is read straight off `viewModel` (a stable reference) rather than through
     // rememberUpdatedState, so tracks/clips added after this canvas first composed (e.g. via the
@@ -655,7 +658,8 @@ private fun TimelineCanvas(
                 }
             }
             // Tap: focus a note marker or seek from the ruler, select/deselect clips below it.
-            // Double-tap: open the clip's asset in the details dialog (like the library panel).
+            // Double-tap: open the clip's asset in the details dialog (like the library panel), or
+            // add a timeline note at that position when it lands on the ruler/header bar.
             // Keyed on [gestureKey] so it reinstalls after tracks/clips are added or removed.
             .pointerInput(gestureKey) {
                 detectTapGestures(
@@ -667,6 +671,10 @@ private fun TimelineCanvas(
                                 viewModel.selectedClipId = clip.id
                                 assetsState.firstOrNull { it.id == clip.assetId }?.let(onOpenAsset)
                             }
+                        } else if (noteHit(offset) == null) {
+                            // Double-clicking blank space on the ruler/header bar opens the add-note
+                            // dialog pinned at that position (existing note pills keep their own tap).
+                            addNoteAtSeconds = timeAt(offset.x).coerceAtLeast(0f).toDouble()
                         }
                     },
                     onPress = { offset ->
@@ -957,6 +965,21 @@ private fun TimelineCanvas(
     }
     if (showNewText) {
         NewTextAssetDialog(viewModel) { showNewText = false }
+    }
+
+    // Double-clicking the ruler/header bar opened the add-note dialog pinned at that position.
+    addNoteAtSeconds?.let { seconds ->
+        NoteEditorDialog(
+            title = "Add note",
+            initialText = "",
+            atSeconds = seconds,
+            confirmLabel = "Add note",
+            onSave = { text ->
+                viewModel.addNote(text, seconds.toFloat())
+                addNoteAtSeconds = null
+            },
+            onDismiss = { addNoteAtSeconds = null }
+        )
     }
 }
 
