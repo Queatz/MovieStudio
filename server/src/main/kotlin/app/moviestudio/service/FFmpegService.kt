@@ -12,7 +12,6 @@ import app.moviestudio.database.TrackRepository
 import app.moviestudio.routing.JobWebSocketManager
 import app.moviestudio.storage.OssService
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
@@ -323,8 +322,15 @@ object FFmpegService {
             mixInputs.addAll(audioStreamTags.map { "[$it]" })
             filters.add("${mixInputs.joinToString("")}amix=inputs=${mixInputs.size}:duration=first:normalize=0[out_a]")
 
-            args.add("-filter_complex")
-            args.add(filters.joinToString(";"))
+            // The compiled filtergraph can be enormous (VORONOI `geq` expressions plus one
+            // `drawtext` clause per caption), easily exceeding the OS single-argument limit
+            // (Linux MAX_ARG_STRLEN, a hard 128 KiB) and making execve() reject the launch with
+            // E2BIG ("Argument list too long"). Feed the graph from a file via
+            // `-filter_complex_script` so nothing large is placed on the command line.
+            val filterScript = File(tempDir, "filtergraph.txt")
+            filterScript.writeText(filters.joinToString(";"))
+            args.add("-filter_complex_script")
+            args.add(filterScript.absolutePath)
             args.add("-map")
             args.add(if (currentVideoTag == "0:v") "0:v" else "[$currentVideoTag]")
             args.add("-map")
@@ -352,18 +358,16 @@ object FFmpegService {
                 val process = try {
                     ProcessBuilder(args).start()
                 } catch (e: java.io.IOException) {
-                    logger.warn("FFmpeg binary '${MediaUtil.ffmpegBinary}' not found: ${e.message}. Simulating rendering progress instead.")
-                    null
-                }
-
-                if (process == null) {
-                    // Dev/CI without an ffmpeg binary: keep degrading gracefully with a placeholder.
-                    for (p in 0..100 step 20) {
-                        onProgress(25 + (p * 0.6).toInt(), "Rendering movie (simulated): $p%...")
-                        delay(200)
-                    }
-                    outputFile.writeText("MOCK COMPILED MP4 VIDEO DATA")
-                    return@withContext
+                    // Previously ANY IOException here was treated as "ffmpeg not installed" and the
+                    // render silently produced/uploaded a 28-byte mock file that was reported as a
+                    // successful render. That masked real, actionable failures - most notably E2BIG
+                    // ("Argument list too long", errno 7) when execve() rejects the launch itself.
+                    // Surface it as a genuine failure instead of degrading to a placeholder.
+                    logger.error(
+                        "Failed to launch FFmpeg binary '${MediaUtil.ffmpegBinary}' for job ${job.id}: ${e.message}",
+                        e
+                    )
+                    throw Exception("Failed to launch FFmpeg (${MediaUtil.ffmpegBinary}): ${e.message}", e)
                 }
 
                 process.errorStream.bufferedReader().useLines { lines ->
