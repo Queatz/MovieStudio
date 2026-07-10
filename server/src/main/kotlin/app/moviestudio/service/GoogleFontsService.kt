@@ -70,7 +70,7 @@ object GoogleFontsService {
         HttpClient(CIO) {
             followRedirects = true
             install(HttpTimeout) {
-                connectTimeoutMillis = 30_000
+                connectTimeoutMillis = 120_000
                 requestTimeoutMillis = 120_000
                 socketTimeoutMillis = 120_000
             }
