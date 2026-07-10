@@ -175,31 +175,30 @@ class SharedCommonTest {
             preloadAsset("c", AssetType.VIDEO, "https://oss/c.mp4"),
             preloadAsset("d", AssetType.VIDEO, "https://oss/d.mp4")
         )
-        // A long timeline: one clip per 30s-slot on a single track.
+        // A long timeline: scattered clips on a single track.
         val timeline = timelineOf(
             preloadTrack("t", TrackType.VIDEO, 0) to listOf(
                 // Already finished before the current position (ends at 5s).
                 preloadClip("c0", "t", "a").copy(timelineStart = 0f, trimIn = 0f, trimOut = 5f),
-                // Playing under / just after the current position (100s..130s).
+                // Currently PLAYING at the current position (started at 100s, runs to 130s): its
+                // media is already live, so it must NOT be preloaded again (that would starve the
+                // clip that is actually playing).
                 preloadClip("c1", "t", "b").copy(timelineStart = 100f, trimIn = 0f, trimOut = 30f),
-                // Starts within the next minute (140s), so still worth warming.
+                // Starts within the next minute (140s), so it is worth warming ahead of time.
                 preloadClip("c2", "t", "c").copy(timelineStart = 140f, trimIn = 0f, trimOut = 20f),
                 // Far in the future (starts at 500s): must NOT be preloaded yet.
                 preloadClip("c3", "t", "d").copy(timelineStart = 500f, trimIn = 0f, trimOut = 20f)
             )
         )
 
-        // From 110s, only the clips overlapping [110, 170] are warmed — the finished clip and the
-        // far-future clip are skipped.
+        // From 110s, only the clip that STARTS inside (110, 170] is warmed: the finished clip, the
+        // currently-playing clip (started at 100s) and the far-future clip are all skipped.
         assertEquals(
-            listOf(
-                PreloadMediaItem("https://oss/b.mp4", PreloadKind.VIDEO),
-                PreloadMediaItem("https://oss/c.mp4", PreloadKind.VIDEO)
-            ),
+            listOf(PreloadMediaItem("https://oss/c.mp4", PreloadKind.VIDEO)),
             collectPreloadMedia(timeline, assets, fromSeconds = 110f)
         )
 
-        // Default position (0s) warms only the media in the first minute.
+        // Default position (0s) warms only the media starting in the first minute.
         assertEquals(
             listOf(PreloadMediaItem("https://oss/a.mp4", PreloadKind.VIDEO)),
             collectPreloadMedia(timeline, assets)

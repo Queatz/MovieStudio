@@ -216,10 +216,13 @@ whether the user is playing or scrubbing.
 Because the master clock jumps between clips (playing or scrubbing), media that is only fetched
 *when* the playhead reaches its clip stalls the preview: a `<video>` `src` swap re-buffers, a
 freshly-created `<audio>` re-downloads and an uncached image pops in late. To keep the preview
-smooth, `PreviewPanel` preloads the media playing in the **next minute** from the current playhead
-position and keeps that sliding window buffered. Movies have no fixed length and can run very long,
-so warming the *entire* timeline up front would fetch/decode everything at once — instead only the
-media the playhead is about to reach is kept warm:
+smooth, `PreviewPanel` preloads the media of the clips that **start in the next minute** from the
+current playhead position and keeps that sliding window buffered. Movies have no fixed length and
+can run very long, so warming the *entire* timeline up front would fetch/decode everything at once —
+instead only the media the playhead is about to reach is kept warm. Just as importantly, the clip
+**currently under the playhead is left out**: its media is already live in the preview `<video>` /
+audio pool, so warming a hidden duplicate for it would only steal decode and network bandwidth from
+the clip that is actually playing and make playback choppy:
 
 ```kotlin
 val preloadFromSeconds = playhead.toInt()
@@ -230,20 +233,32 @@ LaunchedEffect(preloadItems) { preloadTimelineMedia(preloadItems) }
 ```
 
 - `collectPreloadMedia(timeline, assets, fromSeconds, windowSeconds = PRELOAD_WINDOW_SECONDS)` (in
-  `PlatformBridge.kt`) is a pure, unit-tested function that walks every clip, keeps only those whose
-  time range overlaps the window `[fromSeconds, fromSeconds + windowSeconds]` (default 60 s),
-  resolves each surviving clip's `Asset` and returns each **distinct** media URL once (blank
-  `ossUrl` description-only clips skipped), tagged with a `PreloadKind` (`VIDEO` / `IMAGE` / `AUDIO`)
-  derived from the asset type. It is keyed on `timeline` + `libraryAssets` + the playhead
-  **quantized to whole seconds**, so it recomputes at most once per second as playback advances —
-  never on every playhead tick.
+  `PlatformBridge.kt`) is a pure, unit-tested function that walks every clip, keeps only those that
+  **start** inside the window `[fromSeconds, fromSeconds + windowSeconds]` (default 60 s) — so clips
+  that started before `fromSeconds` (i.e. the one currently playing, plus any already finished) are
+  excluded, and a clip drops out of the set the moment the playhead enters it — resolves each
+  surviving clip's `Asset` and returns each **distinct** media URL once (blank `ossUrl`
+  description-only clips skipped), tagged with a `PreloadKind` (`VIDEO` / `IMAGE` / `AUDIO`) derived
+  from the asset type. It is keyed on `timeline` + `libraryAssets` + the playhead **quantized to
+  whole seconds**, so it recomputes at most once per second as playback advances — never on every
+  playhead tick.
 - `preloadTimelineMedia(items)` (the platform bridge) reconciles a **session-lived pool keyed by
-  URL** (`window.__msPreloadPool`) of hidden, CORS-loaded `<video>`/`<audio>` elements
-  (`preload='auto'`, muted) and decoded `<img>` loaders. Warming these keeps the browser's HTTP
-  cache and decode buffers primed, so the shared preview `<video>`, the `<audio>` playback pool
-  (§4) and Coil image loads (§5.1) all resolve **instantly** from cache instead of loading on
-  demand. URLs no longer in the current window (e.g. clips the playhead has moved past) are released
-  on the next reconcile. No-op on desktop/Android (no DOM).
+  URL** (`window.__msPreloadPool`) of hidden, CORS-loaded `<video>`/`<audio>` elements and decoded
+  `<img>` loaders. Warming these keeps the browser's HTTP cache and connections primed, so the
+  shared preview `<video>`, the `<audio>` playback pool (§4) and Coil image loads (§5.1) resolve
+  quickly from cache instead of loading cold on demand. URLs no longer in the current window (e.g.
+  clips the playhead has moved past, or the clip the playhead just entered) are released on the next
+  reconcile, freeing decode/network bandwidth for live playback. No-op on desktop/Android (no DOM).
+- **The playing media always gets first priority.** The pool elements are deliberately *not*
+  greedy: each is created with `preload='metadata'` (not `'auto'`) and `fetchPriority='low'`, so
+  background warming only primes the connection/cache and never downloads whole upcoming files in
+  parallel with — and starving — the clip that is actually playing. Conversely the **live** media
+  elements (the shared preview `<video>` in `VideoPlayer`, and each `<audio>` in the playback pool)
+  are marked `fetchPriority='high'`. This ordering is what fixes preview choppiness: earlier the
+  background preloads competed with the live stream at equal (default) priority, so a long/dense
+  timeline's next-minute warming stole bandwidth from the clip on screen. `fetchPriority` /
+  `preload` are hints the browser honors where supported; both are wrapped so unsupported engines
+  simply ignore them.
 
 This runs from `PreviewPanel` specifically (not the timeline editor), so it also warms the media for
 the distraction-free `fullscreen` playback mode, where the timeline panel is not composed.

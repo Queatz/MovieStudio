@@ -95,13 +95,16 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
     val movie = viewModel.currentMovie
     val playhead = viewModel.playhead
 
-    // Preload (and keep buffered) the media playing in the NEXT MINUTE from the current position —
-    // video, image and audio — so playback and scrubbing across clips stay smooth: by the time the
-    // playhead reaches a clip its media is already fetched/decoded rather than loaded on demand.
-    // Movies have no fixed length and can run very long, so we deliberately warm only this sliding
-    // window instead of the whole timeline at once. The window start is quantized to whole seconds
-    // so this recomputes at most once per second (never on every playhead tick), and the reconcile
-    // below only runs when the resulting media set actually changes.
+    // Preload (and keep buffered) the media of clips that START in the NEXT MINUTE from the current
+    // position — video, image and audio — so playback and scrubbing across clips stay smooth: by the
+    // time the playhead reaches a clip its media is already fetched/decoded rather than loaded on
+    // demand. Movies have no fixed length and can run very long, so we deliberately warm only this
+    // sliding window instead of the whole timeline at once. Crucially, the clip currently under the
+    // playhead is NOT warmed here — its media is already live in the preview <video> / audio pool, so
+    // re-decoding a hidden duplicate would only steal bandwidth from the clip that is actually
+    // playing and make it choppy. The window start is quantized to whole seconds so this recomputes
+    // at most once per second (never on every playhead tick), and the reconcile below only runs when
+    // the resulting media set actually changes.
     val preloadFromSeconds = playhead.toInt()
     val preloadItems = remember(timeline, viewModel.libraryAssets, preloadFromSeconds) {
         collectPreloadMedia(timeline, viewModel.libraryAssets, preloadFromSeconds.toFloat())

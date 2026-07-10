@@ -45,6 +45,10 @@ actual fun VideoPlayer(
                     // cross-origin OSS source taints the canvas and canvas.toBlob() throws a
                     // SecurityError, so frame capture always fails. OSS CORS allows this GET.
                     video.crossOrigin = 'anonymous';
+                    // This element carries the currently-playing media: give it top network
+                    // priority so the hidden preload pool (see PlatformBridge) always yields its
+                    // bandwidth to live playback.
+                    try { video.fetchPriority = 'high'; } catch (e) {}
                     video.style.position = 'absolute';
                     video.style.zIndex = '1000';
                     video.style.backgroundColor = 'black';

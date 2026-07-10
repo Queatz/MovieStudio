@@ -62,15 +62,21 @@ data class PreloadMediaItem(
 const val PRELOAD_WINDOW_SECONDS: Float = 60f
 
 /**
- * Every distinct, media-bearing asset referenced by [timeline]'s clips that plays within the next
- * [windowSeconds] starting at [fromSeconds] (the current timeline position) — i.e. whose clip
- * overlaps the window `[fromSeconds, fromSeconds + windowSeconds]` — each tagged with the
- * [PreloadKind] to preload it as (derived from the asset's [AssetType]). This bounded window keeps
- * preloading cheap on very long movies (instead of fetching/decoding the whole timeline at once)
- * while still warming what the playhead is about to reach. Clips entirely before or after the
- * window are skipped, as are description-only clips (blank `ossUrl`); each URL appears once, in
- * first-seen order. Pure and deterministic, so it is unit-testable and its result can be handed to
- * [preloadTimelineMedia].
+ * Every distinct, media-bearing asset referenced by [timeline]'s clips that the playhead is about
+ * to reach — i.e. whose clip *starts* within the upcoming window
+ * `[fromSeconds, fromSeconds + windowSeconds]` ([fromSeconds] being the current timeline position) —
+ * each tagged with the [PreloadKind] to preload it as (derived from the asset's [AssetType]). This
+ * bounded window keeps preloading cheap on very long movies (instead of fetching/decoding the whole
+ * timeline at once).
+ *
+ * Clips that started *before* [fromSeconds] are intentionally excluded even when they are still
+ * playing: their media is already live in the preview `<video>` / audio pool, so warming a hidden
+ * duplicate for them would only steal decode and network bandwidth from the currently playing clip
+ * and make playback choppy. Only genuinely upcoming media is warmed, and a clip is dropped from the
+ * set the moment the playhead enters it — freeing those resources for smooth live playback. Clips
+ * more than a window away, and description-only clips (blank `ossUrl`), are skipped too; each URL
+ * appears once, in first-seen order. Pure and deterministic, so it is unit-testable and its result
+ * can be handed to [preloadTimelineMedia].
  */
 fun collectPreloadMedia(
     timeline: MovieTimeline?,
@@ -86,11 +92,13 @@ fun collectPreloadMedia(
     val result = ArrayList<PreloadMediaItem>()
     timeline.tracks.forEach { trackWithClips ->
         trackWithClips.clips.forEach { clip ->
-            // Only warm clips that overlap the upcoming window; skip those already finished or
-            // still more than a window away.
+            // Warm only the clips the playhead is ABOUT to reach: those that START inside the
+            // upcoming window. A clip that started before the window is already playing (its media
+            // is live in the preview <video> / audio pool), so decoding a hidden duplicate here
+            // would only steal decode + network bandwidth from the currently playing clip and make
+            // playback choppy; clips starting past the window are still too far away to warm.
             val clipStart = clip.timelineStart
-            val clipEnd = clip.timelineStart + (clip.trimOut - clip.trimIn)
-            if (clipStart >= windowEnd || clipEnd <= windowStart) return@forEach
+            if (clipStart < windowStart || clipStart > windowEnd) return@forEach
             val asset = assetsById[clip.assetId] ?: return@forEach
             val url = asset.ossUrl
             if (url.isBlank() || !seen.add(url)) return@forEach

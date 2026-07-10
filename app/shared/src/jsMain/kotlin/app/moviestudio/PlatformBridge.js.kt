@@ -91,6 +91,9 @@ private fun jsUpdateAudioPool(itemsJson: String, playing: Boolean): Unit = js(""
                 var audio = new Audio();
                 audio.preload = 'auto';
                 audio.crossOrigin = 'anonymous';
+                // This element carries audio that is actually playing: give it top network priority
+                // over the hidden preload pool so live playback is never starved by background warming.
+                try { audio.fetchPriority = 'high'; } catch (e) {}
                 entry = { audio: audio, gain: null };
                 if (ctx) {
                     try {
@@ -156,12 +159,15 @@ actual fun updateAudioPlayback(items: List<AudioPlayItem>, playing: Boolean) {
 
 // ------------------------------------------------------------------------------ media preloading
 
-// Maintains a session-lived pool of hidden media elements keyed by URL: <video>/<audio> preloaded
-// with preload='auto' (muted, CORS so they decode/draw like the preview does) and decoded <img>
-// loaders. Warming these keeps every timeline asset persistently buffered, so the shared preview
-// <video>, the <audio> playback pool and Coil image loads all resolve from cache instantly and the
-// movie preview no longer stalls when a clip enters the playhead. URLs absent from the latest
-// reconcile are released so the pool tracks the current timeline.
+// Maintains a session-lived pool of hidden media elements keyed by URL: <video>/<audio> loaders
+// (muted, CORS so they decode/draw like the preview does) and decoded <img> loaders. These warm
+// the browser's connection + HTTP cache for the UPCOMING clips so the shared preview <video>, the
+// <audio> playback pool and Coil image loads resolve quickly when the playhead reaches them.
+// Crucially they are marked LOW fetch priority and use preload='metadata' (not 'auto'): the clip
+// that is currently playing must ALWAYS get first priority for network/decode bandwidth, so
+// background warming must never greedily download whole upcoming files in parallel and starve the
+// live media (that competition is what made playback choppy). URLs absent from the latest reconcile
+// are released so the pool tracks the current window.
 private fun jsPreloadMedia(itemsJson: String): Unit = js("""
     (function(itemsJson) {
         var items = JSON.parse(itemsJson);
@@ -177,12 +183,18 @@ private fun jsPreloadMedia(itemsJson: String): Unit = js("""
             if (item.kind === 'IMAGE') {
                 el = new Image();
                 el.crossOrigin = 'anonymous';
+                // Background warming must never outrank the media that is actually playing.
+                try { el.fetchPriority = 'low'; } catch (e) {}
                 el.src = url;
             } else {
                 el = document.createElement(item.kind === 'VIDEO' ? 'video' : 'audio');
                 el.crossOrigin = 'anonymous';
-                el.preload = 'auto';
+                // preload='metadata' (not 'auto') + low fetch priority: warming an UPCOMING clip only
+                // primes the connection/cache instead of downloading the whole file in parallel with —
+                // and starving — the clip currently playing. The playing media always gets first priority.
+                el.preload = 'metadata';
                 el.muted = true;
+                try { el.fetchPriority = 'low'; } catch (e) {}
                 if (item.kind === 'VIDEO') { el.setAttribute('playsinline', 'true'); }
                 el.src = url;
                 try { el.load(); } catch (e) {}
