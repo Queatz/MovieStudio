@@ -117,6 +117,34 @@ class FFmpegServiceErrorTest {
     }
 
     @Test
+    fun captionEndIsCutOffWhenTheNextCaptionBegins() {
+        // Two overlapping voice clips: caption A runs 0..5s, but caption B starts at 3s. A must be
+        // cut off at 3s the instant B begins so the two never render on top of each other (the bug),
+        // exactly like the live preview where a newly started voice caption replaces the earlier one.
+        val starts = listOf(0.0, 3.0)
+        assertEquals(3.0, FFmpegService.captionVisibleEnd(visStart = 0.0, visEnd = 5.0, sortedCaptionStarts = starts))
+        // B itself has no later caption, so it keeps its natural end.
+        assertEquals(8.0, FFmpegService.captionVisibleEnd(visStart = 3.0, visEnd = 8.0, sortedCaptionStarts = starts))
+    }
+
+    @Test
+    fun captionEndIsNeverExtendedByALaterCaption() {
+        // A non-overlapping later caption (starts after this one ends) must not stretch this window.
+        val starts = listOf(0.0, 6.0)
+        assertEquals(4.0, FFmpegService.captionVisibleEnd(visStart = 0.0, visEnd = 4.0, sortedCaptionStarts = starts))
+        // The last caption of the movie (only its own start is present) keeps its natural end.
+        assertEquals(10.0, FFmpegService.captionVisibleEnd(visStart = 6.0, visEnd = 10.0, sortedCaptionStarts = listOf(6.0)))
+    }
+
+    @Test
+    fun captionEndIgnoresCaptionsStartingAtTheSameInstant() {
+        // Two captions that start at (essentially) the same moment must not clamp each other to a
+        // zero-length window — only a strictly-later caption cuts the current one off.
+        val starts = listOf(2.0, 2.0)
+        assertEquals(5.0, FFmpegService.captionVisibleEnd(visStart = 2.0, visEnd = 5.0, sortedCaptionStarts = starts))
+    }
+
+    @Test
     fun textColorHelpersConvertHexToFfmpegColorAndAlpha() {
         // #RRGGBB is opaque; the FFmpeg literal drops the leading '#' and adds a 0x prefix.
         assertEquals("0xFF0000", FFmpegService.ffmpegColorHex("#FF0000"))

@@ -250,6 +250,34 @@ object FFmpegService {
 
             // Captions for voice clips (burned in over the final video).
             val voiceTrackIds = tracks.filter { it.type == TrackType.VOICE }.map { it.id }.toSet()
+            // Every caption chunk's on-timeline start, in ascending order. A caption is cut off the
+            // instant the NEXT caption chunk begins (see [captionVisibleEnd]) so captions from
+            // overlapping voice clips (e.g. on different voice tracks) never render on top of each
+            // other — a newly started caption immediately replaces any earlier one, mirroring the
+            // live preview. Collected with the SAME iteration order, skip conditions and 90-chunk
+            // cap as the render loop below so these starts line up with the captions actually burned
+            // in.
+            val captionStartTimes = mutableListOf<Double>()
+            run {
+                var collected = 0
+                for (clip in clips.filter { it.trackId in voiceTrackIds }) {
+                    val asset = assetsById[clip.assetId] ?: continue
+                    val captions = parseEffectsConfig(clip.effectsConfig).captions ?: continue
+                    if (!captions.enabled || asset.wordTimings.isEmpty()) continue
+                    for (chunk in asset.wordTimings.chunked(4)) {
+                        if (collected >= 90) break
+                        val visStart = clip.timelineStart + (chunk.first().start - clip.trimIn)
+                        val visEnd = clip.timelineStart + (chunk.last().end - clip.trimIn)
+                        if (visEnd <= clip.timelineStart.toDouble() ||
+                            visStart >= (clip.timelineStart + (clip.trimOut - clip.trimIn)).toDouble()
+                        ) continue
+                        captionStartTimes.add(visStart)
+                        collected++
+                    }
+                }
+            }
+            captionStartTimes.sort()
+
             var captionChunks = 0
             for (clip in clips.filter { it.trackId in voiceTrackIds }) {
                 val asset = assetsById[clip.assetId] ?: continue
@@ -323,10 +351,13 @@ object FFmpegService {
                             "fontcolor=0x$color:fontsize=$fontSize:borderw=2:bordercolor=black@0.7:" +
                             "x=(w-text_w)/2:y=(h-text_h)/2[$boxTag]"
                     )
+                    // Cut this caption off the moment the next caption chunk begins so two captions
+                    // (e.g. from overlapping voice clips on different tracks) never show at once.
+                    val visibleEnd = captionVisibleEnd(visStart, visEnd, captionStartTimes)
                     // Overlay the finished chip at the caption position, only during its window.
                     filters.add(
                         "[$currentVideoTag][$boxTag]overlay=x=(W-w)/2:y=$boxYExpr:" +
-                            "enable='between(t,${visStart.ff()},${visEnd.ff()})'[$nextTag]"
+                            "enable='between(t,${visStart.ff()},${visibleEnd.ff()})'[$nextTag]"
                     )
                     currentVideoTag = nextTag
                 }
@@ -974,6 +1005,21 @@ object FFmpegService {
         val r = radius.coerceAtLeast(1)
         return "if(gt(abs(W/2-X),W/2-$r)*gt(abs(H/2-Y),H/2-$r)," +
             "if(lte(hypot($r-(W/2-abs(W/2-X)),$r-(H/2-abs(H/2-Y))),$r),$alpha,0),$alpha)"
+    }
+
+    /**
+     * The on-timeline end at which a caption chunk starting at [visStart] (with natural end
+     * [visEnd]) must disappear so it never overlaps the NEXT caption: the earliest start in
+     * [sortedCaptionStarts] that is strictly after [visStart], but only ever SHORTENING the window
+     * (never extending it). This makes a newly started voice caption immediately replace any earlier
+     * one — mirroring the live preview — so captions from overlapping voice clips never render on top
+     * of each other. With no later caption the natural [visEnd] is kept. A tiny epsilon guards
+     * against captions that begin at (essentially) the same instant clamping each other to a
+     * zero-length window.
+     */
+    internal fun captionVisibleEnd(visStart: Double, visEnd: Double, sortedCaptionStarts: List<Double>): Double {
+        val nextStart = sortedCaptionStarts.firstOrNull { it > visStart + 1e-6 } ?: return visEnd
+        return minOf(visEnd, nextStart)
     }
 
     /**
