@@ -696,11 +696,15 @@ object FFmpegService {
                 }
             }
             TransitionType.CIRCLE -> {
-                // Growing centered circular reveal (an alpha mask), no fade.
+                // Growing centered circular reveal, applied as a MULTIPLIER on the layer's own alpha
+                // (`alpha(X,Y)*mask`) rather than overwriting it: a fully-transparent text-element
+                // background stays see-through inside the revealed circle, while opaque media clips
+                // (alpha 255) are unaffected. Overwriting with `a='...,255,0'` made every text layer
+                // opaque once the circle filled the frame — the transparency bug this fixes.
                 videoFilters.add("format=yuva420p")
                 videoFilters.add(
                     "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':" +
-                        "a='if(lte(hypot(X-W/2,Y-H/2),hypot(W/2,H/2)*min(T/$transitionDur,1)),255,0)'"
+                        "a='alpha(X,Y)*if(lte(hypot(X-W/2,Y-H/2),hypot(W/2,H/2)*min(T/$transitionDur,1)),1,0)'"
                 )
             }
             TransitionType.VIGNETTE -> {
@@ -708,16 +712,25 @@ object FFmpegService {
                 // alpha mask), no fade — the vignette iris. The default DOM preview falls back to a
                 // plain fade; this and the WebGL shader draw the real oval.
                 videoFilters.add("format=yuva420p")
+                // As with CIRCLE, the feathered oval mask MULTIPLIES the layer's own alpha (the
+                // 0..255 ramp is normalized to 0..1) instead of replacing it, so a transparent
+                // text-element background stays see-through; opaque media clips are unchanged.
                 videoFilters.add(
-                    "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='${vignetteAlphaExpression(transitionDur)}'"
+                    "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='alpha(X,Y)*(${vignetteAlphaExpression(transitionDur)})/255'"
                 )
             }
             TransitionType.VORONOI -> {
-                // Resolve out of animated voronoi cells while cross-fading in.
-                videoFilters.add("format=gbrp")
+                // Resolve out of animated voronoi cells while cross-fading in. Use `gbrp` + alpha
+                // (`gbrap`) rather than plain `gbrp` and displace the ALPHA plane with the same
+                // voronoi sampling as the color planes: `gbrp` has no alpha, so converting a
+                // transparent text-element layer through it dropped its transparency (the layer came
+                // back fully opaque), making the text background solid. Keeping the alpha plane lets
+                // the transparent background resolve out of the cells too; opaque media clips keep
+                // their solid alpha and look identical.
+                videoFilters.add("format=gbrap")
                 val voronoiExpr = voronoiGeqExpression(transitionDur)
                 videoFilters.add(
-                    "geq=r='$voronoiExpr':g='$voronoiExpr':b='$voronoiExpr':" +
+                    "geq=r='$voronoiExpr':g='$voronoiExpr':b='$voronoiExpr':a='$voronoiExpr':" +
                         "enable='between(t,0,$transitionDur)'"
                 )
                 videoFilters.add("format=yuva420p")

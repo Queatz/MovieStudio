@@ -450,6 +450,14 @@ private fun RenderReplayPlayer(url: String, fileName: String, videoHeight: Dp) {
     var ready by remember(url) { mutableStateOf(false) }
     var playing by remember(url) { mutableStateOf(false) }
     var position by remember(url) { mutableStateOf(0f) }
+    // This player uses the same shared native <video> overlay as the inline preview, and it always
+    // lives inside a dialog ("Render complete" / Renders history). PreviewPanel hides that overlay
+    // whenever a dialog is open, which would blank the frame here while audio keeps playing — so
+    // claim it via VideoPreviewTracker for as long as this player is mounted (see [VideoPreview]).
+    DisposableEffect(Unit) {
+        VideoPreviewTracker.onPreviewMounted()
+        onDispose { VideoPreviewTracker.onPreviewUnmounted() }
+    }
     Column(Modifier.fillMaxWidth()) {
         Box(
             Modifier
