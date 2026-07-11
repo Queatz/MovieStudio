@@ -2,6 +2,7 @@ package app.moviestudio.database
 
 import app.moviestudio.Character
 import app.moviestudio.FontPref
+import app.moviestudio.Issue
 import app.moviestudio.PendingRenderUpload
 import app.moviestudio.RenderRecord
 import app.moviestudio.Scene
@@ -150,4 +151,30 @@ object TipRepository : SimpleCrudRepository<Tip>(DbCollection.TIPS, Tip.serializ
     }
 
     override val defaultSort = "d.read ASC, d.createdAt DESC"
+}
+
+object IssueRepository : SimpleCrudRepository<Issue>(DbCollection.ISSUES, Issue.serializer(), { it.id }) {
+    /**
+     * Issues whose title or description contains [query] (case-insensitive). A blank query returns
+     * all issues. Ordered like the panel shows them: open issues first, newest first.
+     */
+    fun search(query: String): List<Issue> {
+        val term = query.trim()
+        if (term.isEmpty()) return listAll()
+        val aql = """
+            FOR d IN ${DbCollection.ISSUES}
+                FILTER LIKE(LOWER(d.title), @term, true) OR LIKE(LOWER(d.description), @term, true)
+                SORT $defaultSort
+                RETURN d
+        """.trimIndent()
+        val bindVars = mapOf<String, Any>("term" to "%${term.lowercase()}%")
+        val cursor = ArangoDatabase.db.query(aql, RawJson::class.java, bindVars)
+        val items = mutableListOf<Issue>()
+        for (rawJson in cursor) {
+            items.add(json.decodeFromString(Issue.serializer(), rawJson.get()))
+        }
+        return items
+    }
+
+    override val defaultSort = "d.isOpen DESC, d.createdAt DESC"
 }

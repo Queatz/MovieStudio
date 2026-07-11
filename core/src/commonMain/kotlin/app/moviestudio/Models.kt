@@ -467,6 +467,41 @@ data class Tip(
 )
 
 /**
+ * Workflow status of a reported [Issue]. Independent of the issue's open/closed state ([Issue.isOpen]):
+ * an issue can be marked (e.g.) resolved while still open, or reopened after being closed.
+ */
+enum class IssueStatus {
+    NEW,
+    IN_PROGRESS,
+    RESOLVED,
+    WONT_FIX,
+}
+
+/** Human-readable label for an issue status. */
+fun IssueStatus.displayName(): String = when (this) {
+    IssueStatus.NEW -> "New"
+    IssueStatus.IN_PROGRESS -> "In progress"
+    IssueStatus.RESOLVED -> "Resolved"
+    IssueStatus.WONT_FIX -> "Won't fix"
+}
+
+/**
+ * A user-reported issue: much like a [Tip] it is studio-wide (not tied to any movie), searchable
+ * and carries a [title] and [description]. On top of that it tracks a workflow [status] and an
+ * [isOpen] flag. Open issues are the ones surfaced by the dashboard's issue counter; the issue
+ * detail dialog lets the user edit the details, change the status and open/close the issue.
+ */
+@Serializable
+data class Issue(
+    val id: String,
+    val title: String,
+    val description: String = "",
+    val status: IssueStatus = IssueStatus.NEW,
+    val isOpen: Boolean = true,
+    val createdAt: Long = 0
+)
+
+/**
  * A built-in ("default") voice that ships with the studio — one of the Qwen3-TTS preset voices.
  * [id] is the value TTS requests send as the `voice`, [name] is the display name, [languages] are
  * the spoken languages the voice supports (Qwen3-TTS is multilingual and also covers several

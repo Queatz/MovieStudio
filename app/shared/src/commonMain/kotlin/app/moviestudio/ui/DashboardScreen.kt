@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items as lazyItems
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,6 +31,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,6 +48,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import app.moviestudio.AppViewModel
+import app.moviestudio.Issue
+import app.moviestudio.IssueStatus
 import app.moviestudio.Movie
 import app.moviestudio.MovieStatus
 import app.moviestudio.SUPPORTED_ASPECT_RATIOS
@@ -56,6 +60,13 @@ import app.moviestudio.displayName
 @Composable
 fun DashboardScreen(viewModel: AppViewModel) {
     var showCreateDialog by remember { mutableStateOf(false) }
+
+    // Load tips and issues up-front so the header buttons can show their unread/open counts
+    // without the panels having been opened first.
+    LaunchedEffect(Unit) {
+        viewModel.refreshTips()
+        viewModel.refreshIssues()
+    }
 
     Row(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
@@ -76,12 +87,23 @@ fun DashboardScreen(viewModel: AppViewModel) {
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.weight(1f))
-            // Tips: reveals the right-hand tips panel.
-            RoundIconButton(
-                "💡",
+            // Report an issue: reveals the right-hand issues panel; badge shows open issues.
+            HeaderCountIconButton(
+                glyph = "⚠️",
+                contentDescription = "Report an issue",
+                count = viewModel.issues.count { it.isOpen },
+                active = viewModel.issuesPanelExpanded
+            ) {
+                viewModel.issuesPanelExpanded = !viewModel.issuesPanelExpanded
+                if (viewModel.issuesPanelExpanded) viewModel.refreshIssues()
+            }
+            Spacer(Modifier.width(10.dp))
+            // Tips: reveals the right-hand tips panel; badge shows unread tips.
+            HeaderCountIconButton(
+                glyph = "💡",
                 contentDescription = "Tips",
-                background = if (viewModel.tipsPanelExpanded) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent,
-                size = 40.dp
+                count = viewModel.tips.count { !it.read },
+                active = viewModel.tipsPanelExpanded
             ) {
                 viewModel.tipsPanelExpanded = !viewModel.tipsPanelExpanded
                 if (viewModel.tipsPanelExpanded) viewModel.refreshTips()
@@ -122,24 +144,45 @@ fun DashboardScreen(viewModel: AppViewModel) {
                 }
             }
         } else {
+            val (activeMovies, archivedMovies) = viewModel.movies.partition { it.status != MovieStatus.ARCHIVED }
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 260.dp),
                 modifier = Modifier.fillMaxSize().padding(20.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                items(viewModel.movies, key = { it.id }) { movie ->
+                items(activeMovies, key = { it.id }) { movie ->
                     MovieCard(
                         movie = movie,
                         onOpen = { viewModel.openMovie(movie) },
                         onDelete = { viewModel.deleteMovie(movie) }
                     )
                 }
+                if (archivedMovies.isNotEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "archived-header") {
+                        Text(
+                            "Archived",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = if (activeMovies.isEmpty()) 0.dp else 8.dp)
+                        )
+                    }
+                    items(archivedMovies, key = { it.id }) { movie ->
+                        MovieCard(
+                            movie = movie,
+                            onOpen = { viewModel.openMovie(movie) },
+                            onDelete = { viewModel.deleteMovie(movie) }
+                        )
+                    }
+                }
             }
         }
         }
 
-        // Always composed so it can slide in and out with a width animation.
+        // Always composed so they can slide in and out with a width animation. Both panels work
+        // in tandem: opening one does not close the other, so they can sit side by side.
+        IssuesPanel(viewModel)
         TipsPanel(viewModel)
     }
 
@@ -562,6 +605,389 @@ private fun TipEditDialog(
             ActionSpacer()
             PillButton("Save", enabled = title.isNotBlank()) { onSave(title.trim(), content.trim()) }
         }
+    }
+}
+
+/**
+ * A round header icon button with a small count badge in its top-right corner. The badge is only
+ * drawn when [count] is greater than zero (so a settled state shows just the icon).
+ */
+@Composable
+private fun HeaderCountIconButton(
+    glyph: String,
+    contentDescription: String,
+    count: Int,
+    active: Boolean,
+    onClick: () -> Unit
+) {
+    Box {
+        RoundIconButton(
+            glyph,
+            contentDescription = contentDescription,
+            background = if (active) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent,
+            size = 40.dp,
+            onClick = onClick
+        )
+        if (count > 0) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.error)
+                    .padding(horizontal = 5.dp, vertical = 1.dp)
+            ) {
+                Text(
+                    text = count.toString(),
+                    color = MaterialTheme.colorScheme.onError,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The dashboard's right-hand issues panel: search, report, and browse reported issues (open first,
+ * then newest). Toggled by the header's ⚠️ icon; slides in and out with a width animation, so it
+ * can sit alongside the tips panel.
+ */
+@Composable
+private fun IssuesPanel(viewModel: AppViewModel) {
+    val width by animateDpAsState(if (viewModel.issuesPanelExpanded) 340.dp else 0.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(width)
+            .clipToBounds()
+    ) {
+        // Mirrors TipsPanel: a fixed-width content anchored to the right edge that the animating
+        // box clips as it slides in.
+        if (width > 0.dp) {
+            IssuesPanelContent(
+                viewModel,
+                Modifier.requiredWidth(width.coerceAtLeast((340 / 1.5f).dp)).fillMaxHeight().align(Alignment.CenterEnd)
+            )
+        }
+    }
+}
+
+/** The actual issues panel content (header, search, report, and the issue list). */
+@Composable
+private fun IssuesPanelContent(viewModel: AppViewModel, modifier: Modifier) {
+    var showCreateForm by remember { mutableStateOf(false) }
+    var detailTarget by remember { mutableStateOf<Issue?>(null) }
+
+    // While a search is active the "Report an issue" affordance is hidden so it doesn't distract.
+    val searching = viewModel.issuesSearchQuery.isNotBlank()
+
+    Column(
+        modifier = modifier
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Issues",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+            RoundIconButton("✕", contentDescription = "Close issues", size = 32.dp) {
+                viewModel.issuesPanelExpanded = false
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // Search across issue titles and descriptions.
+        StudioTextField(
+            value = viewModel.issuesSearchQuery,
+            onValueChange = { viewModel.searchIssues(it) },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = "Search issues",
+            singleLine = true,
+            autoFocus = false,
+            aiGenerate = null
+        )
+        Spacer(Modifier.height(12.dp))
+
+        // Report a new issue inline. Hidden while searching.
+        if (!searching) {
+            if (showCreateForm) {
+                IssueCreateForm(
+                    onCancel = { showCreateForm = false },
+                    onCreate = { title, description ->
+                        viewModel.createIssue(title, description)
+                        showCreateForm = false
+                    }
+                )
+            } else {
+                PillButton("＋ Report an issue", modifier = Modifier.fillMaxWidth()) { showCreateForm = true }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Spacer(Modifier.height(12.dp))
+
+        // All issues, open first then newest.
+        when {
+            viewModel.issuesError != null -> {
+                ErrorRetryBox(
+                    message = viewModel.issuesError ?: "Failed to load issues",
+                    modifier = Modifier.fillMaxWidth(),
+                    onRetry = { viewModel.refreshIssues() }
+                )
+            }
+            viewModel.issues.isEmpty() -> {
+                Text(
+                    if (viewModel.issuesSearchQuery.isBlank()) "No issues reported. Report your first issue."
+                    else "No issues match your search.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    lazyItems(viewModel.issues, key = { it.id }) { issue ->
+                        IssueCard(issue = issue, onOpen = { detailTarget = issue })
+                    }
+                }
+            }
+        }
+    }
+
+    // Tapping an issue opens its detail dialog (edit details, change status, open/close, delete).
+    detailTarget?.let { issue ->
+        IssueDetailDialog(
+            issue = issue,
+            onSave = { title, description, status, isOpen ->
+                viewModel.updateIssue(issue, title, description, status, isOpen)
+                detailTarget = null
+            },
+            onDelete = {
+                viewModel.deleteIssue(issue.id)
+                detailTarget = null
+            },
+            onDismiss = { detailTarget = null }
+        )
+    }
+}
+
+/** Inline report-an-issue form used inside [IssuesPanel]. */
+@Composable
+private fun IssueCreateForm(onCancel: () -> Unit, onCreate: (String, String) -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(12.dp)
+    ) {
+        StudioTextField(
+            value = title,
+            onValueChange = { title = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Title",
+            placeholder = "What went wrong?",
+            singleLine = true,
+            autoFocus = true
+        )
+        Spacer(Modifier.height(8.dp))
+        StudioTextField(
+            value = description,
+            onValueChange = { description = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Details",
+            placeholder = "Describe the issue",
+            minLines = 3
+        )
+        Spacer(Modifier.height(10.dp))
+        Row {
+            GhostPillButton("Cancel", modifier = Modifier.weight(1f)) { onCancel() }
+            Spacer(Modifier.width(8.dp))
+            PillButton("Report", modifier = Modifier.weight(1f), enabled = title.isNotBlank()) {
+                onCreate(title.trim(), description.trim())
+            }
+        }
+    }
+}
+
+/**
+ * A single issue in the issues panel list. Tapping opens the detail dialog. Its status and
+ * open/closed state are shown as chips; closed issues are visually dimmed.
+ */
+@Composable
+private fun IssueCard(issue: Issue, onOpen: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp)) // clip BEFORE clickable so hover has rounded corners
+            .background(
+                if (issue.isOpen) MaterialTheme.colorScheme.surfaceVariant
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+            )
+            .clickable(onClick = onOpen)
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("⚠️", fontSize = 16.sp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                issue.title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = if (issue.isOpen) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OpenClosedChip(issue.isOpen)
+            Spacer(Modifier.width(6.dp))
+            IssueStatusChip(issue.status)
+        }
+        if (issue.description.isNotBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                issue.description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/** Small colored pill showing an issue's workflow status. */
+@Composable
+private fun IssueStatusChip(status: IssueStatus) {
+    val (bg, fg) = when (status) {
+        IssueStatus.NEW -> Color(0xFF2E7BE9) to Color.White
+        IssueStatus.IN_PROGRESS -> Color(0xFFF2A33C) to Color(0xFF3A2A00)
+        IssueStatus.RESOLVED -> Color(0xFF34A853) to Color.White
+        IssueStatus.WONT_FIX -> Color(0xFF6B6B78) to Color.White
+    }
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(bg)
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+    ) {
+        Text(status.displayName(), color = fg, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Small pill showing whether an issue is open or closed. */
+@Composable
+private fun OpenClosedChip(isOpen: Boolean) {
+    val bg = if (isOpen) Color(0xFF34A853) else Color(0xFF44414D)
+    val fg = if (isOpen) Color.White else Color(0xFFCBC7D4)
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(bg)
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+    ) {
+        Text(if (isOpen) "Open" else "Closed", color = fg, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+/**
+ * Detail dialog opened by tapping an issue: edit its title/description, change the workflow status,
+ * open/close it, or delete it outright.
+ */
+@Composable
+private fun IssueDetailDialog(
+    issue: Issue,
+    onSave: (String, String, IssueStatus, Boolean) -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var title by remember { mutableStateOf(issue.title) }
+    var description by remember { mutableStateOf(issue.description) }
+    var status by remember { mutableStateOf(issue.status) }
+    var isOpen by remember { mutableStateOf(issue.isOpen) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    StudioDialog(title = "Issue", onDismiss = onDismiss, width = 480.dp) {
+        StudioTextField(
+            value = title,
+            onValueChange = { title = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Title",
+            placeholder = "What went wrong?",
+            singleLine = true,
+            autoFocus = true
+        )
+        Spacer(Modifier.height(12.dp))
+        StudioTextField(
+            value = description,
+            onValueChange = { description = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Details",
+            placeholder = "Describe the issue",
+            minLines = 4
+        )
+        Spacer(Modifier.height(12.dp))
+        DropdownSelector(
+            label = "Status",
+            options = IssueStatus.entries,
+            selected = status,
+            display = { it.displayName() },
+            onSelect = { status = it }
+        )
+        Spacer(Modifier.height(12.dp))
+        // Open/close the issue. The current state is echoed next to the toggle button.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "State",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(2.dp))
+                OpenClosedChip(isOpen)
+            }
+            if (isOpen) {
+                GhostPillButton("Close issue") { isOpen = false }
+            } else {
+                PillButton("Reopen issue") { isOpen = true }
+            }
+        }
+        DialogActions {
+            PillButton(
+                "🗑 Delete",
+                container = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError
+            ) { showDeleteConfirm = true }
+            Spacer(Modifier.weight(1f))
+            GhostPillButton("Cancel") { onDismiss() }
+            ActionSpacer()
+            PillButton("Save", enabled = title.isNotBlank()) {
+                onSave(title.trim(), description.trim(), status, isOpen)
+            }
+        }
+    }
+
+    if (showDeleteConfirm) {
+        ConfirmDialog(
+            title = "Delete issue?",
+            message = "\"${issue.title}\" will be permanently deleted.",
+            confirmLabel = "Delete issue",
+            onConfirm = onDelete,
+            onDismiss = { showDeleteConfirm = false }
+        )
     }
 }
 

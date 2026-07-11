@@ -6,6 +6,7 @@ import app.moviestudio.routing.assetRoutes
 import app.moviestudio.routing.documentRoutes
 import app.moviestudio.routing.fontRoutes
 import app.moviestudio.routing.generationRoutes
+import app.moviestudio.routing.issueRoutes
 import app.moviestudio.routing.jobRoutes
 import app.moviestudio.routing.libraryRoutes
 import app.moviestudio.routing.speechRoutes
@@ -144,6 +145,7 @@ fun Application.module() {
         libraryRoutes()
         speechRoutes()
         tipRoutes()
+        issueRoutes()
         fontRoutes()
     }
 }

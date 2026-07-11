@@ -53,8 +53,16 @@ class AppViewModel : ViewModel() {
     // ------------------------------------------------------------------------------ navigation
     var currentScreen by mutableStateOf(Screen.DASHBOARD)
         private set
-    var movies by mutableStateOf<List<Movie>>(emptyList())
-        private set
+
+    private val _movies = mutableStateOf<List<Movie>>(emptyList())
+
+    /** The dashboard's movie list, with archived movies always sorted to the end. */
+    var movies: List<Movie>
+        get() = _movies.value
+        private set(value) {
+            _movies.value = value.sortedBy { it.status == MovieStatus.ARCHIVED }
+        }
+
     var currentMovie by mutableStateOf<Movie?>(null)
         private set
     var timeline by mutableStateOf<MovieTimeline?>(null)
@@ -116,6 +124,21 @@ class AppViewModel : ViewModel() {
         private set
 
     var tipsError by mutableStateOf<String?>(null)
+        private set
+
+    // ---------------------------------------------------------------------------------- issues
+    /** Reported issues (studio-wide), open first then newest. */
+    var issues by mutableStateOf<List<Issue>>(emptyList())
+        private set
+
+    /** True while the dashboard issues side panel is open. */
+    var issuesPanelExpanded by mutableStateOf(false)
+
+    /** The current issues search query (empty = show all). */
+    var issuesSearchQuery by mutableStateOf("")
+        private set
+
+    var issuesError by mutableStateOf<String?>(null)
         private set
 
     // -------------------------------------------------------------------------- timeline notes
@@ -1718,6 +1741,87 @@ class AppViewModel : ViewModel() {
                 tips = tips.filter { it.id != id }
             } catch (e: Exception) {
                 errorMessage = "Failed to delete tip: ${e.message}"
+            }
+        }
+    }
+
+    // ==================================================================================== issues
+
+    /** Loads issues matching the current [issuesSearchQuery] (open first, then newest). */
+    fun refreshIssues() {
+        viewModelScope.launch {
+            issuesError = null
+            try {
+                issues = NetworkService.getIssues(issuesSearchQuery)
+            } catch (e: Exception) {
+                issuesError = "Failed to load issues: ${e.message}"
+            }
+        }
+    }
+
+    /** Updates the issues search query and reloads the matching issues. */
+    fun searchIssues(query: String) {
+        issuesSearchQuery = query
+        refreshIssues()
+    }
+
+    /** Reports a new (open) issue, then reloads the (unfiltered) list so it appears at the top. */
+    fun createIssue(title: String, description: String) {
+        viewModelScope.launch {
+            try {
+                NetworkService.createIssue(
+                    Issue(id = generateId(), title = title.trim(), description = description.trim())
+                )
+                issuesSearchQuery = ""
+                issues = NetworkService.getIssues()
+            } catch (e: Exception) {
+                errorMessage = "Failed to report issue: ${e.message}"
+            }
+        }
+    }
+
+    /**
+     * Saves edits to an issue made in the detail dialog (title/description, workflow status and
+     * open/closed state). Reloads the list afterwards so its ordering reflects the new open state.
+     */
+    fun updateIssue(issue: Issue, title: String, description: String, status: IssueStatus, isOpen: Boolean) {
+        val updated = issue.copy(
+            title = title.trim(),
+            description = description.trim(),
+            status = status,
+            isOpen = isOpen
+        )
+        viewModelScope.launch {
+            try {
+                NetworkService.updateIssue(updated)
+                issues = NetworkService.getIssues(issuesSearchQuery)
+            } catch (e: Exception) {
+                errorMessage = "Failed to update issue: ${e.message}"
+            }
+        }
+    }
+
+    /** Flips an issue between open and closed, reloading the list so its ordering updates. */
+    fun toggleIssueOpen(issue: Issue) {
+        val updated = issue.copy(isOpen = !issue.isOpen)
+        viewModelScope.launch {
+            try {
+                NetworkService.updateIssue(updated)
+                issues = NetworkService.getIssues(issuesSearchQuery)
+            } catch (e: Exception) {
+                errorMessage = "Failed to update issue: ${e.message}"
+            }
+        }
+    }
+
+    /** Deletes an issue and drops it from the list. */
+    fun deleteIssue(id: String) {
+        viewModelScope.launch {
+            try {
+                NetworkService.deleteIssue(id)
+                issues = issues.filter { it.id != id }
+            } catch (e: Exception) {
+                errorMessage = "Failed to delete issue: ${e.message}"
             }
         }
     }

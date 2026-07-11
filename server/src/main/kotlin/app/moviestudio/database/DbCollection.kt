@@ -20,6 +20,7 @@ enum class DbCollection(val collectionName: String) {
     NOTES("notes"),
     DOCUMENTS("documents"),
     TIPS("tips"),
+    ISSUES("issues"),
     FONTS("fonts"),
     FONT_PREFS("fontprefs"),
     FONT_CATALOG("fontcatalog");

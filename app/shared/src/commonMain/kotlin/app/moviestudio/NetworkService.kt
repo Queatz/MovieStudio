@@ -214,6 +214,31 @@ object NetworkService {
         client.delete(url("/api/tips/$id"))
     }
 
+    // ------------------------------------------------------------------------------- issues
+
+    /** Reported issues, open first then newest. When [query] is non-blank, only matching issues are returned. */
+    suspend fun getIssues(query: String = ""): List<Issue> {
+        val queryString = if (query.isNotBlank()) "?q=${encodeQueryParam(query)}" else ""
+        val responseText = client.get(url("/api/issues$queryString"))
+        return json.decodeFromString(ListSerializer(Issue.serializer()), responseText)
+    }
+
+    suspend fun createIssue(issue: Issue): Issue {
+        val body = json.encodeToString(Issue.serializer(), issue)
+        val responseText = client.post(url("/api/issues"), body)
+        return json.decodeFromString(Issue.serializer(), responseText)
+    }
+
+    suspend fun updateIssue(issue: Issue): Issue {
+        val body = json.encodeToString(Issue.serializer(), issue)
+        val responseText = client.put(url("/api/issues/${issue.id}"), body)
+        return json.decodeFromString(Issue.serializer(), responseText)
+    }
+
+    suspend fun deleteIssue(id: String) {
+        client.delete(url("/api/issues/$id"))
+    }
+
     // ------------------------------------------------------------------------------- fonts
 
     /** Searches the Google Fonts catalog; blank filters are omitted (match everything). */
