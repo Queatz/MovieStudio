@@ -223,6 +223,48 @@ class FFmpegServiceErrorTest {
     }
 
     @Test
+    fun revealTransitionsMultiplyTheLayersOwnAlphaSoTextBackgroundsStayTransparent() {
+        // Regression guard for the "text layers render without transparency" bug. The geq-based
+        // reveal transitions (CIRCLE / VIGNETTE) are shared by opaque media clips AND transparent
+        // text-element layers. They must MULTIPLY the layer's existing alpha (`alpha(X,Y)*mask`),
+        // not overwrite it with `...,255,0` — otherwise a transparent text background turned fully
+        // opaque once the reveal filled the frame, hiding the video underneath.
+        for (type in listOf(TransitionType.CIRCLE, TransitionType.VIGNETTE)) {
+            val filters = mutableListOf<String>()
+            FFmpegService.buildTransitionFilters(
+                filters, TransitionSpec(type = type, durationSeconds = 0.5),
+                transitionDur = 0.5, start = 0.0, canvasWidth = 640, canvasHeight = 360
+            )
+            val geq = filters.single { it.startsWith("geq=") }
+            assertTrue(
+                geq.contains("a='alpha(X,Y)*"),
+                "$type must multiply the layer's own alpha, not overwrite it, got: $geq"
+            )
+            assertFalse(
+                geq.contains(",255,0)"),
+                "$type must not hard-set alpha to opaque (that broke text transparency), got: $geq"
+            )
+        }
+    }
+
+    @Test
+    fun voronoiTransitionKeepsAnAlphaPlaneSoTextBackgroundsStayTransparent() {
+        // VORONOI used to convert the layer to `gbrp`, which has no alpha channel — so a transparent
+        // text-element background came back fully opaque after the transition. It must use `gbrap`
+        // (GBR + alpha) and displace the alpha plane with the same voronoi sampling as the colors.
+        val filters = mutableListOf<String>()
+        FFmpegService.buildTransitionFilters(
+            filters, TransitionSpec(type = TransitionType.VORONOI, durationSeconds = 0.5),
+            transitionDur = 0.5, start = 0.0, canvasWidth = 640, canvasHeight = 360
+        )
+        assertTrue(filters.any { it == "format=gbrap" }, "VORONOI must keep an alpha plane via gbrap")
+        assertFalse(filters.any { it == "format=gbrp" }, "VORONOI must not drop alpha via alpha-less gbrp")
+        val geq = filters.single { it.startsWith("geq=") }
+        val voronoiExpr = FFmpegService.voronoiGeqExpression(0.5)
+        assertTrue(geq.contains("a='$voronoiExpr'"), "VORONOI must displace the alpha plane too, got: $geq")
+    }
+
+    @Test
     fun appBundledFontsAreOnTheServerClasspath() {
         // The render uses the app-bundled Asap/Yuyu fonts (matching the preview) by extracting them
         // from the server's classpath resources for FFmpeg drawtext. If they were not packaged with

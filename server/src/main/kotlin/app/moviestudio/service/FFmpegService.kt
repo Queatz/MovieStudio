@@ -672,7 +672,7 @@ object FFmpegService {
      * use identical transition math, mirroring `TransitionSpec.visualAt(...)` in core/Models.kt so
      * the export matches the live preview. Returns "" (and adds nothing) when there is no transition.
      */
-    private fun buildTransitionFilters(
+    internal fun buildTransitionFilters(
         videoFilters: MutableList<String>,
         transition: TransitionSpec?,
         transitionDur: Double,
