@@ -795,7 +795,7 @@ private fun IssueCreateForm(onCancel: () -> Unit, onCreate: (String, String) -> 
             onValueChange = { title = it },
             modifier = Modifier.fillMaxWidth(),
             label = "Title",
-            placeholder = "What went wrong?",
+            placeholder = "What's going on?",
             singleLine = true,
             autoFocus = true
         )
@@ -926,7 +926,7 @@ private fun IssueDetailDialog(
             onValueChange = { title = it },
             modifier = Modifier.fillMaxWidth(),
             label = "Title",
-            placeholder = "What went wrong?",
+            placeholder = "What's going on?",
             singleLine = true,
             autoFocus = true
         )

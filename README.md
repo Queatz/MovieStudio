@@ -2,6 +2,8 @@
 
 **Movie Studio** is an ultra-simple, AI-powered movie creation platform that transforms a single text prompt into a feature-length film (up to 240 minutes and beyond) while allowing for precise, manual clip-by-clip refinement.
 
+![Screenshot.png](Screenshot.png)
+
 Acting as an "AI Director," the application orchestrates multiple generative AI models to script, storyboard, and generate video, music, and voiceover tracks. Users can then step in to manually construct and edit the movie using a multi-track timeline, with all final rendering handled seamlessly on the server.
 
 ### ✨ Key Features
