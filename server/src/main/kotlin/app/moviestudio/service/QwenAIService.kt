@@ -682,6 +682,13 @@ object QwenAIService : AIGenerationService {
         val baseImageUrl = setup.imageUrl?.takeIf { it.isNotBlank() }?.let(OssService::freshDownloadUrl)
         put("model", model)
         putJsonObject("input") {
+            if (setup.referenceImages.isNotEmpty()) {
+                put("ref_images", buildJsonArray {
+                    setup.referenceImages.forEach {
+                        add(JsonPrimitive(OssService.freshDownloadUrl(it)))
+                    }
+                })
+            }
             put("messages", buildJsonArray {
                 add(buildJsonObject {
                     put("role", "user")
@@ -709,6 +716,10 @@ object QwenAIService : AIGenerationService {
      */
     internal fun resolveImageModel(setup: GenerationSetup, isEdit: Boolean): String {
         val requested = setup.model.trim()
+        val hasReferences = setup.referenceImages.isNotEmpty() || setup.characterIds.isNotEmpty() || setup.sceneIds.isNotEmpty()
+        if (hasReferences) {
+            return QwenConfig.imageModel
+        }
         if (requested.isNotEmpty() && SUPPORTED_IMAGE_MODELS.any { it.id.equals(requested, ignoreCase = true) }) {
             return requested
         }

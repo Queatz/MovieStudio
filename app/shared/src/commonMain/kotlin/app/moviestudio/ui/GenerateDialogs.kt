@@ -192,6 +192,8 @@ fun GenerateMediaDialog(
         )
     }
 
+    var uploadingReference by remember { mutableStateOf(false) }
+
     // A start frame is present when either a still start image or a start-frame video is chosen;
     // the end frame (still image or video) is only meaningful once a start frame exists (I2V).
     val hasStartFrame = imageUrl != null || startFrameVideoUrl != null
@@ -219,6 +221,7 @@ fun GenerateMediaDialog(
     val modelKind = setup.resolveVideoModelKind()
     val modelLabel = when {
         kind == "image" && !imageUrl.isNullOrBlank() -> "Image edit (image-to-image)"
+        kind == "image" && (referenceImages.isNotEmpty() || characterIds.isNotEmpty() || sceneIds.isNotEmpty()) -> "Qwen R2I (Reference-to-image)"
         kind == "image" -> "Text-to-image"
         modelKind == "videoedit" -> "WAN 2.7 Video edit"
         modelKind == "i2v" -> "WAN 2.7 I2V (image-to-video)"
@@ -538,8 +541,9 @@ fun GenerateMediaDialog(
                     }
                 }
             }
+        }
 
-            SectionLabel("Characters & scenes (switches to R2V)")
+        SectionLabel(if (kind == "image") "Characters & scenes (switches to R2I)" else "Characters & scenes (switches to R2V)")
             // Preview of the selected characters and scenes: each shows its reference image (or an
             // emoji placeholder when it has none) with a removable name chip beneath.
             val selectedCharacters = viewModel.characters.filter { it.id in characterIds }
@@ -602,7 +606,7 @@ fun GenerateMediaDialog(
                 }
             }
 
-            SectionLabel("Extra reference images (R2V)")
+            SectionLabel(if (kind == "image") "Extra reference images (R2I)" else "Extra reference images (R2V)")
             // Preview of the attached reference images.
             if (referenceImages.isNotEmpty()) {
                 Row(
@@ -614,7 +618,6 @@ fun GenerateMediaDialog(
                     }
                 }
             }
-            var uploadingReference by remember { mutableStateOf(false) }
             Row(
                 Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -667,25 +670,26 @@ fun GenerateMediaDialog(
                 UploadProgressBar(upload)
             }
 
-            Spacer(Modifier.height(6.dp))
-            if (modelKind == "videoedit") {
-                // Video editing repaints the base clip frame-for-frame, so the output length is
-                // fixed to the base video's — the duration is shown read-only, not adjustable.
-                Text(
-                    "Duration: ${duration.roundToInt()}s — matches the base video",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                LabeledSlider(
-                    label = "Duration",
-                    value = duration.toFloat(),
-                    valueRange = 2f..15f,
-                    valueText = "${duration.roundToInt()}s",
-                    onValueChange = { duration = it.toDouble() }
-                )
+            if (kind == "video") {
+                Spacer(Modifier.height(6.dp))
+                if (modelKind == "videoedit") {
+                    // Video editing repaints the base clip frame-for-frame, so the output length is
+                    // fixed to the base video's — the duration is shown read-only, not adjustable.
+                    Text(
+                        "Duration: ${duration.roundToInt()}s — matches the base video",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LabeledSlider(
+                        label = "Duration",
+                        value = duration.toFloat(),
+                        valueRange = 2f..15f,
+                        valueText = "${duration.roundToInt()}s",
+                        onValueChange = { duration = it.toDouble() }
+                    )
+                }
             }
-        }
 
         // Model & resolution: image generation folds both into a single button that opens a
         // dedicated dialog (the model picker plus the full resolution UI). Video generation opens

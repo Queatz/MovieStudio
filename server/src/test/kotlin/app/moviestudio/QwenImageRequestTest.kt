@@ -48,4 +48,52 @@ class QwenImageRequestTest {
         assertNotEquals(staleUrl, imageUrl)
         assertEquals("Restyle", content.last().jsonObject.str("text"))
     }
+
+    @Test
+    fun r2iSendsRefImagesAndRefreshesTheirUrls() {
+        val staleUrl1 = ossUrl("uploads/ref1.png")
+        val staleUrl2 = ossUrl("uploads/ref2.png")
+        val setup = GenerationSetup(
+            kind = "image",
+            prompt = "Create a style mix",
+            referenceImages = listOf(staleUrl1, staleUrl2)
+        )
+
+        val body = QwenAIService.buildImageRequestBody(setup, "qwen-image-2.0-pro")
+        val input = body.getValue("input").jsonObject
+        val refImages = input.getValue("ref_images").jsonArray
+
+        assertEquals(2, refImages.size)
+        val objectKey1 = OssService.objectKeyFromUrl(refImages[0].jsonPrimitive.content)
+        val objectKey2 = OssService.objectKeyFromUrl(refImages[1].jsonPrimitive.content)
+        assertEquals("uploads/ref1.png", objectKey1)
+        assertEquals("uploads/ref2.png", objectKey2)
+        assertNotEquals(staleUrl1, refImages[0].jsonPrimitive.content)
+        assertNotEquals(staleUrl2, refImages[1].jsonPrimitive.content)
+    }
+
+    @Test
+    fun resolveImageModelHonorsUserSelectionWhenNoReferences() {
+        val setup = GenerationSetup(kind = "image", model = "wan2.7-image-pro")
+        val resolved = QwenAIService.resolveImageModel(setup, isEdit = false)
+        assertEquals("wan2.7-image-pro", resolved)
+    }
+
+    @Test
+    fun resolveImageModelForcesQwenWhenReferencesArePresent() {
+        // Direct reference images
+        val setupWithRefs = GenerationSetup(kind = "image", model = "wan2.7-image-pro", referenceImages = listOf("http://foo.com/img.png"))
+        val resolvedWithRefs = QwenAIService.resolveImageModel(setupWithRefs, isEdit = false)
+        assertEquals("qwen-image-2.0-pro", resolvedWithRefs)
+
+        // Character reference
+        val setupWithChars = GenerationSetup(kind = "image", model = "wan2.7-image-pro", characterIds = listOf("char123"))
+        val resolvedWithChars = QwenAIService.resolveImageModel(setupWithChars, isEdit = false)
+        assertEquals("qwen-image-2.0-pro", resolvedWithChars)
+
+        // Scene reference
+        val setupWithScenes = GenerationSetup(kind = "image", model = "wan2.7-image-pro", sceneIds = listOf("scene123"))
+        val resolvedWithScenes = QwenAIService.resolveImageModel(setupWithScenes, isEdit = false)
+        assertEquals("qwen-image-2.0-pro", resolvedWithScenes)
+    }
 }
