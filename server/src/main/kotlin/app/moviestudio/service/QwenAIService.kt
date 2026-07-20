@@ -438,9 +438,6 @@ object QwenAIService : AIGenerationService {
             else -> QwenConfig.videoModelT2V
         }
 
-        onProgress(12, "Refining prompt with Qwen...")
-        val refinedPrompt = refinePrompt(setup.prompt, "video", ledger)
-
         // When the I2V start/end frame comes from a video rather than a still image, extract the
         // frame (the source video's last frame for the start, its first frame for the end), re-host
         // it on OSS and feed it as a regular image. Only I2V consumes a first/last frame, so this
@@ -452,7 +449,7 @@ object QwenAIService : AIGenerationService {
         }
 
         onProgress(20, "Submitting $modelKind task ($model)...")
-        val requestBody = buildVideoRequestBody(effectiveSetup, refinedPrompt, modelKind, model)
+        val requestBody = buildVideoRequestBody(effectiveSetup, setup.prompt, modelKind, model)
         val mediaUrl = runAsyncGenerationTask(
             submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/video-generation/video-synthesis",
             requestBody = requestBody,

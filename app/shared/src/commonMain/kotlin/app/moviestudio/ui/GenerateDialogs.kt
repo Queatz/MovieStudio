@@ -2039,7 +2039,7 @@ private val VOICE_DESIGN_EMOTIONS =
     listOf("Cheerful", "Calm", "Gentle", "Serious", "Lively", "Composed", "Soothing")
 private val VOICE_DESIGN_TIMBRES = listOf("Magnetic", "Crisp", "Husky", "Mellow", "Sweet", "Rich", "Powerful")
 private val VOICE_DESIGN_USE_CASES = listOf(
-    "News broadcasting", "Advertising", "Audiobook", "Animation character", "Voice assistant", "Documentary narration"
+    "News broadcasting", "Advertising", "Audiobook", "Animation character", "Voice assistant", "Documentary narration", "Storytelling"
 )
 
 /**
