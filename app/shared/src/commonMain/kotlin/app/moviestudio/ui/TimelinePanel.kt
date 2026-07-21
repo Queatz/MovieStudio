@@ -1100,8 +1100,10 @@ private fun drawTracks(
             if (widthPx > 34f) {
                 val effects = parseEffectsConfig(clip.effectsConfig)
                 val transitionBadge = if (effects.transition != null && effects.transition!!.type != TransitionType.NONE) "⇄ " else ""
+                // Voice clips with captions on get a speech-bubble badge (same pattern as transitions).
+                val captionsBadge = if (effects.captions?.enabled == true) "💬 " else ""
                 val prefix = if (descriptionOnly) "📝 " else ""
-                val label = prefix + transitionBadge + (asset?.description ?: asset?.aiPrompt ?: "Clip")
+                val label = prefix + transitionBadge + captionsBadge + (asset?.description ?: asset?.aiPrompt ?: "Clip")
                 drawText(
                     textMeasurer,
                     label,
