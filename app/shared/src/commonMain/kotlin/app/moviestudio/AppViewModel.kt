@@ -1549,9 +1549,9 @@ class AppViewModel : ViewModel() {
         runningJobs.any { it.sourceAssetId == assetId }
 
     /**
-     * Remembers the resolution (and, for images, the model) [setup] used, on the current movie,
-     * so the generate-image/generate-video dialogs pre-select it next time. Per-movie, since
-     * different movies commonly target different resolutions (e.g. aspect ratios).
+     * Remembers generation defaults on the current movie so dialogs pre-select them next time:
+     * image/video resolution (and image model), and the TTS voice. Per-movie, since different
+     * movies commonly target different resolutions and cast different voices.
      */
     private fun rememberLastGenerationSettings(setup: GenerationSetup) {
         val movie = currentMovie ?: return
@@ -1562,6 +1562,10 @@ class AppViewModel : ViewModel() {
             "video" -> if (movie.lastVideoResolution != setup.resolution) {
                 movie.copy(lastVideoResolution = setup.resolution)
             } else null
+            "tts" -> {
+                val voice = setup.voice.trim()
+                if (voice.isNotEmpty() && movie.lastVoice != voice) movie.copy(lastVoice = voice) else null
+            }
             else -> null
         }
         if (updated != null) updateMovie(updated)

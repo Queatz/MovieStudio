@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
+import app.moviestudio.DEFAULT_VOICE_ID
 import app.moviestudio.GenerationSetup
 import app.moviestudio.ImageModel
 import app.moviestudio.MusicSequence
@@ -78,6 +79,7 @@ import app.moviestudio.validateResolutionForModel
 import app.moviestudio.playSequencerTone
 import app.moviestudio.sequencerRowFrequency
 import app.moviestudio.startMicRecording
+import app.moviestudio.voicesUsedInMovie
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -1854,8 +1856,11 @@ fun TtsDialog(
     var voice by remember {
         mutableStateOf(
             initialSetup?.voice?.ifBlank { null }
-                ?: initialAsset?.voice
-                ?: viewModel.voiceOptions.presets.firstOrNull()?.id ?: "Cherry"
+                ?: initialAsset?.voice?.ifBlank { null }
+                // Per-movie last-used voice (persisted on the backend); new movies fall back to Cherry.
+                ?: viewModel.currentMovie?.lastVoice?.ifBlank { null }
+                ?: viewModel.voiceOptions.presets.firstOrNull()?.id
+                ?: DEFAULT_VOICE_ID
         )
     }
     var instructions by remember { mutableStateOf(initialSetup?.instructions ?: "") }
@@ -2017,6 +2022,7 @@ fun TtsDialog(
 }
 
 private enum class VoiceLibraryTab(val label: String) {
+    FROM_MOVIE("🎬 From this movie"),
     DEFAULT("🔊 Default"),
     CLONED("🧬 Cloned"),
     DESIGN("🎨 Voice Design")
@@ -2106,10 +2112,36 @@ private fun voiceDisplayLabel(options: VoiceOptions, voiceId: String): String {
 }
 
 /**
- * The Voice Library: pick and preview ("sample") any voice across three tabs — the built-in
- * Default Voices (every Qwen3-TTS preset, with its spoken languages), the user's Cloned Voices
- * (Qwen voice cloning) and their Voice Design voices (CosyVoice, designed from a text
- * description). Selecting a voice hands its id back through [onSelect] and closes the dialog.
+ * Resolves a voice id into the emoji / title / subtitle triple used by a [VoiceRow] in the
+ * "From this movie" list. Falls back to a plain label when the id is no longer in the library
+ * (e.g. a deleted clone still referenced by an older asset).
+ */
+private fun voiceLibraryEntry(options: VoiceOptions, voiceId: String): Triple<String, String, String> {
+    options.presets.firstOrNull { it.id == voiceId }?.let { preset ->
+        return Triple(
+            "🔊",
+            preset.name,
+            listOfNotNull(
+                preset.description.ifBlank { null },
+                preset.languages.takeIf { it.isNotEmpty() }?.joinToString(", ")
+            ).joinToString(" • ")
+        )
+    }
+    options.clones.firstOrNull { it.qwenVoiceId == voiceId }?.let { clone ->
+        return Triple("🧬", clone.name, "Cloned voice")
+    }
+    options.designs.firstOrNull { it.qwenVoiceId == voiceId }?.let { design ->
+        return Triple("🎨", design.name, design.description.ifBlank { "Designed voice" })
+    }
+    return Triple("🎙", voiceId, "Used in this movie")
+}
+
+/**
+ * The Voice Library: pick and preview ("sample") any voice across four tabs — voices already used
+ * in the open movie ("From this movie"), the built-in Default Voices (every Qwen3-TTS preset,
+ * with its spoken languages), the user's Cloned Voices (Qwen voice cloning) and their Voice Design
+ * voices (CosyVoice, designed from a text description). Selecting a voice hands its id back through
+ * [onSelect] and closes the dialog.
  */
 @Composable
 fun VoiceLibraryDialog(
@@ -2118,7 +2150,14 @@ fun VoiceLibraryDialog(
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var tab by remember { mutableStateOf(VoiceLibraryTab.DEFAULT) }
+    // Voices already featured on this movie's VOICE assets (most recent first) — the quick-pick list.
+    val movieVoiceIds = remember(viewModel.libraryAssets, viewModel.currentMovie?.id) {
+        voicesUsedInMovie(viewModel.libraryAssets, viewModel.currentMovie?.id)
+    }
+    // Open on "From this movie" when the movie already has voices; otherwise the full Default list.
+    var tab by remember {
+        mutableStateOf(if (movieVoiceIds.isNotEmpty()) VoiceLibraryTab.FROM_MOVIE else VoiceLibraryTab.DEFAULT)
+    }
     var showCreateClone by remember { mutableStateOf(false) }
     var deleteClone by remember { mutableStateOf<VoiceClone?>(null) }
     var deleteDesign by remember { mutableStateOf<VoiceDesign?>(null) }
@@ -2157,7 +2196,13 @@ fun VoiceLibraryDialog(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        // Four tabs can overflow the dialog width (especially "From this movie"); allow a gentle
+        // horizontal scroll so every tab stays reachable without wrapping awkwardly.
+        val tabScroll = rememberScrollState()
+        Row(
+            modifier = Modifier.horizontalScroll(tabScroll),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
             VoiceLibraryTab.entries.forEach { entry ->
                 if (entry == tab) {
                     PillButton(entry.label, compact = true) { tab = entry }
@@ -2169,6 +2214,27 @@ fun VoiceLibraryDialog(
         Spacer(Modifier.height(6.dp))
 
         when (tab) {
+            VoiceLibraryTab.FROM_MOVIE -> {
+                if (movieVoiceIds.isEmpty()) {
+                    EmptyVoiceHint(
+                        "No voices used in this movie yet. Generate a voiceover and it will show up here."
+                    )
+                } else {
+                    movieVoiceIds.forEach { voiceId ->
+                        val (emoji, title, subtitle) = voiceLibraryEntry(viewModel.voiceOptions, voiceId)
+                        VoiceRow(
+                            emoji = emoji,
+                            title = title,
+                            subtitle = subtitle,
+                            selected = voiceId == selectedVoice,
+                            sampling = viewModel.samplingVoiceId == voiceId,
+                            onSample = { toggleSample(viewModel, voiceId) },
+                            onSelect = { choose(voiceId) }
+                        )
+                    }
+                }
+            }
+
             VoiceLibraryTab.DEFAULT -> {
                 viewModel.voiceOptions.presets.forEach { preset ->
                     VoiceRow(

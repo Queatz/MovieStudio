@@ -54,6 +54,10 @@ data class Movie(
     // Last resolution ("W*H") used to generate a video for this movie, remembered so the
     // generate-video dialog pre-selects it next time. Null until a video has been generated.
     val lastVideoResolution: String? = null,
+    // Last TTS voice id used for this movie (a Qwen preset id, or a cloned/designed voice's
+    // qwenVoiceId), remembered so the text-to-speech dialog pre-selects it next time. Null until
+    // a voiceover has been generated for this movie — new movies still fall back to Cherry.
+    val lastVoice: String? = null,
     // Last horizontal scroll offset (in seconds) of this movie's timeline, remembered so the
     // editor restores the same view when the movie is reopened.
     val lastTimelineOffset: Float = DEFAULT_TIMELINE_OFFSET,
@@ -574,6 +578,12 @@ val QWEN_VOICE_CATALOG: List<VoicePreset> = listOf(
 val QWEN_VOICE_PRESETS: List<String> = QWEN_VOICE_CATALOG.map { it.id }
 
 /**
+ * Default narration voice when a movie has no remembered [Movie.lastVoice] yet (and no asset/setup
+ * voice to restore). Matches the first entry of [QWEN_VOICE_CATALOG].
+ */
+const val DEFAULT_VOICE_ID: String = "Cherry"
+
+/**
  * All selectable voices in the Voice Library: the built-in Qwen [presets] (Default Voices), the
  * user's [clones] (Cloned Voices) and their [designs] (Voice Design voices).
  */
@@ -583,6 +593,24 @@ data class VoiceOptions(
     val clones: List<VoiceClone> = emptyList(),
     val designs: List<VoiceDesign> = emptyList()
 )
+
+/**
+ * Distinct TTS voice ids already used by VOICE assets belonging to [movieId], most-recently-used
+ * first (by asset [Asset.createdAt]). Drives the Voice Library's "From this movie" section so the
+ * user can re-pick voices already featured in the open movie without scrolling the full catalog.
+ * Blank / missing [movieId] yields an empty list.
+ */
+fun voicesUsedInMovie(assets: List<Asset>, movieId: String?): List<String> {
+    if (movieId.isNullOrBlank()) return emptyList()
+    val seen = linkedSetOf<String>()
+    assets
+        .asSequence()
+        .filter { it.type == AssetType.VOICE && it.movieId == movieId }
+        .sortedByDescending { it.createdAt }
+        .mapNotNull { it.voice?.takeIf { v -> v.isNotBlank() } }
+        .forEach { seen.add(it) }
+    return seen.toList()
+}
 
 /** A short, friendly line spoken when the user previews ("samples") a voice. */
 const val VOICE_SAMPLE_TEXT: String =

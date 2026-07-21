@@ -389,18 +389,20 @@ class ModelsTest {
     @Test
     fun movieLastGenerationSettingsRoundTripAndLegacyMoviesDecodeAsNull() {
         val json = Json { ignoreUnknownKeys = true }
-        // A movie's remembered last-used image/video generation settings survive a round-trip.
+        // A movie's remembered last-used image/video/voice generation settings survive a round-trip.
         val movie = Movie(
             id = "m1", title = "Heist", totalDuration = 42.0, status = MovieStatus.IN_PRODUCTION,
             createdAt = 123L, aspectRatio = "16:9",
             lastImageResolution = "1328*1328", lastImageModel = "wan2.7-image-pro",
-            lastVideoResolution = "1280*720"
+            lastVideoResolution = "1280*720",
+            lastVoice = "Ethan"
         )
         val decoded = json.decodeFromString(Movie.serializer(), json.encodeToString(Movie.serializer(), movie))
         assertEquals(movie, decoded)
         assertEquals("1328*1328", decoded.lastImageResolution)
         assertEquals("wan2.7-image-pro", decoded.lastImageModel)
         assertEquals("1280*720", decoded.lastVideoResolution)
+        assertEquals("Ethan", decoded.lastVoice)
         // Movies saved before these fields existed decode with them null (no crash).
         val legacy = json.decodeFromString(
             Movie.serializer(),
@@ -409,6 +411,40 @@ class ModelsTest {
         assertNull(legacy.lastImageResolution)
         assertNull(legacy.lastImageModel)
         assertNull(legacy.lastVideoResolution)
+        assertNull(legacy.lastVoice)
+    }
+
+    @Test
+    fun voicesUsedInMovieReturnsDistinctMostRecentFirst() {
+        fun voiceAsset(id: String, movieId: String?, voice: String?, createdAt: Long) = Asset(
+            id = id,
+            type = AssetType.VOICE,
+            ossUrl = "https://oss/$id.mp3",
+            durationSeconds = 2.0,
+            movieId = movieId,
+            tags = emptyList(),
+            aiPrompt = "hi",
+            voice = voice,
+            createdAt = createdAt
+        )
+        val assets = listOf(
+            voiceAsset("a1", "m1", "Cherry", createdAt = 10),
+            voiceAsset("a2", "m1", "Ethan", createdAt = 30),
+            voiceAsset("a3", "m1", "Cherry", createdAt = 20), // duplicate of Cherry, older than Ethan
+            voiceAsset("a4", "m1", null, createdAt = 40), // no voice stored
+            voiceAsset("a5", "m1", "  ", createdAt = 50), // blank voice
+            voiceAsset("a6", "m2", "Serena", createdAt = 60), // other movie
+            Asset( // non-voice asset with a voice field should be ignored
+                id = "img", type = AssetType.IMAGE, ossUrl = "", durationSeconds = 1.0,
+                movieId = "m1", tags = emptyList(), aiPrompt = null, voice = "Vivian", createdAt = 70
+            )
+        )
+        // Most recent unique voices for m1: Ethan (30) then Cherry (20, de-duped over 10).
+        assertEquals(listOf("Ethan", "Cherry"), voicesUsedInMovie(assets, "m1"))
+        assertEquals(listOf("Serena"), voicesUsedInMovie(assets, "m2"))
+        assertEquals(emptyList(), voicesUsedInMovie(assets, null))
+        assertEquals(emptyList(), voicesUsedInMovie(assets, ""))
+        assertEquals("Cherry", DEFAULT_VOICE_ID)
     }
 
     @Test
