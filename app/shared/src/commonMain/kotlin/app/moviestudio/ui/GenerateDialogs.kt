@@ -251,6 +251,10 @@ fun GenerateMediaDialog(
 
     val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
     val videoAssets = viewModel.libraryAssets.filter { it.type == AssetType.VIDEO && it.ossUrl.isNotBlank() }
+    // Combined image+video list in library order (not images-first then videos) for mixed pickers.
+    val visualAssets = viewModel.libraryAssets.filter {
+        (it.type == AssetType.IMAGE || it.type == AssetType.VIDEO) && it.ossUrl.isNotBlank()
+    }
 
     // Toggleable "This movie" filters for the media pickers below (base/start/end image, base
     // video, reference images, and saved characters/scenes), mirroring the library panel's own
@@ -451,33 +455,34 @@ fun GenerateMediaDialog(
                         startFrameVideoUrl = null
                     }
                 }
-                if (imageAssets.isNotEmpty() || videoAssets.isNotEmpty()) {
+                if (visualAssets.isNotEmpty()) {
                     ThisMovieFilterButton(startImageThisMovie) { startImageThisMovie = !startImageThisMovie }
                 }
-                imageAssets.filter { !startImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { image ->
-                    val selected = imageUrl == image.ossUrl
-                    val label = "🖼 " + (image.description ?: "image").take(18)
-                    if (selected) {
-                        PillButton(label, compact = true) { imageUrl = null }
-                    } else {
-                        GhostPillButton(label, compact = true) {
-                            imageUrl = image.ossUrl
-                            // The start frame is either a still image or a video, never both.
-                            startFrameVideoUrl = null
+                // Images and videos mixed in library order (not images-first). A video contributes
+                // its LAST frame as the start frame (continue from where the clip ended).
+                visualAssets.filter { !startImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { asset ->
+                    if (asset.type == AssetType.IMAGE) {
+                        val selected = imageUrl == asset.ossUrl
+                        val label = "🖼 " + (asset.description ?: "image").take(18)
+                        if (selected) {
+                            PillButton(label, compact = true) { imageUrl = null }
+                        } else {
+                            GhostPillButton(label, compact = true) {
+                                imageUrl = asset.ossUrl
+                                // The start frame is either a still image or a video, never both.
+                                startFrameVideoUrl = null
+                            }
                         }
-                    }
-                }
-                // A video contributes its LAST frame as the start frame (continue from where the
-                // clip ended).
-                videoAssets.filter { !startImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { video ->
-                    val selected = startFrameVideoUrl == video.ossUrl
-                    val label = "🎬 " + (video.description ?: "video").take(18)
-                    if (selected) {
-                        PillButton(label, compact = true) { startFrameVideoUrl = null }
                     } else {
-                        GhostPillButton(label, compact = true) {
-                            startFrameVideoUrl = video.ossUrl
-                            imageUrl = null
+                        val selected = startFrameVideoUrl == asset.ossUrl
+                        val label = "🎬 " + (asset.description ?: "video").take(18)
+                        if (selected) {
+                            PillButton(label, compact = true) { startFrameVideoUrl = null }
+                        } else {
+                            GhostPillButton(label, compact = true) {
+                                startFrameVideoUrl = asset.ossUrl
+                                imageUrl = null
+                            }
                         }
                     }
                 }
@@ -511,33 +516,34 @@ fun GenerateMediaDialog(
                             endFrameVideoUrl = null
                         }
                     }
-                    if (imageAssets.isNotEmpty() || videoAssets.isNotEmpty()) {
+                    if (visualAssets.isNotEmpty()) {
                         ThisMovieFilterButton(endImageThisMovie) { endImageThisMovie = !endImageThisMovie }
                     }
-                    imageAssets.filter { !endImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { image ->
-                        val selected = endImageUrl == image.ossUrl
-                        val label = "🖼 " + (image.description ?: "image").take(18)
-                        if (selected) {
-                            PillButton(label, compact = true) { endImageUrl = null }
-                        } else {
-                            GhostPillButton(label, compact = true) {
-                                endImageUrl = image.ossUrl
-                                // The end frame is either a still image or a video, never both.
-                                endFrameVideoUrl = null
+                    // Images and videos mixed in library order (not images-first). A video
+                    // contributes its FIRST frame as the end frame (lead into where the clip begins).
+                    visualAssets.filter { !endImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { asset ->
+                        if (asset.type == AssetType.IMAGE) {
+                            val selected = endImageUrl == asset.ossUrl
+                            val label = "🖼 " + (asset.description ?: "image").take(18)
+                            if (selected) {
+                                PillButton(label, compact = true) { endImageUrl = null }
+                            } else {
+                                GhostPillButton(label, compact = true) {
+                                    endImageUrl = asset.ossUrl
+                                    // The end frame is either a still image or a video, never both.
+                                    endFrameVideoUrl = null
+                                }
                             }
-                        }
-                    }
-                    // A video contributes its FIRST frame as the end frame (lead into where the
-                    // clip begins).
-                    videoAssets.filter { !endImageThisMovie || it.movieId == currentMovieId }.take(12).forEach { video ->
-                        val selected = endFrameVideoUrl == video.ossUrl
-                        val label = "🎬 " + (video.description ?: "video").take(18)
-                        if (selected) {
-                            PillButton(label, compact = true) { endFrameVideoUrl = null }
                         } else {
-                            GhostPillButton(label, compact = true) {
-                                endFrameVideoUrl = video.ossUrl
-                                endImageUrl = null
+                            val selected = endFrameVideoUrl == asset.ossUrl
+                            val label = "🎬 " + (asset.description ?: "video").take(18)
+                            if (selected) {
+                                PillButton(label, compact = true) { endFrameVideoUrl = null }
+                            } else {
+                                GhostPillButton(label, compact = true) {
+                                    endFrameVideoUrl = asset.ossUrl
+                                    endImageUrl = null
+                                }
                             }
                         }
                     }
