@@ -58,6 +58,10 @@ data class Movie(
     // qwenVoiceId), remembered so the text-to-speech dialog pre-selects it next time. Null until
     // a voiceover has been generated for this movie — new movies still fall back to Cherry.
     val lastVoice: String? = null,
+    // Last visual style id ([VisualStyle.id]) used when generating an image/video for this movie,
+    // remembered so the generate-media dialog pre-selects it next time. Null until a visual style
+    // has been applied for this movie (or the user explicitly chose "None").
+    val lastStyleId: String? = null,
     // Last horizontal scroll offset (in seconds) of this movie's timeline, remembered so the
     // editor restores the same view when the movie is reopened.
     val lastTimelineOffset: Float = DEFAULT_TIMELINE_OFFSET,
@@ -183,6 +187,10 @@ data class Asset(
     val ledger: List<AiLedgerEntry> = emptyList(),
     // For VOICE assets: the preset or cloned voice used for TTS.
     val voice: String? = null,
+    // For IMAGE/VIDEO assets: the visual style ([VisualStyle.id]) applied when this media was
+    // generated, so regenerations can restore it and the library can show which style was used.
+    // Null when no style was selected (or the asset predates this field).
+    val styleId: String? = null,
     // For TEXT assets: whether this text is a media placeholder (rendered as a plain description
     // card and fillable with generated media) rather than a first-class text element rendered with
     // its own styling. Ignored for non-TEXT assets. Defaults true so existing dropped/described
@@ -348,6 +356,24 @@ data class Scene(
         const val MAX_REFERENCE_IMAGES = 3
     }
 }
+
+/**
+ * A saved visual style the user can apply to image/video generations so independent media keeps a
+ * consistent look: a short [name] and free-form [style] text that is appended to the generation
+ * prompt (see [GenerationSetup.styleId]).
+ */
+@Serializable
+data class VisualStyle(
+    val id: String,
+    val name: String,
+    // The style description appended to visual generation prompts, e.g.
+    // "semi-realistic cute/beautiful anime with faint outlines...".
+    val style: String,
+    // The movie this style was created for; drives the "This movie" library filter, mirroring
+    // Asset.movieId. Null for styles saved without a movie association (always shown).
+    val movieId: String? = null,
+    val createdAt: Long = 0
+)
 
 /**
  * A user-created cloned voice (Qwen voice cloning, China mainland). The [qwenVoiceId] is the id
@@ -1196,6 +1222,10 @@ data class GenerationSetup(
     val referenceImages: List<String> = emptyList(),
     val characterIds: List<String> = emptyList(),
     val sceneIds: List<String> = emptyList(),
+    // Optional visual style ([VisualStyle.id]) applied to image/video generation. The style text
+    // is appended to the prompt after character/scene/reference additions as
+    // "\n\nVisual style: <style text>\n\n". Blank/null means no style.
+    val styleId: String? = null,
     val durationSeconds: Double = 5.0,
     val resolution: String = "1280*720",
     // Image-generation model id (one of [SUPPORTED_IMAGE_MODELS], e.g. "wan2.7-image-pro"); blank

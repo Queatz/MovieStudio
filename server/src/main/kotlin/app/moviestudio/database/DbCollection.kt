@@ -13,6 +13,7 @@ enum class DbCollection(val collectionName: String) {
     JOBS("jobs"),
     CHARACTERS("characters"),
     SCENES("scenes"),
+    VISUAL_STYLES("visualstyles"),
     VOICE_CLONES("voiceclones"),
     VOICE_DESIGNS("voicedesigns"),
     RENDERS("renders"),

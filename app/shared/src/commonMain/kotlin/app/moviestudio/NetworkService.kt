@@ -476,6 +476,27 @@ object NetworkService {
         client.delete(url("/api/scenes/$id"))
     }
 
+    // ------------------------------------------------------------------- visual styles
+
+    suspend fun getVisualStyles(): List<VisualStyle> {
+        val responseText = client.get(url("/api/styles"))
+        return json.decodeFromString(ListSerializer(VisualStyle.serializer()), responseText)
+    }
+
+    suspend fun saveVisualStyle(style: VisualStyle, isNew: Boolean): VisualStyle {
+        val body = json.encodeToString(VisualStyle.serializer(), style)
+        val responseText = if (isNew) {
+            client.post(url("/api/styles"), body)
+        } else {
+            client.put(url("/api/styles/${style.id}"), body)
+        }
+        return json.decodeFromString(VisualStyle.serializer(), responseText)
+    }
+
+    suspend fun deleteVisualStyle(id: String) {
+        client.delete(url("/api/styles/$id"))
+    }
+
     // -------------------------------------------------------------------------------- voices
 
     suspend fun getVoiceOptions(): VoiceOptions {

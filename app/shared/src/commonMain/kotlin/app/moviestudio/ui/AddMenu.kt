@@ -45,6 +45,7 @@ fun AddMenu(
     onUpload: (AssetType) -> Unit,
     onNewCharacter: () -> Unit = {},
     onNewScene: () -> Unit = {},
+    onNewVisualStyle: () -> Unit = {},
     allowedTypes: Set<AssetType>? = null,
     showLibraryItems: Boolean = true,
     offset: DpOffset = DpOffset(0.dp, 0.dp)
@@ -78,6 +79,7 @@ fun AddMenu(
         if (showLibraryItems) {
             item("👤 New character") { onNewCharacter() }
             item("🏞️ New scene") { onNewScene() }
+            item("🎨 Visual style...") { onNewVisualStyle() }
         }
     }
 }
@@ -100,7 +102,8 @@ fun AddMenuButton(
     onNewText: () -> Unit,
     onUpload: (AssetType) -> Unit,
     onNewCharacter: () -> Unit,
-    onNewScene: () -> Unit
+    onNewScene: () -> Unit,
+    onNewVisualStyle: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
@@ -120,7 +123,8 @@ fun AddMenuButton(
             onNewText = onNewText,
             onUpload = onUpload,
             onNewCharacter = onNewCharacter,
-            onNewScene = onNewScene
+            onNewScene = onNewScene,
+            onNewVisualStyle = onNewVisualStyle
         )
     }
 }

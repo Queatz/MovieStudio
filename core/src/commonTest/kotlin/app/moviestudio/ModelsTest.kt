@@ -419,7 +419,8 @@ class ModelsTest {
             createdAt = 123L, aspectRatio = "16:9",
             lastImageResolution = "1328*1328", lastImageModel = "wan2.7-image-pro",
             lastVideoResolution = "1280*720",
-            lastVoice = "Ethan"
+            lastVoice = "Ethan",
+            lastStyleId = "style-pretty-anime"
         )
         val decoded = json.decodeFromString(Movie.serializer(), json.encodeToString(Movie.serializer(), movie))
         assertEquals(movie, decoded)
@@ -427,6 +428,7 @@ class ModelsTest {
         assertEquals("wan2.7-image-pro", decoded.lastImageModel)
         assertEquals("1280*720", decoded.lastVideoResolution)
         assertEquals("Ethan", decoded.lastVoice)
+        assertEquals("style-pretty-anime", decoded.lastStyleId)
         // Movies saved before these fields existed decode with them null (no crash).
         val legacy = json.decodeFromString(
             Movie.serializer(),
@@ -436,6 +438,47 @@ class ModelsTest {
         assertNull(legacy.lastImageModel)
         assertNull(legacy.lastVideoResolution)
         assertNull(legacy.lastVoice)
+        assertNull(legacy.lastStyleId)
+    }
+
+    @Test
+    fun visualStyleAndAssetStyleIdRoundTrip() {
+        val json = Json { ignoreUnknownKeys = true }
+        val style = VisualStyle(
+            id = "s1",
+            name = "Pretty Anime",
+            style = "semi-realistic cute/beautiful anime with faint outlines",
+            movieId = "m1",
+            createdAt = 42L
+        )
+        val decodedStyle = json.decodeFromString(VisualStyle.serializer(), json.encodeToString(VisualStyle.serializer(), style))
+        assertEquals(style, decodedStyle)
+
+        val asset = Asset(
+            id = "a1", type = AssetType.IMAGE, ossUrl = "https://oss/x.png", durationSeconds = 5.0,
+            movieId = "m1", tags = emptyList(), aiPrompt = "a meadow", styleId = "s1"
+        )
+        val decodedAsset = json.decodeFromString(Asset.serializer(), json.encodeToString(Asset.serializer(), asset))
+        assertEquals("s1", decodedAsset.styleId)
+
+        val setup = GenerationSetup(kind = "image", prompt = "a meadow", styleId = "s1")
+        val decodedSetup = json.decodeFromString(
+            GenerationSetup.serializer(),
+            json.encodeToString(GenerationSetup.serializer(), setup)
+        )
+        assertEquals("s1", decodedSetup.styleId)
+
+        // Legacy assets/setups without styleId decode cleanly.
+        val legacyAsset = json.decodeFromString(
+            Asset.serializer(),
+            """{"id":"a2","type":"IMAGE","ossUrl":"","durationSeconds":1.0,"movieId":null,"tags":[],"aiPrompt":null}"""
+        )
+        assertNull(legacyAsset.styleId)
+        val legacySetup = json.decodeFromString(
+            GenerationSetup.serializer(),
+            """{"kind":"image","prompt":"hi"}"""
+        )
+        assertNull(legacySetup.styleId)
     }
 
     @Test

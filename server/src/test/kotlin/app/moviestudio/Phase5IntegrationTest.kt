@@ -26,7 +26,8 @@ class Phase5IntegrationTest {
 
     private val collections = listOf(
         DbCollection.MOVIES, DbCollection.ASSETS, DbCollection.TRACKS, DbCollection.CLIPS, DbCollection.JOBS,
-        DbCollection.CHARACTERS, DbCollection.SCENES, DbCollection.VOICE_CLONES, DbCollection.RENDERS
+        DbCollection.CHARACTERS, DbCollection.SCENES, DbCollection.VISUAL_STYLES, DbCollection.VOICE_CLONES,
+        DbCollection.RENDERS
     )
 
     @Before
@@ -316,6 +317,29 @@ class Phase5IntegrationTest {
         client.delete("/api/scenes/${scene.id}")
         val scenesAfterDelete = json.decodeFromString<List<Scene>>(client.get("/api/scenes").bodyAsText())
         assertFalse(scenesAfterDelete.any { it.id == scene.id })
+
+        // Visual styles CRUD.
+        val createStyle = client.post("/api/styles") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                """{"id": "", "name": "Pretty Anime",
+                    "style": "semi-realistic cute/beautiful anime with faint outlines"}"""
+            )
+        }
+        assertEquals(HttpStatusCode.Created, createStyle.status)
+        val style = json.decodeFromString(VisualStyle.serializer(), createStyle.bodyAsText())
+        assertTrue(style.id.isNotBlank())
+        assertEquals("Pretty Anime", style.name)
+
+        val blankStyle = client.post("/api/styles") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"id": "", "name": "No Text", "style": ""}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, blankStyle.status)
+
+        client.delete("/api/styles/${style.id}")
+        val stylesAfterDelete = json.decodeFromString<List<VisualStyle>>(client.get("/api/styles").bodyAsText())
+        assertFalse(stylesAfterDelete.any { it.id == style.id })
 
         // Voice options: presets + clones (created via the mock cloning service).
         AIGenerationService.setInstance(object : AIGenerationService {

@@ -39,6 +39,7 @@ import app.moviestudio.Character
 import app.moviestudio.GenerationSetup
 import app.moviestudio.NetworkService
 import app.moviestudio.Scene
+import app.moviestudio.VisualStyle
 import app.moviestudio.generateId
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -514,6 +515,74 @@ fun SceneEditorDialog(
                         name = name.trim(),
                         description = description.trim(),
                         referenceImages = referenceImages.take(Scene.MAX_REFERENCE_IMAGES),
+                        movieId = existing?.movieId ?: viewModel.currentMovie?.id,
+                        createdAt = existing?.createdAt ?: 0
+                    ),
+                    isNew = existing == null
+                )
+                onDismiss()
+            }
+        }
+    }
+}
+
+/**
+ * Create/edit a saved visual style: a short name plus free-form style text that is appended to
+ * image/video generation prompts so independent media keeps a consistent look.
+ */
+@Composable
+fun VisualStyleEditorDialog(
+    viewModel: AppViewModel,
+    existing: VisualStyle?,
+    onDismiss: () -> Unit,
+) {
+    var name by remember(existing?.id) { mutableStateOf(existing?.name ?: "") }
+    var styleText by remember(existing?.id) { mutableStateOf(existing?.style ?: "") }
+
+    StudioDialog(
+        title = if (existing == null) "New visual style" else "Edit visual style",
+        onDismiss = onDismiss,
+        width = 540.dp
+    ) {
+        Text(
+            "Visual styles keep a consistent look across independent image and video generations. " +
+                "When applied, the style text is appended to the generation prompt.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        StudioTextField(
+            value = name,
+            onValueChange = { name = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Name",
+            placeholder = "Pretty Anime",
+            singleLine = true
+        )
+        Spacer(Modifier.height(8.dp))
+        StudioTextField(
+            value = styleText,
+            onValueChange = { styleText = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Style",
+            placeholder = "semi-realistic cute/beautiful anime with faint outlines, cute color palette, a little dreamy",
+            minLines = 3,
+            maxLines = 8,
+            showAiButton = true
+        )
+
+        DialogActions {
+            GhostPillButton("Cancel") { onDismiss() }
+            ActionSpacer()
+            PillButton(
+                "Save style",
+                enabled = name.isNotBlank() && styleText.isNotBlank()
+            ) {
+                viewModel.saveVisualStyle(
+                    VisualStyle(
+                        id = existing?.id ?: generateId(),
+                        name = name.trim(),
+                        style = styleText.trim(),
                         movieId = existing?.movieId ?: viewModel.currentMovie?.id,
                         createdAt = existing?.createdAt ?: 0
                     ),

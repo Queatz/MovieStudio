@@ -8,6 +8,7 @@ import app.moviestudio.RenderRecord
 import app.moviestudio.Scene
 import app.moviestudio.StudioFont
 import app.moviestudio.Tip
+import app.moviestudio.VisualStyle
 import app.moviestudio.VoiceClone
 import app.moviestudio.VoiceDesign
 import com.arangodb.util.RawJson
@@ -86,6 +87,8 @@ open class SimpleCrudRepository<T>(
 object CharacterRepository : SimpleCrudRepository<Character>(DbCollection.CHARACTERS, Character.serializer(), { it.id })
 
 object SceneRepository : SimpleCrudRepository<Scene>(DbCollection.SCENES, Scene.serializer(), { it.id })
+
+object VisualStyleRepository : SimpleCrudRepository<VisualStyle>(DbCollection.VISUAL_STYLES, VisualStyle.serializer(), { it.id })
 
 object VoiceCloneRepository : SimpleCrudRepository<VoiceClone>(DbCollection.VOICE_CLONES, VoiceClone.serializer(), { it.id })
 

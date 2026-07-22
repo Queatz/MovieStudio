@@ -145,6 +145,14 @@ fun GenerateMediaDialog(
     }
     var characterIds by remember { mutableStateOf(initialSetup.characterIds) }
     var sceneIds by remember { mutableStateOf(initialSetup.sceneIds) }
+    // Visual style: restore from the asset's stored setup / styleId, else the movie's last-used style.
+    var styleId by remember {
+        mutableStateOf(
+            initialSetup.styleId?.takeIf { it.isNotBlank() }
+                ?: initialAsset?.styleId?.takeIf { it.isNotBlank() }
+                ?: viewModel.currentMovie?.lastStyleId?.takeIf { it.isNotBlank() }
+        )
+    }
     var referenceImages by remember { mutableStateOf(initialSetup.referenceImages) }
     var duration by remember {
         // Placeholders carry no stored generation setup, so pre-fill the duration slider from the
@@ -215,6 +223,7 @@ fun GenerateMediaDialog(
         referenceImages = referenceImages,
         characterIds = characterIds,
         sceneIds = sceneIds,
+        styleId = styleId,
         durationSeconds = duration,
         resolution = resolution,
         // Only image generation exposes a model choice; video always uses the WAN 2.7 family.
@@ -268,6 +277,7 @@ fun GenerateMediaDialog(
     var endImageThisMovie by remember { mutableStateOf(true) }
     var referenceThisMovie by remember { mutableStateOf(true) }
     var charactersScenesThisMovie by remember { mutableStateOf(true) }
+    var stylesThisMovie by remember { mutableStateOf(true) }
 
     // Video editing repaints the base clip and keeps its length, so whenever a base video is
     // chosen (or one is pre-selected) preset the duration to that base video's own duration.
@@ -608,6 +618,37 @@ fun GenerateMediaDialog(
                 if (viewModel.characters.isEmpty() && viewModel.scenes.isEmpty()) {
                     Text(
                         "No saved characters or scenes yet — create them in the library.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            SectionLabel("Visual style")
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // None clears the selection so this generation runs without a style.
+                if (styleId == null) {
+                    PillButton("None", compact = true) { }
+                } else {
+                    GhostPillButton("None", compact = true) { styleId = null }
+                }
+                if (viewModel.visualStyles.isNotEmpty()) {
+                    ThisMovieFilterButton(stylesThisMovie) { stylesThisMovie = !stylesThisMovie }
+                }
+                viewModel.visualStyles
+                    .filter { !stylesThisMovie || it.movieId == currentMovieId }
+                    .forEach { style ->
+                        val selected = styleId == style.id
+                        val label = "🎨 ${style.name}"
+                        if (selected) {
+                            PillButton(label, compact = true) { styleId = null }
+                        } else {
+                            GhostPillButton(label, compact = true) { styleId = style.id }
+                        }
+                    }
+                if (viewModel.visualStyles.isEmpty()) {
+                    Text(
+                        "No visual styles yet — create them via ＋ Add → Visual style...",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

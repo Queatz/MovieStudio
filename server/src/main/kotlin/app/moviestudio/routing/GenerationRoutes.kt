@@ -13,6 +13,7 @@ import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.CharacterRepository
 import app.moviestudio.database.JobRepository
 import app.moviestudio.database.SceneRepository
+import app.moviestudio.database.VisualStyleRepository
 import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.service.AiJobPayload
 import app.moviestudio.service.AIGenerationService
@@ -152,7 +153,9 @@ internal fun balanceReferenceImages(
 /**
  * Expands character/scene references into concrete reference images + prompt context so the
  * generation service only deals with plain URLs and text. The original ids stay on the setup so
- * the generation can be re-edited later.
+ * the generation can be re-edited later. When a [GenerationSetup.styleId] is set, the matching
+ * visual style's text is appended after those reference additions as
+ * `"\n\nVisual style: <style text>\n\n"`.
  *
  * The reference-image slots are shared fairly across every selection (extra reference photos, each
  * character and each scene) via [balanceReferenceImages], guaranteeing at least one photo from each
@@ -161,52 +164,66 @@ internal fun balanceReferenceImages(
  * (e.g. `Reference image 1 shows character "Alice": ...`) so the model no longer has to guess which
  * anonymous photo belongs to which name.
  */
-private fun expandReferences(setup: GenerationSetup): GenerationSetup {
-    if (setup.characterIds.isEmpty() && setup.sceneIds.isEmpty()) return setup
+internal fun expandReferences(setup: GenerationSetup): GenerationSetup {
+    var expanded = setup
 
-    val subjects = mutableListOf<ReferenceSubject>()
+    if (setup.characterIds.isNotEmpty() || setup.sceneIds.isNotEmpty()) {
+        val subjects = mutableListOf<ReferenceSubject>()
 
-    // The user's extra reference photos are one selection: they carry no name, so they are simply
-    // included (up to their share of the budget) with no prompt sentence of their own.
-    if (setup.referenceImages.isNotEmpty()) {
-        subjects.add(ReferenceSubject(images = setup.referenceImages) { "" })
-    }
+        // The user's extra reference photos are one selection: they carry no name, so they are simply
+        // included (up to their share of the budget) with no prompt sentence of their own.
+        if (setup.referenceImages.isNotEmpty()) {
+            subjects.add(ReferenceSubject(images = setup.referenceImages) { "" })
+        }
 
-    for (id in setup.characterIds) {
-        val character = CharacterRepository.getById(id) ?: continue
-        subjects.add(
-            ReferenceSubject(images = character.referenceImages) { indices ->
-                val phrase = referenceImagePhrase(indices)
-                if (phrase.isEmpty()) {
-                    " Featuring character \"${character.name}\": ${character.description}."
-                } else {
-                    val verb = if (indices.size == 1) "shows" else "show"
-                    " $phrase $verb character \"${character.name}\": ${character.description}."
+        for (id in setup.characterIds) {
+            val character = CharacterRepository.getById(id) ?: continue
+            subjects.add(
+                ReferenceSubject(images = character.referenceImages) { indices ->
+                    val phrase = referenceImagePhrase(indices)
+                    if (phrase.isEmpty()) {
+                        " Featuring character \"${character.name}\": ${character.description}."
+                    } else {
+                        val verb = if (indices.size == 1) "shows" else "show"
+                        " $phrase $verb character \"${character.name}\": ${character.description}."
+                    }
                 }
-            }
+            )
+        }
+
+        for (id in setup.sceneIds) {
+            val scene = SceneRepository.getById(id) ?: continue
+            subjects.add(
+                ReferenceSubject(images = scene.referenceImages) { indices ->
+                    val phrase = referenceImagePhrase(indices)
+                    if (phrase.isEmpty()) {
+                        " Set in \"${scene.name}\": ${scene.description}."
+                    } else {
+                        val verb = if (indices.size == 1) "shows" else "show"
+                        " $phrase $verb the scene \"${scene.name}\": ${scene.description}."
+                    }
+                }
+            )
+        }
+
+        val (referenceImages, promptAdditions) = balanceReferenceImages(subjects)
+        expanded = expanded.copy(
+            prompt = (setup.prompt + promptAdditions).trim(),
+            referenceImages = referenceImages
         )
     }
 
-    for (id in setup.sceneIds) {
-        val scene = SceneRepository.getById(id) ?: continue
-        subjects.add(
-            ReferenceSubject(images = scene.referenceImages) { indices ->
-                val phrase = referenceImagePhrase(indices)
-                if (phrase.isEmpty()) {
-                    " Set in \"${scene.name}\": ${scene.description}."
-                } else {
-                    val verb = if (indices.size == 1) "shows" else "show"
-                    " $phrase $verb the scene \"${scene.name}\": ${scene.description}."
-                }
-            }
-        )
+    // Visual style rides after every reference-photo/character/scene prompt addition so the look
+    // stays consistent across independent visual generations without competing with subject text.
+    val styleId = expanded.styleId?.takeIf { it.isNotBlank() }
+    if (styleId != null) {
+        val styleText = VisualStyleRepository.getById(styleId)?.style?.trim().orEmpty()
+        if (styleText.isNotEmpty()) {
+            expanded = expanded.copy(prompt = expanded.prompt.trimEnd() + "\n\nVisual style: $styleText\n\n")
+        }
     }
 
-    val (referenceImages, promptAdditions) = balanceReferenceImages(subjects)
-    return setup.copy(
-        prompt = (setup.prompt + promptAdditions).trim(),
-        referenceImages = referenceImages
-    )
+    return expanded
 }
 
 private fun labelFor(setup: GenerationSetup): String {

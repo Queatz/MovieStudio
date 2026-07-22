@@ -267,6 +267,8 @@ object GenerationCommon {
                 history = history,
                 ledger = existing.ledger + ledgerEntries,
                 voice = payload.setup.voice.ifBlank { existing.voice },
+                // Persist the visual style this media was created with (blank clears a previous one).
+                styleId = payload.setup.styleId?.takeIf { it.isNotBlank() } ?: existing.styleId,
                 transcript = transcript ?: existing.transcript,
                 lyrics = lyrics ?: existing.lyrics,
                 wordTimings = wordTimings.ifEmpty { existing.wordTimings },
@@ -303,6 +305,7 @@ object GenerationCommon {
                 generationConfig = setupJson,
                 ledger = ledgerEntries,
                 voice = payload.setup.voice.ifBlank { null },
+                styleId = payload.setup.styleId?.takeIf { it.isNotBlank() },
                 transcript = transcript,
                 lyrics = lyrics,
                 wordTimings = wordTimings,

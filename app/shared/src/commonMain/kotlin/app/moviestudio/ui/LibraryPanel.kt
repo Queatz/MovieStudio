@@ -48,14 +48,16 @@ import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.Character
 import app.moviestudio.Scene
+import app.moviestudio.VisualStyle
 import app.moviestudio.rememberFileDropTarget
 
-/** Library tabs: the global asset library by type, plus saved characters and scenes. */
+/** Library tabs: the global asset library by type, plus saved characters, scenes and styles. */
 private sealed interface LibTab {
     data object All : LibTab
     data class OfType(val type: AssetType) : LibTab
     data object Characters : LibTab
     data object Scenes : LibTab
+    data object Styles : LibTab
 }
 
 private fun tabLabel(tab: LibTab): String = when (tab) {
@@ -71,6 +73,7 @@ private fun tabLabel(tab: LibTab): String = when (tab) {
     }
     LibTab.Characters -> "👤 Characters"
     LibTab.Scenes -> "🏞️ Scenes"
+    LibTab.Styles -> "🎨 Styles"
 }
 
 /** True when [asset] matches the free-text library [query] (case-insensitive) across its text fields. */
@@ -98,8 +101,8 @@ private fun assetVisibleInLibrary(
     val tabMatches = when (tab) {
         LibTab.All -> true
         is LibTab.OfType -> asset.type == tab.type
-        // Character/scene tabs never show library assets.
-        LibTab.Characters, LibTab.Scenes -> false
+        // Character/scene/style tabs never show library assets.
+        LibTab.Characters, LibTab.Scenes, LibTab.Styles -> false
     }
     if (!tabMatches) return false
     if (onlyThisMovie && asset.movieId != currentMovieId) return false
@@ -131,6 +134,8 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     var showNewCharacter by remember { mutableStateOf(false) }
     var sceneEditor by remember { mutableStateOf<Scene?>(null) }
     var showNewScene by remember { mutableStateOf(false) }
+    var styleEditor by remember { mutableStateOf<VisualStyle?>(null) }
+    var showNewStyle by remember { mutableStateOf(false) }
 
     // Text search: a magnifier reveals a filter field that narrows the visible media (and the
     // characters/scenes libraries) by name, description, prompt or tags.
@@ -205,7 +210,8 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 onNewText = { showNewText = true },
                 onUpload = { type -> viewModel.uploadAsset(type) },
                 onNewCharacter = { showNewCharacter = true },
-                onNewScene = { showNewScene = true }
+                onNewScene = { showNewScene = true },
+                onNewVisualStyle = { showNewStyle = true }
             )
         }
         Spacer(Modifier.height(8.dp))
@@ -256,7 +262,8 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 LibTab.OfType(AssetType.VOICE),
                 LibTab.OfType(AssetType.TEXT),
                 LibTab.Characters,
-                LibTab.Scenes
+                LibTab.Scenes,
+                LibTab.Styles
             )
             tabs.forEach { candidate ->
                 val selected = candidate == tab
@@ -292,11 +299,11 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
         when (val current = tab) {
             LibTab.Characters -> CharacterList(viewModel, query, onlyThisMovie) { characterEditor = it }
             LibTab.Scenes -> SceneList(viewModel, query, onlyThisMovie) { sceneEditor = it }
-            else -> {
+            LibTab.Styles -> StyleList(viewModel, query, onlyThisMovie) { styleEditor = it }
+            LibTab.All, is LibTab.OfType -> {
                 val typed = when (current) {
-                    LibTab.All -> viewModel.libraryAssets
                     is LibTab.OfType -> viewModel.libraryAssets.filter { it.type == current.type }
-                    else -> emptyList()
+                    else -> viewModel.libraryAssets
                 }
                 val scoped = if (onlyThisMovie) {
                     typed.filter { it.movieId == viewModel.currentMovie?.id }
@@ -434,6 +441,12 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     }
     sceneEditor?.let { scene ->
         SceneEditorDialog(viewModel, existing = scene) { sceneEditor = null }
+    }
+    if (showNewStyle) {
+        VisualStyleEditorDialog(viewModel, existing = null) { showNewStyle = false }
+    }
+    styleEditor?.let { style ->
+        VisualStyleEditorDialog(viewModel, existing = style) { styleEditor = null }
     }
 }
 
@@ -675,6 +688,81 @@ private fun SceneList(
                     )
                 }
                 RoundIconButton("🗑", size = 26.dp) { deleteTarget = scene }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StyleList(
+    viewModel: AppViewModel,
+    query: String = "",
+    onlyThisMovie: Boolean = false,
+    onEdit: (VisualStyle) -> Unit
+) {
+    var deleteTarget by remember { mutableStateOf<VisualStyle?>(null) }
+    deleteTarget?.let { style ->
+        ConfirmDialog(
+            title = "Delete visual style?",
+            message = "\"${style.name}\" will be permanently removed from the library.",
+            confirmLabel = "Delete style",
+            onConfirm = { viewModel.deleteVisualStyle(style.id) },
+            onDismiss = { deleteTarget = null }
+        )
+    }
+    val scoped = if (onlyThisMovie) {
+        viewModel.visualStyles.filter { it.movieId == viewModel.currentMovie?.id }
+    } else {
+        viewModel.visualStyles
+    }
+    val styles = if (query.isBlank()) scoped
+    else scoped.filter {
+        it.name.contains(query, ignoreCase = true) || it.style.contains(query, ignoreCase = true)
+    }
+    if (styles.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                when {
+                    query.isNotBlank() -> "No visual styles match “$query”."
+                    onlyThisMovie && viewModel.visualStyles.isNotEmpty() ->
+                        "No visual styles created for this movie yet.\nUncheck “This movie” to browse all styles."
+                    else -> "No saved visual styles.\nUse ＋ Add → Visual style..."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        return
+    }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        items(styles, key = { it.id }) { style ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    .clickable { onEdit(style) }
+                    .padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("🎨", fontSize = 20.sp)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        style.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        style.style.take(60),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                RoundIconButton("🗑", size = 26.dp) { deleteTarget = style }
             }
         }
     }

@@ -102,6 +102,8 @@ class AppViewModel : ViewModel() {
         private set
     var scenes by mutableStateOf<List<Scene>>(emptyList())
         private set
+    var visualStyles by mutableStateOf<List<VisualStyle>>(emptyList())
+        private set
     var voiceOptions by mutableStateOf(VoiceOptions())
         private set
 
@@ -382,6 +384,7 @@ class AppViewModel : ViewModel() {
         refreshDocuments()
         refreshLibrary()
         refreshCharactersAndScenes()
+        refreshVisualStyles()
         refreshVoices()
         refreshRenders()
         refreshActiveJobs()
@@ -1588,25 +1591,35 @@ class AppViewModel : ViewModel() {
 
     /**
      * Remembers generation defaults on the current movie so dialogs pre-select them next time:
-     * image/video resolution (and image model), and the TTS voice. Per-movie, since different
-     * movies commonly target different resolutions and cast different voices.
+     * image/video resolution (and image model), the TTS voice, and the visual style. Per-movie,
+     * since different movies commonly target different resolutions, cast different voices and use
+     * different looks.
      */
     private fun rememberLastGenerationSettings(setup: GenerationSetup) {
         val movie = currentMovie ?: return
-        val updated = when (setup.kind) {
-            "image" -> if (movie.lastImageResolution != setup.resolution || movie.lastImageModel != setup.model) {
-                movie.copy(lastImageResolution = setup.resolution, lastImageModel = setup.model)
-            } else null
-            "video" -> if (movie.lastVideoResolution != setup.resolution) {
-                movie.copy(lastVideoResolution = setup.resolution)
-            } else null
+        var next = movie
+        when (setup.kind) {
+            "image" -> {
+                if (next.lastImageResolution != setup.resolution || next.lastImageModel != setup.model) {
+                    next = next.copy(lastImageResolution = setup.resolution, lastImageModel = setup.model)
+                }
+                // Remember the chosen visual style (including clearing it when the user picks None).
+                val styleId = setup.styleId?.takeIf { it.isNotBlank() }
+                if (next.lastStyleId != styleId) next = next.copy(lastStyleId = styleId)
+            }
+            "video" -> {
+                if (next.lastVideoResolution != setup.resolution) {
+                    next = next.copy(lastVideoResolution = setup.resolution)
+                }
+                val styleId = setup.styleId?.takeIf { it.isNotBlank() }
+                if (next.lastStyleId != styleId) next = next.copy(lastStyleId = styleId)
+            }
             "tts" -> {
                 val voice = setup.voice.trim()
-                if (voice.isNotEmpty() && movie.lastVoice != voice) movie.copy(lastVoice = voice) else null
+                if (voice.isNotEmpty() && next.lastVoice != voice) next = next.copy(lastVoice = voice)
             }
-            else -> null
         }
-        if (updated != null) updateMovie(updated)
+        if (next != movie) updateMovie(next)
     }
 
     /** Queues movie-skeleton generation at the current playhead. */
@@ -1686,6 +1699,40 @@ class AppViewModel : ViewModel() {
                 characters = characters.filter { it.id != id }
             } catch (e: Exception) {
                 errorMessage = "Failed to delete character: ${e.message}"
+            }
+        }
+    }
+
+    // ===================================================================== visual styles
+
+    fun refreshVisualStyles() {
+        viewModelScope.launch {
+            try {
+                visualStyles = NetworkService.getVisualStyles()
+            } catch (e: Exception) {
+                errorMessage = "Failed to load visual styles: ${e.message}"
+            }
+        }
+    }
+
+    fun saveVisualStyle(style: VisualStyle, isNew: Boolean) {
+        viewModelScope.launch {
+            try {
+                NetworkService.saveVisualStyle(style, isNew)
+                visualStyles = NetworkService.getVisualStyles()
+            } catch (e: Exception) {
+                errorMessage = "Failed to save visual style: ${e.message}"
+            }
+        }
+    }
+
+    fun deleteVisualStyle(id: String) {
+        viewModelScope.launch {
+            try {
+                NetworkService.deleteVisualStyle(id)
+                visualStyles = visualStyles.filter { it.id != id }
+            } catch (e: Exception) {
+                errorMessage = "Failed to delete visual style: ${e.message}"
             }
         }
     }

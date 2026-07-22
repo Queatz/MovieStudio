@@ -2,9 +2,11 @@ package app.moviestudio.routing
 
 import app.moviestudio.Character
 import app.moviestudio.Scene
+import app.moviestudio.VisualStyle
 import app.moviestudio.VoiceOptions
 import app.moviestudio.database.CharacterRepository
 import app.moviestudio.database.SceneRepository
+import app.moviestudio.database.VisualStyleRepository
 import app.moviestudio.database.VoiceCloneRepository
 import app.moviestudio.database.VoiceDesignRepository
 import app.moviestudio.service.AIGenerationService
@@ -119,6 +121,66 @@ fun Route.libraryRoutes() {
             try {
                 val id = call.parameters["id"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing id")
                 SceneRepository.delete(id)
+                call.respond(HttpStatusCode.OK, mapOf("deleted" to true))
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- saved visual styles library
+    route("/api/styles") {
+        get {
+            try {
+                call.respond(VisualStyleRepository.listAll())
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+        post {
+            try {
+                val received = call.receive<VisualStyle>()
+                val style = received.copy(
+                    id = received.id.ifBlank { UUID.randomUUID().toString() },
+                    name = received.name.trim(),
+                    style = received.style.trim(),
+                    createdAt = if (received.createdAt == 0L) System.currentTimeMillis() else received.createdAt
+                )
+                if (style.name.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, "Style name must not be blank")
+                }
+                if (style.style.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, "Style text must not be blank")
+                }
+                call.respond(HttpStatusCode.Created, VisualStyleRepository.insert(style))
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+        put("/{id}") {
+            try {
+                val id = call.parameters["id"] ?: return@put call.respond(HttpStatusCode.BadRequest, "Missing id")
+                val received = call.receive<VisualStyle>()
+                val style = received.copy(
+                    id = id,
+                    name = received.name.trim(),
+                    style = received.style.trim()
+                )
+                if (style.name.isBlank()) {
+                    return@put call.respond(HttpStatusCode.BadRequest, "Style name must not be blank")
+                }
+                if (style.style.isBlank()) {
+                    return@put call.respond(HttpStatusCode.BadRequest, "Style text must not be blank")
+                }
+                call.respond(HttpStatusCode.OK, VisualStyleRepository.update(style))
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+        delete("/{id}") {
+            try {
+                val id = call.parameters["id"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing id")
+                VisualStyleRepository.delete(id)
                 call.respond(HttpStatusCode.OK, mapOf("deleted" to true))
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")

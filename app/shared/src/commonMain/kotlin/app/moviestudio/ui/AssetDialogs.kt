@@ -188,6 +188,19 @@ fun AssetDetailsDialog(
             }
         }
 
+        // Show the visual style this media was generated with, when one is recorded.
+        val appliedStyle = asset.styleId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { id -> viewModel.visualStyles.firstOrNull { it.id == id } }
+        if (appliedStyle != null) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "🎨 Style: ${appliedStyle.name}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         SectionLabel("Actions")
         Row(
             Modifier.horizontalScroll(rememberScrollState()),
