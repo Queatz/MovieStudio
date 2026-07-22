@@ -889,9 +889,12 @@ object QwenAIService : AIGenerationService {
         val audio = ByteArrayOutputStream()
         var finished = false
         var lastError: String? = null
+        var requestId: String? = null
         val startBody = buildClonedVoiceTtsRequestBody(setup, voice, model, taskId)
         val continueBody = buildCosyVoiceContinueTaskBody(setup, model, taskId)
         val finishBody = buildCosyVoiceFinishTaskBody(taskId)
+
+        logger.info("Starting CosyVoice WebSocket synthesis task_id={} model={} voice={}", taskId, model, voice)
 
         httpClient.webSocket(urlString = dashScopeWebSocketInferenceUrl(), request = {
             header("Authorization", "Bearer ${QwenConfig.apiKey}")
@@ -909,6 +912,20 @@ object QwenAIService : AIGenerationService {
                         val header = message["header"]?.jsonObject
                         val event = header?.get("event")?.jsonPrimitive?.contentOrNull
                         val code = header?.get("error_code")?.jsonPrimitive?.contentOrNull
+                        // DashScope echoes request_id / task_id on text events; log the first request_id
+                        // we see so support/debug can correlate the synthesis with Model Studio traces.
+                        if (requestId == null) {
+                            header?.get("request_id")?.jsonPrimitive?.contentOrNull
+                                ?.takeIf { it.isNotBlank() }
+                                ?.let {
+                                    requestId = it
+                                    logger.info(
+                                        "CosyVoice WebSocket synthesis request_id={} task_id={}",
+                                        it,
+                                        header["task_id"]?.jsonPrimitive?.contentOrNull ?: taskId
+                                    )
+                                }
+                        }
                         if (!code.isNullOrBlank()) {
                             val messageDetail = header["error_message"]?.jsonPrimitive?.contentOrNull ?: messageText
                             lastError = "$code: $messageDetail"
@@ -923,9 +940,25 @@ object QwenAIService : AIGenerationService {
             }
         }
 
-        lastError?.let { throw IllegalStateException("CosyVoice WebSocket synthesis failed: $it") }
+        lastError?.let {
+            throw IllegalStateException(
+                "CosyVoice WebSocket synthesis failed (task_id=$taskId" +
+                    (requestId?.let { id -> ", request_id=$id" } ?: "") + "): $it"
+            )
+        }
         val bytes = audio.toByteArray()
-        if (bytes.isEmpty()) throw IllegalStateException("CosyVoice WebSocket synthesis returned no audio data")
+        if (bytes.isEmpty()) {
+            throw IllegalStateException(
+                "CosyVoice WebSocket synthesis returned no audio data (task_id=$taskId" +
+                    (requestId?.let { id -> ", request_id=$id" } ?: "") + ")"
+            )
+        }
+        logger.info(
+            "CosyVoice WebSocket synthesis completed task_id={} request_id={} bytes={}",
+            taskId,
+            requestId ?: "n/a",
+            bytes.size
+        )
         return bytes
     }
 

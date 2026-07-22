@@ -1131,8 +1131,8 @@ class AppViewModel : ViewModel() {
     /** Reloads the global asset library into [libraryAssets] (suspending), tracking any error. */
     private suspend fun reloadLibraryAssets() {
         try {
-            // The asset library is global (not scoped to a single movie).
-            libraryAssets = NetworkService.getLibraryAssets(null, null)
+            // The asset library is global (not scoped to a single movie). No limit = full page.
+            libraryAssets = NetworkService.getLibraryAssets().items
             libraryError = null
         } catch (e: Exception) {
             libraryError = "Failed to load library: ${e.message}"

@@ -505,6 +505,34 @@ fun GhostPillButton(
     )
 }
 
+/**
+ * A small toggleable "This movie" filter chip placed at the head of a media picker row. When
+ * [active] the picker only offers assets created for the open movie (mirroring the library panel's
+ * own filter); tapping toggles it through [onToggle] to reveal the whole library. Clipped before
+ * the clickable per the project's rounded-hover guideline.
+ */
+@Composable
+fun ThisMovieFilterButton(active: Boolean, onToggle: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50)) // clip BEFORE clickable so the hover pill is rounded
+            .background(
+                if (active) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surfaceVariant
+            )
+            .clickable { onToggle() }
+            .padding(horizontal = 12.dp, vertical = 5.dp)
+    ) {
+        Text(
+            if (active) "✓ This movie" else "This movie",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (active) MaterialTheme.colorScheme.onPrimary
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
 /** Section label used inside dialogs and side panels. */
 @Composable
 fun SectionLabel(text: String, modifier: Modifier = Modifier) {

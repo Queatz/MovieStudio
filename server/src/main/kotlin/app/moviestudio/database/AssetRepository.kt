@@ -2,6 +2,7 @@ package app.moviestudio.database
 
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
+import app.moviestudio.LibraryPage
 import com.arangodb.util.RawJson
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
@@ -60,8 +61,19 @@ object AssetRepository {
         return assets
     }
 
-    fun queryLibrary(movieId: String?, type: AssetType?, tags: List<String>?): List<Asset> {
-        val queryBuilder = StringBuilder("FOR a IN $COLLECTION ")
+    /**
+     * Paged library query. Optional [movieId]/[type]/[tags] narrow the set; [q] does a
+     * case-insensitive substring match on the asset description. When [limit] is null every
+     * matching asset is returned in a single page (used by the full-library refresh).
+     */
+    fun queryLibrary(
+        movieId: String?,
+        type: AssetType?,
+        tags: List<String>?,
+        q: String? = null,
+        offset: Int = 0,
+        limit: Int? = null,
+    ): LibraryPage {
         val filters = mutableListOf<String>()
         val bindVars = mutableMapOf<String, Any>()
 
@@ -81,18 +93,59 @@ object AssetRepository {
             filters.add("LENGTH(INTERSECTION(a.tags, @tags)) > 0")
             bindVars["tags"] = tags
         }
-
-        if (filters.isNotEmpty()) {
-            queryBuilder.append("FILTER ")
-            queryBuilder.append(filters.joinToString(" AND "))
+        val term = q?.trim().orEmpty()
+        if (term.isNotEmpty()) {
+            // Case-insensitive substring match on the user-facing description.
+            filters.add("LIKE(LOWER(a.description), @term, true)")
+            bindVars["term"] = "%${term.lowercase()}%"
         }
-        queryBuilder.append(" SORT a.createdAt DESC RETURN a")
 
-        val cursor = ArangoDatabase.db.query(queryBuilder.toString(), RawJson::class.java, bindVars)
-        val assets = mutableListOf<Asset>()
-        for (rawJson in cursor) {
-            assets.add(json.decodeFromString(Asset.serializer(), rawJson.get()))
+        val filterClause = if (filters.isEmpty()) "" else "FILTER " + filters.joinToString(" AND ") + " "
+        val safeOffset = offset.coerceAtLeast(0)
+        // null limit = unbounded page (full library load). Cap absurd values if a limit is given.
+        val safeLimit = limit?.coerceIn(1, 500)
+
+        val query = if (safeLimit == null) {
+            """
+                LET filtered = (
+                    FOR a IN $COLLECTION
+                        $filterClause
+                        SORT a.createdAt DESC
+                        RETURN a
+                )
+                RETURN { items: filtered, total: LENGTH(filtered) }
+            """.trimIndent()
+        } else {
+            bindVars["offset"] = safeOffset
+            bindVars["limit"] = safeLimit
+            """
+                LET filtered = (
+                    FOR a IN $COLLECTION
+                        $filterClause
+                        SORT a.createdAt DESC
+                        RETURN a
+                )
+                RETURN {
+                    items: SLICE(filtered, @offset, @limit),
+                    total: LENGTH(filtered)
+                }
+            """.trimIndent()
         }
-        return assets
+
+        val cursor = ArangoDatabase.db.query(query, RawJson::class.java, bindVars)
+        val raw = cursor.firstOrNull()?.get() ?: return LibraryPage(offset = safeOffset, limit = safeLimit ?: 0)
+        val obj = json.parseToJsonElement(raw).jsonObject
+        val items = obj["items"]?.jsonArray?.map { element ->
+            json.decodeFromJsonElement(Asset.serializer(), element)
+        } ?: emptyList()
+        val total = obj["total"]?.jsonPrimitive?.intOrNull ?: items.size
+        val effectiveLimit = safeLimit ?: items.size
+        return LibraryPage(
+            items = items,
+            total = total,
+            offset = safeOffset,
+            limit = effectiveLimit,
+            hasMore = safeOffset + items.size < total,
+        )
     }
 }

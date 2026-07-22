@@ -313,9 +313,15 @@ fun Route.assetRoutes() {
                 }
                 val tagsStr = call.request.queryParameters["tags"]
                 val tags = tagsStr?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+                // Optional description search (case-insensitive substring).
+                val q = call.request.queryParameters["q"]
+                // Optional paging. Omit limit to return every matching asset in one page
+                // (used by the full library refresh); when present, offset defaults to 0.
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull()
+                val offset = call.request.queryParameters["offset"]?.toIntOrNull() ?: 0
 
-                val assets = AssetRepository.queryLibrary(movieId, type, tags)
-                call.respond(assets)
+                val page = AssetRepository.queryLibrary(movieId, type, tags, q = q, offset = offset, limit = limit)
+                call.respond(page)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
             }

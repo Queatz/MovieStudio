@@ -173,22 +173,69 @@ class Phase3IntegrationTest {
 
         // Query by specific movieId
         val movieAssets = AssetRepository.queryLibrary(movieId, null, null)
-        assertEquals(1, movieAssets.size)
-        assertEquals(asset1.id, movieAssets[0].id)
+        assertEquals(1, movieAssets.items.size)
+        assertEquals(asset1.id, movieAssets.items[0].id)
 
         // Query global
         val globalAssets = AssetRepository.queryLibrary("global", null, null)
-        assertTrue(globalAssets.any { it.id == asset2.id })
+        assertTrue(globalAssets.items.any { it.id == asset2.id })
 
         // Query by type
         val musicAssets = AssetRepository.queryLibrary(null, AssetType.MUSIC, null)
-        assertTrue(musicAssets.any { it.id == asset2.id })
-        assertFalse(musicAssets.any { it.id == asset1.id })
+        assertTrue(musicAssets.items.any { it.id == asset2.id })
+        assertFalse(musicAssets.items.any { it.id == asset1.id })
 
         // Query by tag
         val scifiAssets = AssetRepository.queryLibrary(null, null, listOf("sci-fi"))
-        assertEquals(1, scifiAssets.size)
-        assertEquals(asset1.id, scifiAssets[0].id)
+        assertEquals(1, scifiAssets.items.size)
+        assertEquals(asset1.id, scifiAssets.items[0].id)
+    }
+
+    @Test
+    fun testAssetRepositoryQueryLibrarySearchAndPaging() {
+        val movieId = UUID.randomUUID().toString()
+        val matching = Asset(
+            id = UUID.randomUUID().toString(),
+            type = AssetType.IMAGE,
+            ossUrl = "https://oss.com/a.png",
+            durationSeconds = 5.0,
+            movieId = movieId,
+            tags = emptyList(),
+            aiPrompt = null,
+            description = "Neon harbor skyline at night",
+            createdAt = 200
+        )
+        val other = Asset(
+            id = UUID.randomUUID().toString(),
+            type = AssetType.IMAGE,
+            ossUrl = "https://oss.com/b.png",
+            durationSeconds = 5.0,
+            movieId = movieId,
+            tags = emptyList(),
+            aiPrompt = null,
+            description = "Sunny meadow with wildflowers",
+            createdAt = 100
+        )
+        AssetRepository.insert(matching)
+        AssetRepository.insert(other)
+
+        // Description search is case-insensitive and substring-based.
+        val searched = AssetRepository.queryLibrary(movieId, AssetType.IMAGE, null, q = "harbor")
+        assertEquals(1, searched.total)
+        assertEquals(matching.id, searched.items.single().id)
+
+        // Paging: newest first, so matching (createdAt 200) is page 0 and other is page 1.
+        val page0 = AssetRepository.queryLibrary(movieId, AssetType.IMAGE, null, offset = 0, limit = 1)
+        assertEquals(2, page0.total)
+        assertEquals(1, page0.items.size)
+        assertEquals(matching.id, page0.items[0].id)
+        assertTrue(page0.hasMore)
+
+        val page1 = AssetRepository.queryLibrary(movieId, AssetType.IMAGE, null, offset = 1, limit = 1)
+        assertEquals(2, page1.total)
+        assertEquals(1, page1.items.size)
+        assertEquals(other.id, page1.items[0].id)
+        assertFalse(page1.hasMore)
     }
 
     @Test
@@ -303,9 +350,30 @@ class Phase3IntegrationTest {
         // Query via HTTP with type
         val res = client.get("/api/library?movieId=$movieId&type=VOICE")
         assertEquals(HttpStatusCode.OK, res.status)
-        val list = json.decodeFromString<List<Asset>>(res.bodyAsText())
-        assertEquals(1, list.size)
-        assertEquals(asset1.id, list[0].id)
+        val page = json.decodeFromString(LibraryPage.serializer(), res.bodyAsText())
+        assertEquals(1, page.items.size)
+        assertEquals(asset1.id, page.items[0].id)
+        assertEquals(1, page.total)
+        assertFalse(page.hasMore)
+
+        // Description search + paging query params
+        val imageMatch = Asset(
+            id = UUID.randomUUID().toString(),
+            type = AssetType.IMAGE,
+            ossUrl = "https://oss.com/img.png",
+            durationSeconds = 5.0,
+            movieId = movieId,
+            tags = emptyList(),
+            aiPrompt = null,
+            description = "Captain in a crimson coat",
+            createdAt = System.currentTimeMillis()
+        )
+        AssetRepository.insert(imageMatch)
+        val searchRes = client.get("/api/library?movieId=$movieId&type=IMAGE&q=crimson&limit=10&offset=0")
+        assertEquals(HttpStatusCode.OK, searchRes.status)
+        val searchPage = json.decodeFromString(LibraryPage.serializer(), searchRes.bodyAsText())
+        assertEquals(1, searchPage.items.size)
+        assertEquals(imageMatch.id, searchPage.items[0].id)
 
         // Query with invalid type should return BadRequest 400
         val badTypeRes = client.get("/api/library?type=INVALID_TYPE")

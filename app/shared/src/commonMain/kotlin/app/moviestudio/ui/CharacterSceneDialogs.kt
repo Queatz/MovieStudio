@@ -10,30 +10,60 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
+import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.Character
 import app.moviestudio.GenerationSetup
+import app.moviestudio.NetworkService
 import app.moviestudio.Scene
 import app.moviestudio.generateId
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.delay
+
+/** Page size for the reference-image picker's paged library fetch. */
+private const val REFERENCE_IMAGE_PAGE_SIZE = 20
+
+/**
+ * Movie scope for the library API: the open movie when "This movie" is on, all movies when off,
+ * and the global (no-movie) bucket when the filter is on but nothing is open.
+ */
+private fun referencePickerMovieId(onlyThisMovie: Boolean, currentMovieId: String?): String? = when {
+    !onlyThisMovie -> null
+    currentMovieId != null -> currentMovieId
+    else -> "global"
+}
 
 /**
  * Reference-image picker shared by the character and scene editors: choose up to [max] images
  * from the global image library, upload new ones, generate them with AI from [aiPrompt] (the
  * subject's description), or repose an attached image via image-to-image editing.
+ *
+ * Images are loaded from `/api/library` with server-side description search and paging; the
+ * thumbnail row infinite-scrolls as the user reaches the end.
  */
 @Composable
 private fun ReferenceImagePicker(
@@ -43,8 +73,88 @@ private fun ReferenceImagePicker(
     aiPrompt: String,
     onChange: (List<String>) -> Unit
 ) {
-    val imageAssets = viewModel.libraryAssets.filter { it.type == AssetType.IMAGE && it.ossUrl.isNotBlank() }
     var showRepose by remember { mutableStateOf(false) }
+    // Pre-checked "This movie" filter: narrows the thumbnails to images created for the open movie.
+    val currentMovieId = viewModel.currentMovie?.id
+    var onlyThisMovie by remember { mutableStateOf(true) }
+    // Description search is applied server-side via the library endpoint's `q` parameter.
+    var searchQuery by remember { mutableStateOf("") }
+    val movieScope = referencePickerMovieId(onlyThisMovie, currentMovieId)
+
+    // Paged image results for the picker (independent of the full in-memory library list).
+    var imageAssets by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var nextOffset by remember { mutableStateOf(0) }
+    var hasMore by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(false) }
+    var loadingMore by remember { mutableStateOf(false) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+    val listState = rememberLazyListState()
+
+    // Reload the first page whenever the movie filter, search text, open movie, or the global
+    // library contents change (uploads / finished generations land in libraryAssets).
+    LaunchedEffect(onlyThisMovie, searchQuery, currentMovieId, viewModel.libraryAssets) {
+        // Debounce typing so each keystroke doesn't hit the database.
+        delay(250)
+        loading = true
+        loadError = null
+        try {
+            val page = NetworkService.getLibraryAssets(
+                movieId = movieScope,
+                type = AssetType.IMAGE,
+                q = searchQuery.trim().ifBlank { null },
+                offset = 0,
+                limit = REFERENCE_IMAGE_PAGE_SIZE,
+            )
+            // Only images with real media can be attached as references.
+            imageAssets = page.items.filter { it.ossUrl.isNotBlank() }
+            nextOffset = page.offset + page.items.size
+            hasMore = page.hasMore
+            // Jump back to the start of the row when filters change.
+            listState.scrollToItem(0)
+        } catch (e: Exception) {
+            loadError = e.message ?: "Failed to load images"
+            imageAssets = emptyList()
+            nextOffset = 0
+            hasMore = false
+        } finally {
+            loading = false
+        }
+    }
+
+    // Infinite scroll: when the last few thumbnails come into view, fetch the next page.
+    LaunchedEffect(listState, hasMore, loading, loadingMore, nextOffset, movieScope, searchQuery) {
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            val total = info.totalItemsCount
+            lastVisible >= 0 && total > 0 && lastVisible >= total - 3
+        }
+            .distinctUntilChanged()
+            .filter { nearEnd -> nearEnd && hasMore && !loading && !loadingMore }
+            .collect {
+                loadingMore = true
+                try {
+                    val page = NetworkService.getLibraryAssets(
+                        movieId = movieScope,
+                        type = AssetType.IMAGE,
+                        q = searchQuery.trim().ifBlank { null },
+                        offset = nextOffset,
+                        limit = REFERENCE_IMAGE_PAGE_SIZE,
+                    )
+                    val fresh = page.items.filter { it.ossUrl.isNotBlank() }
+                    val seen = imageAssets.mapTo(HashSet()) { it.id }
+                    imageAssets = imageAssets + fresh.filter { it.id !in seen }
+                    nextOffset = page.offset + page.items.size
+                    hasMore = page.hasMore
+                } catch (_: Exception) {
+                    // Keep what we have; the user can scroll again to retry.
+                } finally {
+                    loadingMore = false
+                }
+            }
+    }
+
+    val available = imageAssets.filter { it.ossUrl !in selected }
 
     SectionLabel("Reference images (${selected.size}/$max)")
     if (selected.isNotEmpty()) {
@@ -58,14 +168,33 @@ private fun ReferenceImagePicker(
             }
         }
     }
-    // Library images available to attach, shown as clickable thumbnail previews.
-    val available = imageAssets.filter { it.ossUrl !in selected }.take(14)
-    if (available.isNotEmpty()) {
-        Row(
-            Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+
+    // Search bar: filters the library by asset description at the database level.
+    StudioTextField(
+        value = searchQuery,
+        onValueChange = { searchQuery = it },
+        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+        placeholder = "Search images by description",
+        singleLine = true,
+        leadingIcon = { Text("🔍", fontSize = 14.sp) },
+        // Search fields don't need the AI-chat shortcut.
+        aiGenerate = null,
+    )
+
+    // "This movie" chip stays put; the thumbnail row infinite-scrolls beside it.
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        ThisMovieFilterButton(onlyThisMovie) { onlyThisMovie = !onlyThisMovie }
+        LazyRow(
+            state = listState,
+            modifier = Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            available.forEach { image ->
+            items(available, key = { it.id }) { image ->
                 val canAdd = selected.size < max
                 Box(
                     Modifier
@@ -75,8 +204,29 @@ private fun ReferenceImagePicker(
                     ImageThumbnail(image.ossUrl, size = 60.dp)
                 }
             }
+            if (loading || loadingMore) {
+                item(key = "loading") {
+                    Box(
+                        Modifier.size(60.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
+                }
+            }
         }
     }
+    loadError?.let { err ->
+        Text(
+            err,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error
+        )
+    }
+
     Row(
         Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -99,9 +249,13 @@ private fun ReferenceImagePicker(
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
-    if (imageAssets.isEmpty()) {
+    if (!loading && available.isEmpty() && loadError == null) {
         Text(
-            "Upload or generate images first — then attach up to $max of them as references.",
+            if (searchQuery.isNotBlank()) {
+                "No images match this search."
+            } else {
+                "Upload or generate images first — then attach up to $max of them as references."
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

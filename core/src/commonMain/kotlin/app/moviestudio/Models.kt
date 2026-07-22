@@ -93,6 +93,20 @@ enum class AssetType {
 }
 
 /**
+ * One page of the global asset library (`GET /api/library`). [items] is the current slice,
+ * [total] is how many assets match the filters overall, and [hasMore] is true when more pages
+ * remain after [offset] + [items].size.
+ */
+@Serializable
+data class LibraryPage(
+    val items: List<Asset> = emptyList(),
+    val total: Int = 0,
+    val offset: Int = 0,
+    val limit: Int = 0,
+    val hasMore: Boolean = false,
+)
+
+/**
  * A previously generated version of an asset's media. Every regeneration pushes the old media
  * onto the asset's [Asset.history] so the user can restore any prior version at any time.
  */

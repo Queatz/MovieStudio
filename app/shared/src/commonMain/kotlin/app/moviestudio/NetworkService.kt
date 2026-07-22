@@ -284,13 +284,29 @@ object NetworkService {
 
     // ------------------------------------------------------------------------------- assets
 
-    suspend fun getLibraryAssets(movieId: String?, type: AssetType?): List<Asset> {
+    /**
+     * Fetches one page of the global asset library. Pass [limit] for paged results (infinite
+     * scroll); omit it to load every matching asset in a single response. [q] filters by asset
+     * description (server-side, case-insensitive substring).
+     */
+    suspend fun getLibraryAssets(
+        movieId: String? = null,
+        type: AssetType? = null,
+        tags: List<String>? = null,
+        q: String? = null,
+        offset: Int = 0,
+        limit: Int? = null,
+    ): LibraryPage {
         val params = mutableListOf<String>()
-        if (movieId != null) params.add("movieId=$movieId")
+        if (movieId != null) params.add("movieId=${encodeQueryParam(movieId)}")
         if (type != null) params.add("type=${type.name.lowercase()}")
+        if (!tags.isNullOrEmpty()) params.add("tags=${encodeQueryParam(tags.joinToString(","))}")
+        if (!q.isNullOrBlank()) params.add("q=${encodeQueryParam(q.trim())}")
+        if (offset > 0) params.add("offset=$offset")
+        if (limit != null) params.add("limit=$limit")
         val queryString = if (params.isNotEmpty()) "?" + params.joinToString("&") else ""
         val responseText = client.get(url("/api/library$queryString"))
-        return json.decodeFromString(ListSerializer(Asset.serializer()), responseText)
+        return json.decodeFromString(LibraryPage.serializer(), responseText)
     }
 
     suspend fun getAsset(assetId: String): Asset {
