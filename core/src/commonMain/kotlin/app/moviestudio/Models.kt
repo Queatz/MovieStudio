@@ -206,6 +206,13 @@ data class Asset(
      * media of its own; its text comes from [description]/[aiPrompt].
      */
     val isTextElement: Boolean get() = type == AssetType.TEXT && isDescriptionOnly && !isPlaceholder
+
+    /**
+     * True when this asset is associated with the movie identified by [movieId] (used by the asset
+     * details "Add to movie" / "Remove from movie" actions and the library's "This movie" filter).
+     */
+    fun isAssociatedWithMovie(movieId: String?): Boolean =
+        movieId != null && this.movieId == movieId
 }
 
 enum class TrackType {
@@ -1394,7 +1401,7 @@ val SUPPORTED_IMAGE_MODELS: List<ImageModel> = listOf(IMAGE_MODEL_WAN_PRO, IMAGE
  * The default image model id used when a [GenerationSetup] carries no explicit [GenerationSetup.model]
  * — Qwen Image 2.0, the model the studio has always used.
  */
-const val DEFAULT_IMAGE_MODEL_ID: String = "wan2.7-image-proa"
+const val DEFAULT_IMAGE_MODEL_ID: String = "qwen-image-2.0-pro"
 
 /** Looks up a [SUPPORTED_IMAGE_MODELS] entry by [id], falling back to the default (then first) model. */
 fun imageModelById(id: String?): ImageModel =

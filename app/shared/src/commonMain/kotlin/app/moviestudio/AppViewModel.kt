@@ -554,12 +554,30 @@ class AppViewModel : ViewModel() {
 
     // =================================================================================== timeline
 
+    /**
+     * Adds a track of [type], inserted after the last existing track of the same kind (so a new
+     * video track lands under the other videos, not under music/voice). When none of that type
+     * exist yet, the track is appended at the end. Tracks below the insertion point have their
+     * zIndex shifted up so order stays contiguous.
+     */
     fun addTrack(type: TrackType) {
         val movieId = currentMovie?.id ?: return
+        val current = timeline?.tracks ?: emptyList()
         viewModelScope.launch {
             try {
-                val zIndex = (timeline?.tracks?.maxOfOrNull { it.track.zIndex } ?: -1) + 1
-                NetworkService.createTrack(movieId, Track(generateId(), movieId, type, zIndex))
+                val insertIndex = trackInsertIndex(current, type)
+                NetworkService.createTrack(
+                    movieId,
+                    Track(generateId(), movieId, type, zIndex = insertIndex)
+                )
+                // Make room: bump zIndex on every track that sits at or after the insertion point.
+                val shifted = shiftedZIndexesAfterInsert(current.size, insertIndex)
+                current.forEachIndexed { index, twc ->
+                    val newZ = shifted[index]
+                    if (twc.track.zIndex != newZ) {
+                        NetworkService.updateTrack(movieId, twc.track.copy(zIndex = newZ))
+                    }
+                }
                 refreshTimeline()
             } catch (e: Exception) {
                 errorMessage = "Failed to add track: ${e.message}"
@@ -1463,6 +1481,26 @@ class AppViewModel : ViewModel() {
                 errorMessage = "Failed to delete asset: ${e.message}"
             }
         }
+    }
+
+    /**
+     * Disassociates [asset] from the movie it was created for, leaving it in the global library.
+     * The asset itself (and any timeline clips that reference it) are kept.
+     */
+    fun removeAssetFromMovie(asset: Asset) {
+        if (asset.movieId == null) return
+        updateAsset(asset.copy(movieId = null))
+    }
+
+    /**
+     * Associates [asset] with the currently open movie. Assets can only belong to one movie, so
+     * any previous [Asset.movieId] is replaced. No-op when there is no open movie or the asset is
+     * already tied to it.
+     */
+    fun addAssetToMovie(asset: Asset) {
+        val movieId = currentMovie?.id ?: return
+        if (asset.movieId == movieId) return
+        updateAsset(asset.copy(movieId = movieId))
     }
 
     /** Restores a previous version of the asset's media from its history. */

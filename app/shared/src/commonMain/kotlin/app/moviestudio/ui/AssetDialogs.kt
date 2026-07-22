@@ -94,6 +94,10 @@ fun AssetDetailsDialog(
     var showClipAudio by remember { mutableStateOf(false) }
     var showTimings by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showAddToMovieConfirm by remember { mutableStateOf(false) }
+    // Spinning a character/scene off this image replaces the asset dialog with the create form.
+    var showCreateCharacter by remember { mutableStateOf(false) }
+    var showCreateScene by remember { mutableStateOf(false) }
     var transcriptDraft by remember(asset.id, asset.transcript) { mutableStateOf(asset.transcript ?: "") }
     val isAudioAsset = asset.type == AssetType.AUDIO || asset.type == AssetType.MUSIC || asset.type == AssetType.VOICE
 
@@ -107,6 +111,40 @@ fun AssetDetailsDialog(
     // immediately instead of only on the next poll tick.
     LaunchedEffect(asset.id) { viewModel.refreshActiveJobs() }
     val generating = viewModel.isGeneratingForAsset(asset.id)
+
+    // Create-character / create-scene replace this dialog entirely (same pattern as handing off
+    // to the sequencer): the image is preselected as the sole reference and its description
+    // becomes the character/scene name.
+    if (showCreateCharacter) {
+        val seedName = (asset.description ?: "").trim()
+        val seedImages = listOfNotNull(asset.ossUrl.takeIf { it.isNotBlank() })
+        CharacterEditorDialog(
+            viewModel = viewModel,
+            existing = null,
+            initialName = seedName,
+            initialReferenceImages = seedImages,
+            onDismiss = {
+                showCreateCharacter = false
+                onDismiss()
+            }
+        )
+        return
+    }
+    if (showCreateScene) {
+        val seedName = (asset.description ?: "").trim()
+        val seedImages = listOfNotNull(asset.ossUrl.takeIf { it.isNotBlank() })
+        SceneEditorDialog(
+            viewModel = viewModel,
+            existing = null,
+            initialName = seedName,
+            initialReferenceImages = seedImages,
+            onDismiss = {
+                showCreateScene = false
+                onDismiss()
+            }
+        )
+        return
+    }
 
     StudioDialog(
         title = "${assetGlyph(asset.type)} ${asset.type.name.lowercase().replaceFirstChar { it.uppercase() }} asset",
@@ -196,6 +234,14 @@ fun AssetDetailsDialog(
                     viewModel.setMovieCover(asset.ossUrl)
                     onDismiss()
                 }
+                // Spin a saved character/scene off this image: closes this dialog and opens the
+                // create form with the image preselected and the description as the name.
+                GhostPillButton("👤 Create character", compact = true) {
+                    showCreateCharacter = true
+                }
+                GhostPillButton("🏞️ Create scene", compact = true) {
+                    showCreateScene = true
+                }
             }
             if (asset.type == AssetType.VIDEO && !asset.isDescriptionOnly) {
                 GhostPillButton("🎧 Extract audio", compact = true) {
@@ -208,6 +254,25 @@ fun AssetDetailsDialog(
             }
             if (hasSequence) {
                 GhostPillButton("🎹 Edit sequence", compact = true) { onEditSequence(asset) }
+            }
+            // Association with the open movie: remove when already tied, otherwise offer add.
+            // Assets can only belong to one movie, so adding while another movieId is set
+            // asks the user to confirm the move first.
+            val openMovieId = viewModel.currentMovie?.id
+            if (openMovieId != null) {
+                if (asset.isAssociatedWithMovie(openMovieId)) {
+                    GhostPillButton("⏏ Remove from movie", compact = true) {
+                        viewModel.removeAssetFromMovie(asset)
+                    }
+                } else {
+                    GhostPillButton("➕ Add to movie", compact = true) {
+                        if (!asset.movieId.isNullOrBlank()) {
+                            showAddToMovieConfirm = true
+                        } else {
+                            viewModel.addAssetToMovie(asset)
+                        }
+                    }
+                }
             }
             GhostPillButton("🗑 Delete", compact = true) { showDeleteConfirm = true }
         }
@@ -360,6 +425,21 @@ fun AssetDetailsDialog(
                 onDismiss()
             },
             onDismiss = { showDeleteConfirm = false }
+        )
+    }
+    if (showAddToMovieConfirm) {
+        // Asset already belongs to another movie; confirm the move before replacing movieId.
+        val otherTitle = viewModel.movies.firstOrNull { it.id == asset.movieId }?.title
+        val otherLabel = otherTitle?.takeIf { it.isNotBlank() }?.let { "\"$it\"" } ?: "another movie"
+        val currentTitle = viewModel.currentMovie?.title?.takeIf { it.isNotBlank() } ?: "this movie"
+        ConfirmDialog(
+            title = "Move to this movie?",
+            message = "This asset is already tied to $otherLabel. Assets can only belong to one " +
+                "movie, so adding it here will remove it from $otherLabel and associate it with " +
+                "\"$currentTitle\" instead.",
+            confirmLabel = "Add to movie",
+            onConfirm = { viewModel.addAssetToMovie(asset) },
+            onDismiss = { showAddToMovieConfirm = false }
         )
     }
 }

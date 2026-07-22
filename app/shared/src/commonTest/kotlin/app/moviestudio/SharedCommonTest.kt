@@ -277,6 +277,36 @@ class SharedCommonTest {
     }
 
     @Test
+    fun testTrackInsertIndexAfterLastOfKind() {
+        // Default movie layout: Video, Music, Voice.
+        val tracks = listOf(
+            TrackWithClips(preloadTrack("v0", TrackType.VIDEO, 0), emptyList()),
+            TrackWithClips(preloadTrack("m0", TrackType.MUSIC, 1), emptyList()),
+            TrackWithClips(preloadTrack("o0", TrackType.VOICE, 2), emptyList())
+        )
+        // A new video goes after the last video (index 0 → insert at 1), not at the end.
+        assertEquals(1, trackInsertIndex(tracks, TrackType.VIDEO))
+        // A new music goes after the last music (index 1 → insert at 2).
+        assertEquals(2, trackInsertIndex(tracks, TrackType.MUSIC))
+        // A new voice goes after the last voice (index 2 → insert at 3 = end).
+        assertEquals(3, trackInsertIndex(tracks, TrackType.VOICE))
+        // A type that isn't present yet is appended at the end.
+        assertEquals(3, trackInsertIndex(tracks, TrackType.EFFECTS))
+        // Empty timeline: first track of any kind lands at 0.
+        assertEquals(0, trackInsertIndex(emptyList(), TrackType.VIDEO))
+    }
+
+    @Test
+    fun testShiftedZIndexesAfterInsert() {
+        // Inserting at index 1 into 3 tracks: [0, 1, 2] → existing become [0, 2, 3] (new takes 1).
+        assertEquals(listOf(0, 2, 3), shiftedZIndexesAfterInsert(3, 1))
+        // Appending at the end leaves existing zIndexes alone.
+        assertEquals(listOf(0, 1, 2), shiftedZIndexesAfterInsert(3, 3))
+        // Inserting at the front shifts everyone up.
+        assertEquals(listOf(1, 2, 3), shiftedZIndexesAfterInsert(3, 0))
+    }
+
+    @Test
     fun testMarkdownToPrintHtml() {
         // Headings, inline styles and both list kinds render to their HTML equivalents.
         assertEquals("<h1>Title</h1>\n", markdownToPrintHtml("# Title"))

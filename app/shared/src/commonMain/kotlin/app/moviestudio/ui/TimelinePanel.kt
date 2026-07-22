@@ -575,6 +575,11 @@ private fun TimelineCanvas(
 
     var dragSession by remember { mutableStateOf<DragSession?>(null) }
 
+    // detectTapGestures treats any two quick taps as a double-tap, even across different clips.
+    // Track the clip under each press so onDoubleTap only opens the asset dialog when both
+    // taps landed on the same clip (clicking quickly across items must not open it).
+    val doubleTapClipIds = remember { arrayOf<String?>(null, null) }
+
     // Gently follow the playhead while playing.
     var canvasWidth by remember { mutableStateOf(0f) }
     LaunchedEffect(viewModel.playhead, viewModel.isPlaying) {
@@ -665,9 +670,14 @@ private fun TimelineCanvas(
                 detectTapGestures(
                     onDoubleTap = { offset ->
                         if (offset.y > RULER_HEIGHT) {
-                            val hit = clipHit(offset)
-                            val clip = hit?.first
-                            if (clip != null) {
+                            val clip = clipHit(offset)?.first
+                            // Only treat it as a real double-click when both taps hit the same clip.
+                            // Quick clicks across different items still fire onDoubleTap, but must not
+                            // open the asset dialog.
+                            if (clip != null &&
+                                doubleTapClipIds[0] == clip.id &&
+                                doubleTapClipIds[1] == clip.id
+                            ) {
                                 viewModel.selectedClipId = clip.id
                                 assetsState.firstOrNull { it.id == clip.assetId }?.let(onOpenAsset)
                             }
@@ -678,6 +688,12 @@ private fun TimelineCanvas(
                         }
                     },
                     onPress = { offset ->
+                        // Shift the previous press's clip id down so a double-tap can require both
+                        // presses to have hit the same clip.
+                        doubleTapClipIds[0] = doubleTapClipIds[1]
+                        doubleTapClipIds[1] =
+                            if (offset.y > RULER_HEIGHT) clipHit(offset)?.first?.id else null
+
                         if (offset.y <= RULER_HEIGHT) {
                             val note = noteHit(offset)
                             if (note != null) {

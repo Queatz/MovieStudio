@@ -308,6 +308,30 @@ class ModelsTest {
     }
 
     @Test
+    fun assetMovieAssociationAndDisassociation() {
+        val associated = Asset(
+            id = "a", type = AssetType.IMAGE, ossUrl = "https://oss/x.png", durationSeconds = 5.0,
+            movieId = "movie-1", tags = emptyList(), aiPrompt = null
+        )
+        // Only the matching open movie counts as an association (drives remove / hides add).
+        assertTrue(associated.isAssociatedWithMovie("movie-1"))
+        assertFalse(associated.isAssociatedWithMovie("movie-2"))
+        assertFalse(associated.isAssociatedWithMovie(null))
+        // Clearing movieId leaves the asset in the global library (disassociated).
+        val global = associated.copy(movieId = null)
+        assertFalse(global.isAssociatedWithMovie("movie-1"))
+        assertNull(global.movieId)
+        // Moving to another movie replaces the previous association (assets belong to one movie).
+        val moved = associated.copy(movieId = "movie-2")
+        assertFalse(moved.isAssociatedWithMovie("movie-1"))
+        assertTrue(moved.isAssociatedWithMovie("movie-2"))
+        // Round-trip keeps a cleared association as null (not the previous movie id).
+        val json = Json { ignoreUnknownKeys = true }
+        val decoded = json.decodeFromString(Asset.serializer(), json.encodeToString(Asset.serializer(), global))
+        assertNull(decoded.movieId)
+    }
+
+    @Test
     fun textAssetsDistinguishPlaceholdersFromRenderedTextElements() {
         val text = Asset(
             id = "t", type = AssetType.TEXT, ossUrl = "", durationSeconds = 5.0,

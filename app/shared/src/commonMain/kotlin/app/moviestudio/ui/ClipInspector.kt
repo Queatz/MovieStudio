@@ -296,11 +296,14 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
     }
 
     if (showVolumeEditor) {
+        // Playhead relative to this clip's timeline start, so the volume editor can mark "now".
+        val playheadInClipSeconds = viewModel.playhead - clip.timelineStart
         VolumeEnvelopeDialog(
             clipLengthSeconds = clipLength,
             initial = effects,
             audioUrl = asset?.ossUrl ?: "",
             audioAvailable = asset?.let { !it.isDescriptionOnly && it.ossUrl.isNotBlank() } == true,
+            playheadInClipSeconds = playheadInClipSeconds,
             onDismiss = { showVolumeEditor = false },
             onSave = { keyframes ->
                 viewModel.updateClipEffects(clip, effects.copy(volumeKeyframes = keyframes))
@@ -862,6 +865,10 @@ private fun volumePointNear(
  * clip's length. Tap adds a keyframe, dragging moves one (or creates one and drags it),
  * double-tap removes one and "Reset to flat" returns the clip to its single flat volume.
  * The envelope is applied in the preview and in the final render.
+ *
+ * [playheadInClipSeconds] is the timeline playhead expressed relative to this clip's
+ * [Clip.timelineStart] (0 = clip start). When it falls inside the clip a red vertical marker
+ * is drawn on the envelope (and the waveform below) so the user can line keyframes up with "now".
  */
 @Composable
 fun VolumeEnvelopeDialog(
@@ -869,6 +876,7 @@ fun VolumeEnvelopeDialog(
     initial: EffectsConfig,
     audioUrl: String,
     audioAvailable: Boolean,
+    playheadInClipSeconds: Float,
     onDismiss: () -> Unit,
     onSave: (List<VolumePoint>) -> Unit
 ) {
@@ -878,6 +886,9 @@ fun VolumeEnvelopeDialog(
     var dragging by remember { mutableStateOf<VolumePoint?>(null) }
     // The envelope previewed on the canvas: the edited keyframes over the clip's flat volume.
     val preview = initial.copy(volumeKeyframes = points)
+    // Playhead marker only while the timeline cursor sits inside this clip.
+    val playheadInClip = playheadInClipSeconds.toDouble()
+        .takeIf { it in 0.0..clipLength }
 
     StudioDialog(title = "Volume editor", onDismiss = onDismiss, width = 620.dp) {
         Text(
@@ -968,6 +979,16 @@ fun VolumeEnvelopeDialog(
                     drawCircle(Color(0xFFFF5A9E), radius = 7f, center = center)
                     drawCircle(Color(0xFF17151C), radius = 3f, center = center)
                 }
+                // Timeline playhead (same red as the timeline marker), mapped into clip-local time.
+                playheadInClip?.let { t ->
+                    val x = (t / clipLength * size.width).toFloat()
+                    drawLine(
+                        Color(0xFFFF5A6E),
+                        Offset(x, 0f),
+                        Offset(x, size.height),
+                        strokeWidth = 2f
+                    )
+                }
             }
             // Gain scale labels.
             listOf(
@@ -1021,6 +1042,7 @@ fun VolumeEnvelopeDialog(
             ossUrl = audioUrl,
             canPlay = audioAvailable,
             totalSeconds = clipLengthSeconds,
+            playheadSeconds = playheadInClip?.toFloat(),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(72.dp)

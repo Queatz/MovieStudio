@@ -1,8 +1,9 @@
 package app.moviestudio
 
 /**
- * Pure helpers backing timeline multi-selection (used by the editor's timeline gestures and the
- * view model). Kept free of any Compose/UI state so they can be unit-tested directly.
+ * Pure helpers backing timeline editing (multi-selection, drag, track insert — used by the
+ * editor's timeline gestures and the view model). Kept free of any Compose/UI state so they can
+ * be unit-tested directly.
  */
 
 /** Adds [clipId] to [current] when absent, or removes it when present (shift-click toggle). */
@@ -75,3 +76,22 @@ fun movedClipGroup(
         trackId = trackId
     )
 }
+
+/**
+ * Where a new track of [type] should land in [tracks]: immediately after the last existing track
+ * of the same kind. When none of that type exist yet, the new track is appended at the end.
+ *
+ * Used by the "＋ Track" menu so a second video track sits under the other videos (not under voice).
+ */
+fun trackInsertIndex(tracks: List<TrackWithClips>, type: TrackType): Int {
+    val lastSameType = tracks.indexOfLast { it.track.type == type }
+    return if (lastSameType >= 0) lastSameType + 1 else tracks.size
+}
+
+/**
+ * Contiguous zIndex values for every existing track after inserting a new one at [insertIndex].
+ * Tracks at or after the insertion point shift up by one; earlier tracks keep their row index.
+ * The new track itself takes [insertIndex] as its zIndex.
+ */
+fun shiftedZIndexesAfterInsert(trackCount: Int, insertIndex: Int): List<Int> =
+    List(trackCount) { index -> if (index >= insertIndex) index + 1 else index }

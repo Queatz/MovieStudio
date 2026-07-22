@@ -62,6 +62,10 @@ private fun referencePickerMovieId(onlyThisMovie: Boolean, currentMovieId: Strin
  * from the global image library, upload new ones, generate them with AI from [aiPrompt] (the
  * subject's description), or repose an attached image via image-to-image editing.
  *
+ * [canGenerateAi] gates "Generate with AI" until the character/scene has a name or description.
+ * [generationSourceId] tags jobs started from this picker so both AI buttons can show a spinner
+ * while those generations are still in flight (same pattern as asset details).
+ *
  * Images are loaded from `/api/library` with server-side description search and paging; the
  * thumbnail row infinite-scrolls as the user reaches the end.
  */
@@ -71,9 +75,15 @@ private fun ReferenceImagePicker(
     selected: List<String>,
     max: Int,
     aiPrompt: String,
+    canGenerateAi: Boolean,
+    generationSourceId: String,
     onChange: (List<String>) -> Unit
 ) {
     var showRepose by remember { mutableStateOf(false) }
+    // Pick up jobs already running for this character/scene when the editor opens, and keep the
+    // AI buttons spinning for the full PENDING/RUNNING lifetime of any generation they launched.
+    LaunchedEffect(generationSourceId) { viewModel.refreshActiveJobs() }
+    val generating = viewModel.isGeneratingForAsset(generationSourceId)
     // Pre-checked "This movie" filter: narrows the thumbnails to images created for the open movie.
     val currentMovieId = viewModel.currentMovie?.id
     var onlyThisMovie by remember { mutableStateOf(true) }
@@ -232,10 +242,25 @@ private fun ReferenceImagePicker(
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         GhostPillButton("📤 Upload image", compact = true) { viewModel.uploadAsset(AssetType.IMAGE) }
-        GhostPillButton("✨ Generate with AI", compact = true, enabled = aiPrompt.isNotBlank()) {
-            viewModel.generateMedia(GenerationSetup(kind = "image", prompt = aiPrompt))
+        GhostPillButton(
+            "✨ Generate with AI",
+            compact = true,
+            // Need a name or description so the AI has something real to paint from (the fallback
+            // "the character" prompt alone is not enough).
+            enabled = canGenerateAi,
+            loading = generating
+        ) {
+            viewModel.generateMedia(
+                GenerationSetup(kind = "image", prompt = aiPrompt),
+                sourceAssetId = generationSourceId
+            )
         }
-        GhostPillButton("🎭 Repose with AI", compact = true, enabled = selected.isNotEmpty()) {
+        GhostPillButton(
+            "🎭 Repose with AI",
+            compact = true,
+            enabled = selected.isNotEmpty(),
+            loading = generating
+        ) {
             showRepose = true
         }
     }
@@ -262,7 +287,11 @@ private fun ReferenceImagePicker(
     }
 
     if (showRepose) {
-        ReposeImageDialog(viewModel, baseOptions = selected) { showRepose = false }
+        ReposeImageDialog(
+            viewModel,
+            baseOptions = selected,
+            generationSourceId = generationSourceId
+        ) { showRepose = false }
     }
 }
 
@@ -275,10 +304,13 @@ private fun ReferenceImagePicker(
 private fun ReposeImageDialog(
     viewModel: AppViewModel,
     baseOptions: List<String>,
+    // Same id the outer picker uses so "Repose with AI" keeps spinning after this dialog closes.
+    generationSourceId: String,
     onDismiss: () -> Unit
 ) {
     var baseUrl by remember { mutableStateOf(baseOptions.firstOrNull()) }
     var prompt by remember { mutableStateOf("") }
+    val generating = viewModel.isGeneratingForAsset(generationSourceId)
 
     StudioDialog(title = "Repose with AI", onDismiss = onDismiss, width = 500.dp) {
         Text(
@@ -322,20 +354,43 @@ private fun ReposeImageDialog(
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
-            PillButton("✨ Generate", enabled = baseUrl != null && prompt.isNotBlank()) {
-                viewModel.generateMedia(GenerationSetup(kind = "image", prompt = prompt.trim(), imageUrl = baseUrl))
+            PillButton(
+                "✨ Generate",
+                enabled = baseUrl != null && prompt.isNotBlank(),
+                loading = generating
+            ) {
+                viewModel.generateMedia(
+                    GenerationSetup(kind = "image", prompt = prompt.trim(), imageUrl = baseUrl),
+                    sourceAssetId = generationSourceId
+                )
                 onDismiss()
             }
         }
     }
 }
 
-/** Create/edit a saved character: name, text description and up to 3 reference images. */
+/**
+ * Create/edit a saved character: name, text description and up to 3 reference images.
+ *
+ * When creating ([existing] is null), optional [initialName] / [initialReferenceImages] pre-fill
+ * the form — used when spinning a character off an image asset.
+ */
 @Composable
-fun CharacterEditorDialog(viewModel: AppViewModel, existing: Character?, onDismiss: () -> Unit) {
-    var name by remember(existing?.id) { mutableStateOf(existing?.name ?: "") }
+fun CharacterEditorDialog(
+    viewModel: AppViewModel,
+    existing: Character?,
+    initialName: String = "",
+    initialReferenceImages: List<String> = emptyList(),
+    onDismiss: () -> Unit,
+) {
+    var name by remember(existing?.id) { mutableStateOf(existing?.name ?: initialName) }
     var description by remember(existing?.id) { mutableStateOf(existing?.description ?: "") }
-    var referenceImages by remember(existing?.id) { mutableStateOf(existing?.referenceImages ?: emptyList()) }
+    var referenceImages by remember(existing?.id) {
+        mutableStateOf(existing?.referenceImages ?: initialReferenceImages)
+    }
+    // Stable id for tagging AI image jobs from this editor session (existing character id, or a
+    // fresh one for a new character that has not been saved yet).
+    val generationSourceId = remember(existing?.id) { existing?.id ?: generateId() }
 
     StudioDialog(
         title = if (existing == null) "New character" else "Edit character",
@@ -365,7 +420,9 @@ fun CharacterEditorDialog(viewModel: AppViewModel, existing: Character?, onDismi
             viewModel,
             referenceImages,
             Character.MAX_REFERENCE_IMAGES,
-            aiPrompt = "Character reference portrait of ${name.ifBlank { "the character" }}: $description"
+            aiPrompt = "Character reference portrait of ${name.ifBlank { "the character" }}: $description",
+            canGenerateAi = name.isNotBlank() || description.isNotBlank(),
+            generationSourceId = generationSourceId
         ) { referenceImages = it }
 
         DialogActions {
@@ -374,7 +431,8 @@ fun CharacterEditorDialog(viewModel: AppViewModel, existing: Character?, onDismi
             PillButton("Save character", enabled = name.isNotBlank()) {
                 viewModel.saveCharacter(
                     Character(
-                        id = existing?.id ?: generateId(),
+                        // Reuse the session id so in-flight AI jobs stay linked after save.
+                        id = existing?.id ?: generationSourceId,
                         name = name.trim(),
                         description = description.trim(),
                         referenceImages = referenceImages.take(Character.MAX_REFERENCE_IMAGES),
@@ -389,12 +447,28 @@ fun CharacterEditorDialog(viewModel: AppViewModel, existing: Character?, onDismi
     }
 }
 
-/** Create/edit a saved scene: name, text description and up to 3 reference images. */
+/**
+ * Create/edit a saved scene: name, text description and up to 3 reference images.
+ *
+ * When creating ([existing] is null), optional [initialName] / [initialReferenceImages] pre-fill
+ * the form — used when spinning a scene off an image asset.
+ */
 @Composable
-fun SceneEditorDialog(viewModel: AppViewModel, existing: Scene?, onDismiss: () -> Unit) {
-    var name by remember(existing?.id) { mutableStateOf(existing?.name ?: "") }
+fun SceneEditorDialog(
+    viewModel: AppViewModel,
+    existing: Scene?,
+    initialName: String = "",
+    initialReferenceImages: List<String> = emptyList(),
+    onDismiss: () -> Unit,
+) {
+    var name by remember(existing?.id) { mutableStateOf(existing?.name ?: initialName) }
     var description by remember(existing?.id) { mutableStateOf(existing?.description ?: "") }
-    var referenceImages by remember(existing?.id) { mutableStateOf(existing?.referenceImages ?: emptyList()) }
+    var referenceImages by remember(existing?.id) {
+        mutableStateOf(existing?.referenceImages ?: initialReferenceImages)
+    }
+    // Stable id for tagging AI image jobs from this editor session (existing scene id, or a fresh
+    // one for a new scene that has not been saved yet).
+    val generationSourceId = remember(existing?.id) { existing?.id ?: generateId() }
 
     StudioDialog(
         title = if (existing == null) "New scene" else "Edit scene",
@@ -424,7 +498,9 @@ fun SceneEditorDialog(viewModel: AppViewModel, existing: Scene?, onDismiss: () -
             viewModel,
             referenceImages,
             Scene.MAX_REFERENCE_IMAGES,
-            aiPrompt = "Establishing shot of the scene ${name.ifBlank { "" }}: $description".trim()
+            aiPrompt = "Establishing shot of the scene ${name.ifBlank { "" }}: $description".trim(),
+            canGenerateAi = name.isNotBlank() || description.isNotBlank(),
+            generationSourceId = generationSourceId
         ) { referenceImages = it }
 
         DialogActions {
@@ -433,7 +509,8 @@ fun SceneEditorDialog(viewModel: AppViewModel, existing: Scene?, onDismiss: () -
             PillButton("Save scene", enabled = name.isNotBlank()) {
                 viewModel.saveScene(
                     Scene(
-                        id = existing?.id ?: generateId(),
+                        // Reuse the session id so in-flight AI jobs stay linked after save.
+                        id = existing?.id ?: generationSourceId,
                         name = name.trim(),
                         description = description.trim(),
                         referenceImages = referenceImages.take(Scene.MAX_REFERENCE_IMAGES),

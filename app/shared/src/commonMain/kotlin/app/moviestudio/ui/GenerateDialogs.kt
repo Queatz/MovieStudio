@@ -1884,7 +1884,8 @@ fun TtsDialog(
             placeholder = "In a world where movies make themselves...",
             minLines = 3,
             maxLines = 8,
-            showAiButton = true
+            showAiButton = true,
+            autoFocus = true
         )
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
