@@ -163,6 +163,10 @@ internal fun balanceReferenceImages(
  * subjects than WAN can accept. Each surviving photo is bound to its subject's name in the prompt
  * (e.g. `Reference image 1 shows character "Alice": ...`) so the model no longer has to guess which
  * anonymous photo belongs to which name.
+ *
+ * For video generations, each character with a non-blank [Character.mainLanguage] also contributes
+ * `"<name> speaks in <mainLanguage> unless otherwise specified."` so dialogue defaults stay
+ * consistent unless the prompt overrides them.
  */
 internal fun expandReferences(setup: GenerationSetup): GenerationSetup {
     var expanded = setup
@@ -181,11 +185,19 @@ internal fun expandReferences(setup: GenerationSetup): GenerationSetup {
             subjects.add(
                 ReferenceSubject(images = character.referenceImages) { indices ->
                     val phrase = referenceImagePhrase(indices)
-                    if (phrase.isEmpty()) {
+                    val base = if (phrase.isEmpty()) {
                         " Featuring character \"${character.name}\": ${character.description}."
                     } else {
                         val verb = if (indices.size == 1) "shows" else "show"
                         " $phrase $verb character \"${character.name}\": ${character.description}."
+                    }
+                    // Video prompts carry each character's default spoken language so dialogue
+                    // stays consistent unless the user overrides it in the prompt itself.
+                    val language = character.mainLanguage.trim()
+                    if (setup.kind == "video" && language.isNotEmpty()) {
+                        base + " ${character.name} speaks in $language unless otherwise specified."
+                    } else {
+                        base
                     }
                 }
             )

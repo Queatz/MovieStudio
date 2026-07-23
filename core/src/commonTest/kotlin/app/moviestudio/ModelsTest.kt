@@ -442,6 +442,32 @@ class ModelsTest {
     }
 
     @Test
+    fun characterMainLanguageRoundTripsAndLegacyCharactersDecodeBlank() {
+        val json = Json { ignoreUnknownKeys = true }
+        val character = Character(
+            id = "c1",
+            name = "Mira",
+            description = "A captain",
+            mainLanguage = "Mandarin Chinese",
+            movieId = "m1",
+            createdAt = 42L
+        )
+        val decoded = json.decodeFromString(
+            Character.serializer(),
+            json.encodeToString(Character.serializer(), character)
+        )
+        assertEquals(character, decoded)
+        assertEquals("Mandarin Chinese", decoded.mainLanguage)
+
+        // Characters saved before mainLanguage existed decode with a blank language.
+        val legacy = json.decodeFromString(
+            Character.serializer(),
+            """{"id":"c2","name":"Old","description":"veteran","referenceImages":[]}"""
+        )
+        assertEquals("", legacy.mainLanguage)
+    }
+
+    @Test
     fun visualStyleAndAssetStyleIdRoundTrip() {
         val json = Json { ignoreUnknownKeys = true }
         val style = VisualStyle(

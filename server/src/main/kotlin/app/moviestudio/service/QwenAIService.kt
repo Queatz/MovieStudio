@@ -777,7 +777,13 @@ object QwenAIService : AIGenerationService {
     internal fun buildMusicRequestBody(setup: GenerationSetup, model: String): JsonObject = buildJsonObject {
         put("model", model)
         putJsonObject("input") {
-            val theme = setup.theme.ifBlank { setup.prompt }
+            val theme = setup.theme.ifBlank { setup.prompt }.let {
+                if (setup.instrumental) {
+                    "$it\n\nNo lyrics, no spoken words.\n"
+                } else {
+                    it
+                }
+            }
             if (theme.isNotBlank()) put("prompt", theme)
             if (setup.instrumental) {
                 put("lyrics", "[instrumental]")

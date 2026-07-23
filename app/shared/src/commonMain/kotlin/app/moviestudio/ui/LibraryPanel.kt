@@ -224,6 +224,7 @@ fun LibraryPanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = "Search media",
                 singleLine = true,
+                autoFocus = true,
                 leadingIcon = { Text("🔍", fontSize = 14.sp) }
             )
             Spacer(Modifier.height(8.dp))
@@ -605,7 +606,15 @@ private fun CharacterList(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        "${character.referenceImages.size} reference image(s) • ${character.description.take(40)}",
+                        buildString {
+                            append("${character.referenceImages.size} reference image(s)")
+                            character.mainLanguage.trim().takeIf { it.isNotEmpty() }?.let {
+                                append(" • $it")
+                            }
+                            if (character.description.isNotBlank()) {
+                                append(" • ${character.description.take(40)}")
+                            }
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,

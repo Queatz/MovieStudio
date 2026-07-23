@@ -371,7 +371,8 @@ private fun ReposeImageDialog(
 }
 
 /**
- * Create/edit a saved character: name, text description and up to 3 reference images.
+ * Create/edit a saved character: name, text description, optional main spoken language and up to
+ * 3 reference images.
  *
  * When creating ([existing] is null), optional [initialName] / [initialReferenceImages] pre-fill
  * the form — used when spinning a character off an image asset.
@@ -386,6 +387,7 @@ fun CharacterEditorDialog(
 ) {
     var name by remember(existing?.id) { mutableStateOf(existing?.name ?: initialName) }
     var description by remember(existing?.id) { mutableStateOf(existing?.description ?: "") }
+    var mainLanguage by remember(existing?.id) { mutableStateOf(existing?.mainLanguage ?: "") }
     var referenceImages by remember(existing?.id) {
         mutableStateOf(existing?.referenceImages ?: initialReferenceImages)
     }
@@ -416,6 +418,20 @@ fun CharacterEditorDialog(
             minLines = 3,
             maxLines = 6
         )
+        Spacer(Modifier.height(8.dp))
+        StudioTextField(
+            value = mainLanguage,
+            onValueChange = { mainLanguage = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Main language",
+            placeholder = "English",
+            singleLine = true
+        )
+        Text(
+            "When set, video prompts note that this character speaks in this language unless otherwise specified.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Spacer(Modifier.height(4.dp))
         ReferenceImagePicker(
             viewModel,
@@ -436,6 +452,7 @@ fun CharacterEditorDialog(
                         id = existing?.id ?: generationSourceId,
                         name = name.trim(),
                         description = description.trim(),
+                        mainLanguage = mainLanguage.trim(),
                         referenceImages = referenceImages.take(Character.MAX_REFERENCE_IMAGES),
                         movieId = existing?.movieId ?: viewModel.currentMovie?.id,
                         createdAt = existing?.createdAt ?: 0
