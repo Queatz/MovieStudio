@@ -611,6 +611,9 @@ private fun CharacterList(
                             character.mainLanguage.trim().takeIf { it.isNotEmpty() }?.let {
                                 append(" • $it")
                             }
+                            character.voiceId.trim().takeIf { it.isNotEmpty() }?.let { id ->
+                                append(" • ${voiceDisplayLabel(viewModel.voiceOptions, id)}")
+                            }
                             if (character.description.isNotBlank()) {
                                 append(" • ${character.description.take(40)}")
                             }

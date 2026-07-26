@@ -57,6 +57,12 @@ class QwenVideoRequestTest {
     private fun JsonObject.mediaTypes(): List<String> =
         getValue("media").jsonArray.map { it.jsonObject.getValue("type").jsonPrimitive.content }
 
+    /** The `url` values of each `driving_audio` media object in the `input.media` list. */
+    private fun JsonObject.drivingAudioUrls(): List<String> =
+        getValue("media").jsonArray.map { it.jsonObject }
+            .filter { it.getValue("type").jsonPrimitive.content == "driving_audio" }
+            .map { it.getValue("url").jsonPrimitive.content }
+
     private fun ossUrl(objectKey: String): String {
         val endpointHost = OssService.endpoint.removePrefix("http://").removePrefix("https://").removeSuffix("/")
         return "https://${OssService.bucketName}.$endpointHost/$objectKey?Expires=1&Signature=old"
@@ -207,5 +213,96 @@ class QwenVideoRequestTest {
 
         assertEquals(objectKey, OssService.objectKeyFromUrl(mediaUrl))
         assertNotEquals(staleUrl, mediaUrl)
+    }
+
+    @Test
+    fun r2vWithDrivingAudioAppendsDrivingAudioMediaAfterReferences() {
+        val refs = listOf("https://oss/a.png", "https://oss/b.png")
+        val drivingKey = "ai-generated/m1/driving-sample.mp3"
+        val staleDriving = ossUrl(drivingKey)
+        val setup = GenerationSetup(kind = "video", prompt = "A hero says hello", referenceImages = refs)
+
+        val body = QwenAIService.buildVideoRequestBody(
+            setup,
+            "A hero says hello",
+            "r2v",
+            "wan2.7-r2v",
+            drivingAudioUrl = staleDriving,
+        )
+        val input = body.input()
+
+        assertEquals(refs, input.referenceUrls())
+        assertEquals(
+            listOf("reference_image", "reference_image", "driving_audio"),
+            input.mediaTypes(),
+            "driving_audio must ride after reference images on R2V",
+        )
+        val drivingUrl = input.drivingAudioUrls().single()
+        assertEquals(drivingKey, OssService.objectKeyFromUrl(drivingUrl))
+        assertNotEquals(staleDriving, drivingUrl, "driving audio URL must be refreshed via freshDownloadUrl")
+    }
+
+    @Test
+    fun i2vWithDrivingAudioCoexistsWithFirstAndLastFrame() {
+        val setup = GenerationSetup(
+            kind = "video",
+            prompt = "A cat speaks",
+            imageUrl = "https://oss/first-frame.png",
+            endImageUrl = "https://oss/last-frame.png",
+        )
+        val body = QwenAIService.buildVideoRequestBody(
+            setup,
+            "A cat speaks",
+            "i2v",
+            "wan2.7-i2v",
+            drivingAudioUrl = "https://oss/drive.mp3",
+        )
+        val input = body.input()
+
+        assertEquals(listOf("https://oss/first-frame.png"), input.firstFrameUrls())
+        assertEquals(listOf("https://oss/last-frame.png"), input.lastFrameUrls())
+        assertEquals(
+            listOf("first_frame", "last_frame", "driving_audio"),
+            input.mediaTypes(),
+        )
+        assertEquals(listOf("https://oss/drive.mp3"), input.drivingAudioUrls())
+    }
+
+    @Test
+    fun blankDrivingAudioKeepsTodayR2vBody() {
+        val refs = listOf("https://oss/a.png")
+        val setup = GenerationSetup(kind = "video", prompt = "A hero", referenceImages = refs)
+        val body = QwenAIService.buildVideoRequestBody(
+            setup,
+            "A hero",
+            "r2v",
+            "wan2.7-r2v",
+            drivingAudioUrl = "   ",
+        )
+        val input = body.input()
+        assertEquals(listOf("reference_image"), input.mediaTypes())
+        assertTrue(input.drivingAudioUrls().isEmpty())
+    }
+
+    @Test
+    fun t2vAndVideoEditIgnoreDrivingAudio() {
+        val t2v = QwenAIService.buildVideoRequestBody(
+            GenerationSetup(kind = "video", prompt = "A dog"),
+            "A dog",
+            "t2v",
+            "wan2.7-t2v",
+            drivingAudioUrl = "https://oss/drive.mp3",
+        )
+        assertNull(t2v.input()["media"], "t2v has no media list; driving audio is ignored in v1")
+
+        val edit = QwenAIService.buildVideoRequestBody(
+            GenerationSetup(kind = "video", prompt = "Repaint", videoUrl = "https://oss/base.mp4"),
+            "Repaint",
+            "videoedit",
+            "wan2.7-videoedit",
+            drivingAudioUrl = "https://oss/drive.mp3",
+        )
+        assertEquals(listOf("video"), edit.input().mediaTypes())
+        assertTrue(edit.input().drivingAudioUrls().isEmpty())
     }
 }

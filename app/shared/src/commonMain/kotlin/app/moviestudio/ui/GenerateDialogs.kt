@@ -2123,8 +2123,9 @@ private fun VoiceDesignDimension(
 /**
  * Human-readable label for the currently selected voice [voiceId], resolved against the Voice
  * Library ([options]): built-in presets, the user's cloned voices and their designed voices.
+ * Shared by TTS / character editors and the library list.
  */
-private fun voiceDisplayLabel(options: VoiceOptions, voiceId: String): String {
+internal fun voiceDisplayLabel(options: VoiceOptions, voiceId: String): String {
     options.presets.firstOrNull { it.id == voiceId }?.let { return "🔊 ${it.name}" }
     options.clones.firstOrNull { it.qwenVoiceId == voiceId }?.let { return "🧬 ${it.name} (cloned)" }
     options.designs.firstOrNull { it.qwenVoiceId == voiceId }?.let { return "🎨 ${it.name} (designed)" }

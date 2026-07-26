@@ -442,13 +442,14 @@ class ModelsTest {
     }
 
     @Test
-    fun characterMainLanguageRoundTripsAndLegacyCharactersDecodeBlank() {
+    fun characterMainLanguageAndVoiceIdRoundTripsAndLegacyCharactersDecodeBlank() {
         val json = Json { ignoreUnknownKeys = true }
         val character = Character(
             id = "c1",
             name = "Mira",
             description = "A captain",
             mainLanguage = "Mandarin Chinese",
+            voiceId = "Cherry",
             movieId = "m1",
             createdAt = 42L
         )
@@ -458,13 +459,15 @@ class ModelsTest {
         )
         assertEquals(character, decoded)
         assertEquals("Mandarin Chinese", decoded.mainLanguage)
+        assertEquals("Cherry", decoded.voiceId)
 
-        // Characters saved before mainLanguage existed decode with a blank language.
+        // Characters saved before mainLanguage/voiceId existed decode with blank defaults.
         val legacy = json.decodeFromString(
             Character.serializer(),
             """{"id":"c2","name":"Old","description":"veteran","referenceImages":[]}"""
         )
         assertEquals("", legacy.mainLanguage)
+        assertEquals("", legacy.voiceId)
     }
 
     @Test

@@ -319,9 +319,11 @@ data class JobProgressEvent(
 
 /**
  * A saved character the user can reference in AI generations: a name, a text description,
- * an optional [mainLanguage] they speak by default, and up to [MAX_REFERENCE_IMAGES] reference
- * images. When [mainLanguage] is set, video generation prompts append
- * `"<name> speaks in <mainLanguage> unless otherwise specified."`.
+ * an optional [mainLanguage] they speak by default, an optional [voiceId] from the Voice Library,
+ * and up to [MAX_REFERENCE_IMAGES] reference images. When [mainLanguage] is set, video generation
+ * prompts append `"<name> speaks in <mainLanguage> unless otherwise specified."`. When [voiceId]
+ * is set, video generation can synthesize prompt dialogue with that voice and attach it as
+ * driving audio so the character sounds consistent across clips.
  */
 @Serializable
 data class Character(
@@ -333,6 +335,12 @@ data class Character(
     // Blank means no language preference is injected into generation prompts. Characters saved
     // before this field existed decode as blank.
     val mainLanguage: String = "",
+    /**
+     * Voice Library synthesis id used for this character's in-video speech: a built-in preset
+     * id, or a clone/design [VoiceClone.qwenVoiceId] / [VoiceDesign.qwenVoiceId]. Blank means no
+     * linked voice (visual-only R2V). Characters saved before this field existed decode as blank.
+     */
+    val voiceId: String = "",
     // The movie this character was created for; drives the "This movie" library filter, mirroring
     // Asset.movieId. Null for characters saved before this field existed (always shown).
     val movieId: String? = null,

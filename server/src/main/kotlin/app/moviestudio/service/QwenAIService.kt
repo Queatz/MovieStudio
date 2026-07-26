@@ -21,6 +21,7 @@ import app.moviestudio.VoiceDesign
 import app.moviestudio.VoicePreset
 import app.moviestudio.WordTiming
 import app.moviestudio.database.AssetRepository
+import app.moviestudio.database.CharacterRepository
 import app.moviestudio.database.JobRepository
 import app.moviestudio.database.VoiceCloneRepository
 import app.moviestudio.database.VoiceDesignRepository
@@ -47,6 +48,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArrayBuilder
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -63,12 +65,75 @@ import java.io.File
 import java.util.UUID
 import kotlin.math.ceil
 
+/** System prompt marker for extracting on-screen spoken lines from a video generation prompt. */
+internal const val DIALOGUE_EXTRACT_SYSTEM =
+    "DIALOGUE_EXTRACT: Return ONLY the spoken lines a character would say on camera from the " +
+        "video prompt. Plain text, no commentary, no scene description. If there is no spoken " +
+        "dialogue, return an empty string."
+
+/**
+ * Collects quoted dialogue segments from a video [prompt] (`"..."` and curly `“...”`).
+ * Joins matches with a space. Returns blank when the prompt has no quoted speech — callers may
+ * fall back to a chat extract or skip driving audio.
+ */
+internal fun extractQuotedDialogue(prompt: String): String {
+    if (prompt.isBlank()) return ""
+    val parts = mutableListOf<String>()
+    // Straight double quotes.
+    Regex("\"([^\"]+)\"").findAll(prompt).forEach { match ->
+        match.groupValues[1].trim().takeIf { it.isNotEmpty() }?.let(parts::add)
+    }
+    // Curly / smart double quotes.
+    Regex("“([^”]+)”").findAll(prompt).forEach { match ->
+        match.groupValues[1].trim().takeIf { it.isNotEmpty() }?.let(parts::add)
+    }
+    return parts.joinToString(" ").trim()
+}
+
+/**
+ * Normalizes a chat-model dialogue extract: strips wrapping quotes and rejects empty /
+ * non-dialogue replies ("none", "n/a", etc.).
+ */
+internal fun sanitizeExtractedDialogue(raw: String): String {
+    var text = raw.trim()
+    if (text.isEmpty()) return ""
+    // Drop a single pair of wrapping quotes the model sometimes adds.
+    if ((text.startsWith("\"") && text.endsWith("\"")) ||
+        (text.startsWith("“") && text.endsWith("”"))
+    ) {
+        text = text.substring(1, text.length - 1).trim()
+    }
+    val lower = text.lowercase()
+    if (lower in setOf("none", "n/a", "na", "empty", "(none)", "no dialogue", "no speech")) {
+        return ""
+    }
+    return text
+}
+
+/**
+ * True when a Model Studio failure looks like rejection of `driving_audio` (or invalid media
+ * type) on the video-synthesis request — used to decide whether to retry R2V as I2V.
+ */
+internal fun isDrivingAudioMediaRejection(error: Throwable): Boolean {
+    val msg = error.message.orEmpty().lowercase()
+    if (msg.isBlank()) return false
+    val mentionsDriving = "driving_audio" in msg || "driving audio" in msg
+    val mentionsMediaType =
+        "input.media" in msg ||
+            "media type" in msg ||
+            "media.0.type" in msg ||
+            "should be" in msg && "media" in msg
+    return mentionsDriving || (mentionsMediaType && ("type" in msg || "invalid" in msg || "not support" in msg))
+}
+
 /**
  * Production implementation of [AIGenerationService] backed by the Alibaba Model Studio
  * (Qwen / DashScope) APIs.
  *
  * Supported generation tasks (all executed asynchronously through the job queue):
- * - video: WAN 2.7 family — T2V (prompt only), I2V (first-frame image), R2V (reference images).
+ * - video: WAN 2.7 family — T2V (prompt only), I2V (first-frame image), R2V (reference images);
+ *          when a selected character has a linked voice, prompt dialogue is TTS'd and attached as
+ *          driving audio for in-video speech.
  * - image: text-to-image, or image-to-image editing when a base image is attached.
  * - music: Fun-Music (`fun-music-v1`) with lyrics/theme/instrumental options.
  * - tts:   Qwen TTS with preset or cloned voices; transcripts + word timings are stored.
@@ -448,21 +513,197 @@ object QwenAIService : AIGenerationService {
             setup
         }
 
+        // Character-linked driving audio is derived per job from the current Character.voiceId +
+        // prompt dialogue (never persisted on GenerationSetup, so voice changes apply on regenerate).
+        // Skip quietly when no voiced character / no dialogue so visual-only R2V stays unchanged.
+        val drivingAudioUrl = resolveDrivingAudioUrl(setup, job.movieId, ledger, onProgress)
+
         onProgress(20, "Submitting $modelKind task ($model)...")
-        val requestBody = buildVideoRequestBody(effectiveSetup, setup.prompt, modelKind, model)
-        val mediaUrl = runAsyncGenerationTask(
-            submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/video-generation/video-synthesis",
-            requestBody = requestBody,
-            mediaUrlKeys = listOf("video_url", "url"),
-            ledger = ledger,
-            ledgerModel = model,
-            ledgerDescription = "Generated video ($model)",
-            job = job,
-        ) { pct -> onProgress((20 + pct * 0.6).toInt().coerceIn(20, 80), "Generating video... $pct%") }
+        val submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/aigc/video-generation/video-synthesis"
+        val requestBody = buildVideoRequestBody(
+            effectiveSetup,
+            setup.prompt,
+            modelKind,
+            model,
+            drivingAudioUrl = drivingAudioUrl,
+        )
+        val mediaUrl = try {
+            runAsyncGenerationTask(
+                submitUrl = submitUrl,
+                requestBody = requestBody,
+                mediaUrlKeys = listOf("video_url", "url"),
+                ledger = ledger,
+                ledgerModel = model,
+                ledgerDescription = "Generated video ($model)",
+                job = job,
+            ) { pct -> onProgress((20 + pct * 0.6).toInt().coerceIn(20, 80), "Generating video... $pct%") }
+        } catch (e: Exception) {
+            // R2V may reject driving_audio as a media type; retry once as I2V with the first
+            // reference image as first_frame + the same driving audio (keeps speech).
+            val canFallbackToI2v =
+                modelKind == "r2v" &&
+                    !drivingAudioUrl.isNullOrBlank() &&
+                    isDrivingAudioMediaRejection(e)
+            val firstFrameUrl = effectiveSetup.referenceImages.firstOrNull { it.isNotBlank() }
+                ?: effectiveSetup.imageUrl?.takeIf { it.isNotBlank() }
+            if (!canFallbackToI2v || firstFrameUrl == null) throw e
+
+            logger.warn(
+                "R2V rejected driving_audio media; retrying once as I2V first_frame + driving_audio: {}",
+                e.message,
+            )
+            // Drop the failed task id so the retry submits a fresh I2V task instead of resuming.
+            persistJobTaskId(job.id, null)
+            val i2vModel = QwenConfig.videoModelI2V
+            onProgress(22, "Retrying as I2V with character speech ($i2vModel)...")
+            val i2vSetup = effectiveSetup.copy(imageUrl = firstFrameUrl)
+            val i2vBody = buildVideoRequestBody(
+                i2vSetup,
+                setup.prompt,
+                "i2v",
+                i2vModel,
+                drivingAudioUrl = drivingAudioUrl,
+            )
+            runAsyncGenerationTask(
+                submitUrl = submitUrl,
+                requestBody = i2vBody,
+                mediaUrlKeys = listOf("video_url", "url"),
+                ledger = ledger,
+                ledgerModel = i2vModel,
+                ledgerDescription = "Generated video ($i2vModel, I2V fallback with driving audio)",
+                job = job,
+            ) { pct -> onProgress((22 + pct * 0.58).toInt().coerceIn(22, 80), "Generating video... $pct%") }
+        }
 
         onProgress(85, "Uploading generated video to Alibaba OSS...")
         val (ossUrl, duration) = rehost(mediaUrl, job.movieId, "video", "mp4", setup.durationSeconds.takeIf { it > 0 } ?: 5.0)
         GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
+    }
+
+    /**
+     * When the setup selects at least one character with a linked Voice Library voice, extract
+     * spoken dialogue from the prompt and TTS it with the **primary** voice (first selected
+     * character in [GenerationSetup.characterIds] order that has a non-blank voiceId). Returns a
+     * freshly hosted OSS URL, or null when audio should be skipped (no voice, no dialogue, offline,
+     * or TTS failure — visual-only video continues).
+     */
+    private suspend fun resolveDrivingAudioUrl(
+        setup: GenerationSetup,
+        movieId: String,
+        ledger: MutableList<AiLedgerEntry>,
+        onProgress: suspend (Int, String) -> Unit,
+    ): String? {
+        if (setup.characterIds.isEmpty()) return null
+        // t2v / video-edit have no proven driving_audio media slot in v1.
+        val modelKind = setup.resolveVideoModelKind()
+        if (modelKind != "r2v" && modelKind != "i2v") return null
+
+        val voiceId = resolvePrimaryCharacterVoiceId(setup.characterIds) ?: return null
+        val dialogue = extractDialogueForDrivingAudio(setup.prompt, ledger)
+        if (dialogue.isBlank()) {
+            logger.info("No dialogue extracted from video prompt; skipping driving audio")
+            return null
+        }
+        return synthesizeDrivingAudio(dialogue, voiceId, movieId, ledger, onProgress)
+    }
+
+    /**
+     * First selected character (setup [characterIds] order) with a non-blank [Character.voiceId].
+     */
+    private fun resolvePrimaryCharacterVoiceId(characterIds: List<String>): String? {
+        for (id in characterIds) {
+            val voiceId = CharacterRepository.getById(id)?.voiceId?.trim().orEmpty()
+            if (voiceId.isNotEmpty()) return voiceId
+        }
+        return null
+    }
+
+    /**
+     * Dialogue for driving audio: prefer quoted segments from the prompt; if none, one short chat
+     * call asking for spoken lines only. Empty means skip audio.
+     */
+    private suspend fun extractDialogueForDrivingAudio(
+        prompt: String,
+        ledger: MutableList<AiLedgerEntry>,
+    ): String {
+        val quoted = extractQuotedDialogue(prompt)
+        if (quoted.isNotBlank()) return quoted
+        return extractDialogueViaChat(prompt, ledger)
+    }
+
+    /**
+     * Lightweight chat extract for unquoted speech. Returns empty when offline, when the model
+     * finds no dialogue, or when the reply looks like commentary rather than spoken lines.
+     */
+    private suspend fun extractDialogueViaChat(
+        prompt: String,
+        ledger: MutableList<AiLedgerEntry>,
+    ): String {
+        if (prompt.isBlank()) return ""
+        // Offline / unconfigured: do not invent dialogue for driving audio.
+        if (!QwenConfig.isConfigured) return ""
+        val system = DIALOGUE_EXTRACT_SYSTEM
+        val (text, response) = chatCompletion(
+            system,
+            listOf(AiChatMessage(role = AiChatRole.USER, content = prompt)),
+        )
+        response?.let {
+            ledger.recordCall("Extracted dialogue for driving audio", QwenConfig.chatModel, it)
+        }
+        return sanitizeExtractedDialogue(text)
+    }
+
+    /**
+     * TTS [dialogue] with [voiceId] (preset multimodal TTS or CosyVoice) and re-host under
+     * `ai-generated/<movieId>/driving-*.mp3`. Failures return null so video gen can continue
+     * visual-only.
+     */
+    private suspend fun synthesizeDrivingAudio(
+        dialogue: String,
+        voiceId: String,
+        movieId: String,
+        ledger: MutableList<AiLedgerEntry>,
+        onProgress: suspend (Int, String) -> Unit,
+    ): String? {
+        if (!QwenConfig.isConfigured) return null
+        if (dialogue.isBlank() || voiceId.isBlank()) return null
+        onProgress(18, "Synthesizing character speech for video...")
+        val ttsSetup = GenerationSetup(kind = "tts", prompt = dialogue, voice = voiceId)
+        return try {
+            if (isCosyVoiceVoice(voiceId)) {
+                val model = QwenConfig.voiceCloneTargetModel
+                val audioBytes = synthesizeCosyVoiceAudio(ttsSetup, voiceId, model)
+                val response = buildJsonObject {
+                    put("request_id", UUID.randomUUID().toString())
+                    putJsonObject("output") {
+                        put("audio_bytes", audioBytes.size)
+                    }
+                }
+                ledger.recordCall("Driving audio TTS ($model)", model, response)
+                val (ossUrl, _) = rehostBytes(audioBytes, movieId, "driving", "mp3", fallbackDuration = 3.0)
+                ossUrl
+            } else {
+                val model = QwenConfig.ttsModel
+                val response = postJson(
+                    "${QwenConfig.dashScopeBaseUrl}/services/aigc/multimodal-generation/generation",
+                    buildTtsRequestBody(ttsSetup, voiceId, model, instructions = ""),
+                    async = false,
+                    timeoutSeconds = 180,
+                )
+                val mediaUrl = extractSyncTtsAudioUrl(response)
+                    ?: throw IllegalStateException("Qwen TTS driving-audio response missing audio url: $response")
+                ledger.recordCall("Driving audio TTS ($model)", model, response)
+                val (ossUrl, _) = rehost(mediaUrl, movieId, "driving", "mp3", fallbackDuration = 3.0)
+                ossUrl
+            }
+        } catch (e: Exception) {
+            logger.warn(
+                "Driving audio TTS failed for voice={}; continuing with visual-only video: {}",
+                voiceId,
+                e.message,
+            )
+            null
+        }
     }
 
     /**
@@ -543,7 +784,8 @@ object QwenAIService : AIGenerationService {
      *        input.media.0.type"), and sending references under the legacy `ref_images_url` is
      *        rejected with "Field required: input.media". R2V also needs an explicit output
      *        `size` — without it the task fails with "'NoneType' object has no attribute
-     *        'resolution'".
+     *        'resolution'". Optional character speech may ride along as `driving_audio`; if R2V
+     *        rejects that media type, [executeVideo] retries once as I2V.
      * - videoedit: the base clip as a `{ "type": "video", "url": <url> }` media object under
      *        `input.media`, plus optional `reference_image` entries — the same `input.media` list
      *        shape as R2V. The video-edit model only accepts the media types `video` /
@@ -552,12 +794,17 @@ object QwenAIService : AIGenerationService {
      *        input.media.0.type", and the legacy scalar `video_url` field is rejected with "Field
      *        required: input.media". The edited clip inherits the source video's resolution and
      *        length, so no output `size` or `duration` parameter is sent for it.
+     *
+     * @param drivingAudioUrl optional OSS URL of character speech synthesized for this job. When
+     * non-blank, appended as `{ "type": "driving_audio", "url": ... }` on R2V and I2V media lists.
+     * T2V / video-edit ignore it in v1 (no proven media slot).
      */
     internal fun buildVideoRequestBody(
         setup: GenerationSetup,
         refinedPrompt: String,
         modelKind: String,
         model: String,
+        drivingAudioUrl: String? = null,
     ): JsonObject = buildJsonObject {
         put("model", model)
         putJsonObject("input") {
@@ -569,7 +816,7 @@ object QwenAIService : AIGenerationService {
                 // basic image-to-video; a bare URL or an `{ "image": <url> }` entry is rejected
                 // with "Field required: input.media.0.url & Field required: input.media.0.type".
                 // An optional `last_frame` entry (the end image) makes the clip interpolate from
-                // the first frame to it.
+                // the first frame to it. Optional `driving_audio` rides after frames for lip-sync.
                 "i2v" -> put("media", buildJsonArray {
                     add(buildJsonObject {
                         put("type", "first_frame")
@@ -580,6 +827,7 @@ object QwenAIService : AIGenerationService {
                         put("type", "last_frame")
                         put("url", OssService.freshDownloadUrl(endImageUrl))
                     })
+                    appendDrivingAudioMedia(this, drivingAudioUrl)
                 })
                 // WAN 2.7 R2V expects the reference images as a list of media objects under
                 // `input.media`, each `{ "type": "reference_image", "url": <url> }`. Only the
@@ -587,6 +835,8 @@ object QwenAIService : AIGenerationService {
                 // `reference` type is rejected with "Input should be 'reference_image',
                 // 'reference_video' or 'first_frame': input.media.0.type"), and the legacy
                 // `ref_images_url` field is rejected with "Field required: input.media".
+                // Character speech may also be sent as `driving_audio` (R2V-first; I2V fallback
+                // if the media type is rejected at submit time).
                 "r2v" -> put("media", buildJsonArray {
                     setup.referenceImages.take(4).forEach {
                         add(buildJsonObject {
@@ -594,6 +844,7 @@ object QwenAIService : AIGenerationService {
                             put("url", OssService.freshDownloadUrl(it))
                         })
                     }
+                    appendDrivingAudioMedia(this, drivingAudioUrl)
                 })
                 // WAN 2.7 video-edit expects the base video — and every optional reference image —
                 // as a list of media objects under `input.media`, each `{ "type": ..., "url": ... }`,
@@ -603,7 +854,7 @@ object QwenAIService : AIGenerationService {
                 // entry (or a guiding `first_frame` entry) is rejected with "Input should be
                 // 'video' or 'reference_image': input.media.0.type", and the legacy scalar
                 // `video_url` / `ref_images_url` / `img_url` fields are rejected with "Field
-                // required: input.media".
+                // required: input.media". No driving_audio in v1.
                 "videoedit" -> put("media", buildJsonArray {
                     add(buildJsonObject {
                         put("type", "video")
@@ -632,6 +883,19 @@ object QwenAIService : AIGenerationService {
                 if (dur in 1..15) put("duration", dur)
             }
         }
+    }
+
+    /** Appends a fresh-URL `driving_audio` media entry when [drivingAudioUrl] is non-blank. */
+    private fun appendDrivingAudioMedia(
+        array: JsonArrayBuilder,
+        drivingAudioUrl: String?,
+    ) {
+        val url = drivingAudioUrl?.trim().orEmpty()
+        if (url.isEmpty()) return
+        array.add(buildJsonObject {
+            put("type", "driving_audio")
+            put("url", OssService.freshDownloadUrl(url))
+        })
     }
 
     /**
@@ -1558,6 +1822,8 @@ object QwenAIService : AIGenerationService {
                     "Verse 2:\nShadows fade behind us as we fly\nPainting silver dreams across the sky"
             system.contains("THEME", ignoreCase = true) ->
                 "Uplifting cinematic electro-pop with soaring strings and a driving beat"
+            // No invented dialogue offline — driving audio is skipped when empty.
+            system.contains("DIALOGUE_EXTRACT") -> ""
             else -> "Offline response: ${user.take(160)}"
         }
     }

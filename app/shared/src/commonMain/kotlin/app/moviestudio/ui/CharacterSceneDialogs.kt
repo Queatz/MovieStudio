@@ -5,12 +5,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -30,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
@@ -371,8 +374,8 @@ private fun ReposeImageDialog(
 }
 
 /**
- * Create/edit a saved character: name, text description, optional main spoken language and up to
- * 3 reference images.
+ * Create/edit a saved character: name, text description, optional main spoken language, optional
+ * Voice Library voice, and up to 3 reference images.
  *
  * When creating ([existing] is null), optional [initialName] / [initialReferenceImages] pre-fill
  * the form — used when spinning a character off an image asset.
@@ -388,12 +391,17 @@ fun CharacterEditorDialog(
     var name by remember(existing?.id) { mutableStateOf(existing?.name ?: initialName) }
     var description by remember(existing?.id) { mutableStateOf(existing?.description ?: "") }
     var mainLanguage by remember(existing?.id) { mutableStateOf(existing?.mainLanguage ?: "") }
+    var voiceId by remember(existing?.id) { mutableStateOf(existing?.voiceId ?: "") }
     var referenceImages by remember(existing?.id) {
         mutableStateOf(existing?.referenceImages ?: initialReferenceImages)
     }
+    var showVoiceLibrary by remember { mutableStateOf(false) }
     // Stable id for tagging AI image jobs from this editor session (existing character id, or a
     // fresh one for a new character that has not been saved yet).
     val generationSourceId = remember(existing?.id) { existing?.id ?: generateId() }
+
+    // Keep Voice Library options fresh when the editor opens (presets / clones / designs).
+    LaunchedEffect(Unit) { viewModel.refreshVoices() }
 
     StudioDialog(
         title = if (existing == null) "New character" else "Edit character",
@@ -432,6 +440,34 @@ fun CharacterEditorDialog(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Voice",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    if (voiceId.isBlank()) "No voice linked"
+                    else voiceDisplayLabel(viewModel.voiceOptions, voiceId),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            if (voiceId.isNotBlank()) {
+                GhostPillButton("Clear", compact = true) { voiceId = "" }
+                Spacer(Modifier.width(6.dp))
+            }
+            GhostPillButton("🎙 Voice Library", compact = true) { showVoiceLibrary = true }
+        }
+        Text(
+            "Linked voice is used for in-video speech when this character is selected for video generation.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Spacer(Modifier.height(4.dp))
         ReferenceImagePicker(
             viewModel,
@@ -453,6 +489,7 @@ fun CharacterEditorDialog(
                         name = name.trim(),
                         description = description.trim(),
                         mainLanguage = mainLanguage.trim(),
+                        voiceId = voiceId.trim(),
                         referenceImages = referenceImages.take(Character.MAX_REFERENCE_IMAGES),
                         movieId = existing?.movieId ?: viewModel.currentMovie?.id,
                         createdAt = existing?.createdAt ?: 0
@@ -462,6 +499,15 @@ fun CharacterEditorDialog(
                 onDismiss()
             }
         }
+    }
+
+    if (showVoiceLibrary) {
+        VoiceLibraryDialog(
+            viewModel = viewModel,
+            selectedVoice = voiceId,
+            onSelect = { voiceId = it },
+            onDismiss = { showVoiceLibrary = false }
+        )
     }
 }
 

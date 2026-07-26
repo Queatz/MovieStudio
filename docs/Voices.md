@@ -94,8 +94,8 @@ TTS sends as `voice`: for presets that is `VoicePreset.id`, for clones/designs i
 
 The Voice Library UI lives in `app/shared/.../ui/GenerateDialogs.kt`:
 
-- `TtsDialog` shows the currently selected voice via `voiceDisplayLabel(...)` and a **"🎙 Voice
-  Library"** button that opens `VoiceLibraryDialog`.
+- `TtsDialog` and the character editor show the currently selected voice via
+  `voiceDisplayLabel(...)` and a **"🎙 Voice Library"** button that opens `VoiceLibraryDialog`.
 - `VoiceLibraryDialog` has three pill tabs — `DEFAULT` (🔊), `CLONED` (🧬) and `DESIGN` (🎨):
   - **Default** lists every `VoicePreset` with its languages.
   - **Cloned** lists the user's clones with an *enroll* form and per-row delete.
@@ -195,16 +195,68 @@ voice keeps clip timing in sync (covered by `TtsRegenerationClipSyncTest`).
 
 ---
 
-## 7. Tests
+## 7. Character voices + in-video driving audio
 
-- `server/.../QwenTtsRequestTest` — preset vs cloned vs designed request bodies, `instruct`
-  handling, and the Default Voices catalog.
-- `server/.../TtsRegenerationClipSyncTest` — voiceover regeneration keeps clips in sync.
-- `server/.../Phase5IntegrationTest` — `/api/voice/options` shape.
+Characters can link any Voice Library voice so R2V/I2V clips of that character **speak in the same
+voice** across generations.
+
+### Association
+
+- `Character.voiceId: String = ""` stores the same synthesis id TTS already uses (preset `id` or
+  clone/design `qwenVoiceId`). Blank means no linked voice (visual-only R2V).
+- The character editor (`CharacterEditorDialog`) has a **Voice** row: label via
+  `voiceDisplayLabel(...)`, **🎙 Voice Library** opens the existing picker, and **Clear** unsets the
+  link. The library character list shows the linked voice next to language when set.
+- Existing characters without the field decode as `""` (backward compatible).
+
+### Generation path (server, per job)
+
+When `GenerationSetup.kind == "video"` and at least one selected character has a non-blank
+`voiceId`:
+
+1. **Primary voice** = first selected character (`characterIds` order) with a non-blank `voiceId`.
+2. **Dialogue** is taken from the prompt: quoted segments first (`extractQuotedDialogue`); if none,
+   a short chat extract asks for spoken lines only (empty → skip audio).
+3. **TTS** that text with the primary voice (same preset vs CosyVoice branching as voiceover).
+4. Audio is re-hosted under `ai-generated/<movieId>/driving-*.mp3` and folded into the job ledger.
+5. The WAN video request includes
+   `{ "type": "driving_audio", "url": "<fresh OSS URL>" }` on the R2V or I2V `input.media` list
+   (after reference images / frames).
+
+The driving-audio URL is **ephemeral** — it is not stored on `GenerationSetup`. Each run re-derives
+it from current `characterIds` + `Character.voiceId`, so changing a character's voice applies on
+regenerate.
+
+### Fallback
+
+R2V is preferred (reference images + `driving_audio`). If Model Studio rejects the `driving_audio`
+media type on R2V, the job retries **once** as I2V using the first reference image as `first_frame`
+plus the same driving audio (keeps speech; may drop multi-ref balance). T2V and video-edit ignore
+driving audio in v1.
+
+### Edge cases
+
+- Character selected but `voiceId` blank, or prompt has no dialogue → no TTS / no `driving_audio`
+  (visual-only path unchanged).
+- Multiple voiced characters → only the primary voice drives audio; all selected characters still
+  contribute R2V images and prompt text.
+- Qwen not configured → same graceful skip as voice sampling (no invented offline dialogue).
 
 ---
 
-## 8. Adding or changing voices
+## 8. Tests
+
+- `server/.../QwenTtsRequestTest` — preset vs cloned vs designed request bodies, `instruct`
+  handling, and the Default Voices catalog.
+- `server/.../QwenVideoRequestTest` — R2V/I2V `driving_audio` media entries (and blank/t2v skip).
+- `server/.../DialogueExtractionTest` — quoted dialogue extract + rejection heuristics.
+- `server/.../TtsRegenerationClipSyncTest` — voiceover regeneration keeps clips in sync.
+- `server/.../Phase5IntegrationTest` — `/api/voice/options` shape.
+- `core/.../ModelsTest` — `Character.voiceId` round-trip and legacy blank default.
+
+---
+
+## 9. Adding or changing voices
 
 - **New default voice:** add a `VoicePreset` to `QWEN_VOICE_CATALOG` in `core/.../Models.kt` — it
   automatically appears in the library, the presets list and `listVoicePresets()`.
@@ -212,3 +264,5 @@ voice keeps clip timing in sync (covered by `TtsRegenerationClipSyncTest`).
   strings in `QwenAIService` synthesis helpers would change if a deployment exposes different paths.
 - **New user voice at runtime:** clones and designs are created through the `/api/voice` endpoints —
   no code change needed.
+- **Character association:** set `Character.voiceId` in the character editor; no extra enrollment
+  step beyond an existing library voice.
