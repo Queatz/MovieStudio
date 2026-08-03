@@ -82,8 +82,8 @@ Recognized variables:
 | `QWEN_VIDEO_MODEL_T2V` | WAN text-to-video model (default `wan2.7-t2v`).                                       |
 | `QWEN_VIDEO_MODEL_I2V` | WAN image-to-video model (default `wan2.7-i2v`).                                      |
 | `QWEN_VIDEO_MODEL_R2V` | WAN reference-to-video model (default `wan2.7-r2v`).                                  |
-| `QWEN_IMAGE_MODEL` | Text-to-image model (default `qwen-image-2.0-pro`).                                   |
-| `QWEN_IMAGE_EDIT_MODEL` | Image-to-image editing model (default `qwen-image-2.0-pro`; same unified model as above). |
+| `QWEN_IMAGE_MODEL` | Text-to-image model (default `qwen-image-3.0-pro`).                                   |
+| `QWEN_IMAGE_EDIT_MODEL` | Image-to-image editing model (default `qwen-image-3.0-pro`; same unified model as above). |
 | `QWEN_MUSIC_MODEL` | Music generation model (default `fun-music-v1`).                                      |
 | `QWEN_AUDIO_MODEL` | Sound-effect model — Alibaba ThinkSound (text-to-audio and video-driven, default `thinksound-v1`). |
 | `QWEN_TTS_MODEL` | Text-to-speech model (default `qwen3-tts`).                                           |

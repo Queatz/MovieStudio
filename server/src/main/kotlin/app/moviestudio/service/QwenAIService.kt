@@ -245,7 +245,7 @@ object QwenAIService : AIGenerationService {
 
     /**
      * Builds the ledger entry for an image-generation/edit call. Unlike the chat/TTS models,
-     * Qwen-Image (`qwen-image-2.0-pro`, the same unified model for both text-to-image and
+     * Qwen-Image (see [DEFAULT_IMAGE_MODEL_ID]; the same unified model for both text-to-image and
      * image-editing) is billed per generated image at a flat price, so its response never carries
      * an `input_tokens`/`output_tokens` usage block -
      * feeding it through [recordCall] always logged 0 tokens and $0.00, which is the bug this
@@ -908,7 +908,7 @@ object QwenAIService : AIGenerationService {
         val baseImageUrl = setup.imageUrl?.takeIf { it.isNotBlank() }?.let(OssService::freshDownloadUrl)
         val model = resolveImageModel(setup, isEdit = baseImageUrl != null)
         onProgress(15, if (baseImageUrl != null) "Submitting image edit task ($model)..." else "Submitting image task ($model)...")
-        // Every image model (the qwen-image 2.0 family and the WAN 2.7 image models) is invoked
+        // Every image model (the qwen-image family and the WAN 2.7 image models) is invoked
         // through the chat-style multimodal-generation/generation endpoint - the legacy Wanx
         // aigc/text2image and aigc/image2image endpoints reject these model names with
         // HTTP 400 "url error, please check url！" (model name / API endpoint mismatch).
@@ -1043,7 +1043,7 @@ object QwenAIService : AIGenerationService {
         putJsonObject("input") {
             val theme = setup.theme.ifBlank { setup.prompt }.let {
                 if (setup.instrumental) {
-                    "$it\n\nNo lyrics, no spoken words.\n"
+                    "$it\n\nNO vocals, NO words.\n"
                 } else {
                     it
                 }

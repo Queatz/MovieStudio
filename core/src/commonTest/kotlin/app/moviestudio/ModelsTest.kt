@@ -629,10 +629,11 @@ class ModelsTest {
         // A known id resolves to its model (case-insensitively).
         assertEquals(IMAGE_MODEL_WAN_PRO, imageModelById("wan2.7-image-pro"))
         assertEquals(IMAGE_MODEL_WAN, imageModelById("WAN2.7-IMAGE"))
-        // Blank / null / unknown ids fall back to the configured default (Qwen Image 2.0).
+        // Blank / null / unknown ids fall back to the configured default (Qwen Image 3.0).
         assertEquals(DEFAULT_IMAGE_MODEL_ID, imageModelById("").id)
         assertEquals(DEFAULT_IMAGE_MODEL_ID, imageModelById(null).id)
         assertEquals(DEFAULT_IMAGE_MODEL_ID, imageModelById("no-such-model").id)
+        assertEquals(IMAGE_MODEL_QWEN.id, DEFAULT_IMAGE_MODEL_ID)
     }
 
     @Test

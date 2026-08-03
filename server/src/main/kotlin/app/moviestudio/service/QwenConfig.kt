@@ -1,5 +1,6 @@
 package app.moviestudio.service
 
+import app.moviestudio.DEFAULT_IMAGE_MODEL_ID
 import app.moviestudio.config.Env
 import org.slf4j.LoggerFactory
 
@@ -20,11 +21,11 @@ import org.slf4j.LoggerFactory
  * - QWEN_VIDEO_MODEL_I2V       WAN image-to-video model (default wan2.7-i2v).
  * - QWEN_VIDEO_MODEL_R2V       WAN reference-to-video model (default wan2.7-r2v).
  * - QWEN_VIDEO_MODEL_EDIT      WAN video-editing model (default wan2.7-videoedit).
- * - QWEN_IMAGE_MODEL           Text-to-image model (default qwen-image-2.0-pro).
- * - QWEN_IMAGE_EDIT_MODEL      Image-to-image editing model. Qwen Image 2.0 Pro is a single
- *                              unified model for both text-to-image and image-editing (unlike
- *                              the older "max" tier, there is no separate "-edit-" model name),
- *                              so this also defaults to qwen-image-2.0-pro.
+ * - QWEN_IMAGE_MODEL           Text-to-image model (default [DEFAULT_IMAGE_MODEL_ID]).
+ * - QWEN_IMAGE_EDIT_MODEL      Image-to-image editing model. Qwen Image is a single unified model
+ *                              for both text-to-image and image-editing (unlike the older "max"
+ *                              tier, there is no separate "-edit-" model name), so this also
+ *                              defaults to [DEFAULT_IMAGE_MODEL_ID].
  * - QWEN_MUSIC_MODEL           Music generation model (default fun-music-v1).
  * - QWEN_TTS_MODEL             Text-to-speech model (default qwen-tts).
  * - QWEN_TTS_INSTRUCT_MODEL    Instruction-following TTS model used when voice instructions
@@ -59,11 +60,12 @@ object QwenConfig {
     // repaints/edits the source clip. Selected when a base video is attached to the setup.
     val videoModelEdit: String = Env.get("QWEN_VIDEO_MODEL_EDIT", "wan2.7-videoedit")
 
-    val imageModel: String = Env.get("QWEN_IMAGE_MODEL", "qwen-image-2.0-pro")
-    // Qwen Image 2.0 Pro is a single unified model used for both text-to-image and image-editing
+    // Default model id comes from core [DEFAULT_IMAGE_MODEL_ID] (SSOT); env can still override.
+    val imageModel: String = Env.get("QWEN_IMAGE_MODEL", DEFAULT_IMAGE_MODEL_ID)
+    // Qwen Image is a single unified model used for both text-to-image and image-editing
     // (the API selects the behavior based on whether an image is attached to the request), so
     // this defaults to the same model name as [imageModel] rather than a distinct "-edit-" model.
-    val imageEditModel: String = Env.get("QWEN_IMAGE_EDIT_MODEL", "qwen-image-2.0-pro")
+    val imageEditModel: String = Env.get("QWEN_IMAGE_EDIT_MODEL", DEFAULT_IMAGE_MODEL_ID)
     val musicModel: String = Env.get("QWEN_MUSIC_MODEL", "fun-music-v1")
     val ttsModel: String = Env.get("QWEN_TTS_MODEL", "qwen-audio-3.0-tts-plus")
     // Instruction-following TTS (Qwen instruct): selected when the generation setup carries voice
@@ -115,10 +117,10 @@ object QwenConfig {
         return perMillion / 1_000_000.0
     }
 
-    // Qwen-Image (`qwen-image-2.0-pro`, used for both text-to-image and image-editing) is billed
-    // per generated image at a flat price (Alibaba tiers it by resolution on their side), not per
-    // token, so its response carries no `input_tokens`/`output_tokens` usage block - unlike the
-    // ledger's other AI calls. Overridable via env.
+    // Qwen-Image (see [DEFAULT_IMAGE_MODEL_ID]; used for both text-to-image and image-editing) is
+    // billed per generated image at a flat price (Alibaba tiers it by resolution on their side),
+    // not per token, so its response carries no `input_tokens`/`output_tokens` usage block -
+    // unlike the ledger's other AI calls. Overridable via env.
     private val imageUsdPerCall: Double = Env.get("QWEN_IMAGE_USD_PER_CALL", "0.05").toDoubleOrNull() ?: 0.05
 
     /** Flat USD price for one generated/edited image call, regardless of resolution. */

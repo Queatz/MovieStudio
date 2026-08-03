@@ -1323,7 +1323,7 @@ val SUPPORTED_VIDEO_SIZES: List<String> = listOf(
 /**
  * Image generation sizes offered by the text-to-image / image-edit models. Includes every
  * [SUPPORTED_VIDEO_SIZES] tier (so a movie's chosen size lines up across image and video
- * generations) plus the larger sizes qwen-image-2.0-pro additionally supports.
+ * generations) plus the larger sizes the Qwen image models additionally support.
  */
 val SUPPORTED_IMAGE_SIZES: List<String> = listOf(
     "1024*1024", "1280*720", "720*1280", "768*1024", "1024*768",
@@ -1413,14 +1413,22 @@ val IMAGE_MODEL_WAN: ImageModel = ImageModel(
 )
 
 /**
- * Qwen Image 2.0 (`qwen-image-2.0-pro`): the studio's current default model. Its hard limit is the
- * total pixel count — between 512×512 (262k px) and 2048×2048 (4.19M px); individual sides may
- * exceed 2048px as long as the total stays inside that window. The presets use Qwen's documented
- * aspect-optimized sizes (1328×1328, 1664×928, ...) plus matching extra tiers.
+ * Default image-model id (DashScope). Single source of truth for the studio's Qwen image default:
+ * the catalog entry ([IMAGE_MODEL_QWEN]), client fallbacks ([imageModelById]), and server env
+ * defaults ([app.moviestudio.service.QwenConfig.imageModel] / imageEditModel) all read this value.
+ * Override at runtime via `QWEN_IMAGE_MODEL` / `QWEN_IMAGE_EDIT_MODEL` on the server only.
+ */
+const val DEFAULT_IMAGE_MODEL_ID: String = "qwen-image-3.0-pro"
+
+/**
+ * Qwen Image 3.0 Pro ([DEFAULT_IMAGE_MODEL_ID]): the studio's current default model. Its hard
+ * limit is the total pixel count — between 512×512 (262k px) and 2048×2048 (4.19M px); individual
+ * sides may exceed 2048px as long as the total stays inside that window. The presets use Qwen's
+ * documented aspect-optimized sizes (1328×1328, 1664×928, ...) plus matching extra tiers.
  */
 val IMAGE_MODEL_QWEN: ImageModel = ImageModel(
-    id = "qwen-image-2.0-pro",
-    displayName = "Qwen Image 2.0",
+    id = DEFAULT_IMAGE_MODEL_ID,
+    displayName = "Qwen Image 3.0",
     description = "Balanced quality; total pixels 512×512 up to 2048×2048.",
     minPixels = 512L * 512L,
     maxPixels = 2048L * 2048L,
@@ -1437,15 +1445,9 @@ val IMAGE_MODEL_QWEN: ImageModel = ImageModel(
 )
 
 /**
- * The selectable image-generation models, in dropdown order (Wan 2.7 Pro, Wan 2.7, Qwen Image 2.0).
+ * The selectable image-generation models, in dropdown order (Wan 2.7 Pro, Wan 2.7, Qwen Image 3.0).
  */
 val SUPPORTED_IMAGE_MODELS: List<ImageModel> = listOf(IMAGE_MODEL_WAN_PRO, IMAGE_MODEL_WAN, IMAGE_MODEL_QWEN)
-
-/**
- * The default image model id used when a [GenerationSetup] carries no explicit [GenerationSetup.model]
- * — Qwen Image 2.0, the model the studio has always used.
- */
-const val DEFAULT_IMAGE_MODEL_ID: String = "qwen-image-2.0-pro"
 
 /** Looks up a [SUPPORTED_IMAGE_MODELS] entry by [id], falling back to the default (then first) model. */
 fun imageModelById(id: String?): ImageModel =

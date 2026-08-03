@@ -1,6 +1,7 @@
 package app.moviestudio
 
 import app.moviestudio.service.QwenAIService
+import app.moviestudio.service.QwenConfig
 import app.moviestudio.storage.OssService
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -27,7 +28,7 @@ class QwenImageRequestTest {
     fun textToImageSendsOnlyTextContent() {
         val setup = GenerationSetup(kind = "image", prompt = "A moonlit street", resolution = "1024x768")
 
-        val body = QwenAIService.buildImageRequestBody(setup, "qwen-image-2.0-pro")
+        val body = QwenAIService.buildImageRequestBody(setup, DEFAULT_IMAGE_MODEL_ID)
         val content = body.firstContent()
 
         assertEquals("A moonlit street", content.single().jsonObject.str("text"))
@@ -40,7 +41,7 @@ class QwenImageRequestTest {
         val staleUrl = ossUrl(objectKey)
         val setup = GenerationSetup(kind = "image", prompt = "Restyle", imageUrl = staleUrl)
 
-        val body = QwenAIService.buildImageRequestBody(setup, "qwen-image-2.0-pro")
+        val body = QwenAIService.buildImageRequestBody(setup, DEFAULT_IMAGE_MODEL_ID)
         val content = body.firstContent()
         val imageUrl = content.first().jsonObject.str("image")
 
@@ -59,7 +60,7 @@ class QwenImageRequestTest {
             referenceImages = listOf(staleUrl1, staleUrl2)
         )
 
-        val body = QwenAIService.buildImageRequestBody(setup, "qwen-image-2.0-pro")
+        val body = QwenAIService.buildImageRequestBody(setup, DEFAULT_IMAGE_MODEL_ID)
         val input = body.getValue("input").jsonObject
         val refImages = input.getValue("ref_images").jsonArray
 
@@ -84,16 +85,16 @@ class QwenImageRequestTest {
         // Direct reference images
         val setupWithRefs = GenerationSetup(kind = "image", model = "wan2.7-image-pro", referenceImages = listOf("http://foo.com/img.png"))
         val resolvedWithRefs = QwenAIService.resolveImageModel(setupWithRefs, isEdit = false)
-        assertEquals("qwen-image-2.0-pro", resolvedWithRefs)
+        assertEquals(QwenConfig.imageModel, resolvedWithRefs)
 
         // Character reference
         val setupWithChars = GenerationSetup(kind = "image", model = "wan2.7-image-pro", characterIds = listOf("char123"))
         val resolvedWithChars = QwenAIService.resolveImageModel(setupWithChars, isEdit = false)
-        assertEquals("qwen-image-2.0-pro", resolvedWithChars)
+        assertEquals(QwenConfig.imageModel, resolvedWithChars)
 
         // Scene reference
         val setupWithScenes = GenerationSetup(kind = "image", model = "wan2.7-image-pro", sceneIds = listOf("scene123"))
         val resolvedWithScenes = QwenAIService.resolveImageModel(setupWithScenes, isEdit = false)
-        assertEquals("qwen-image-2.0-pro", resolvedWithScenes)
+        assertEquals(QwenConfig.imageModel, resolvedWithScenes)
     }
 }
