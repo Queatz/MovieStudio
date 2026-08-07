@@ -24,12 +24,17 @@ import java.util.UUID
  *
  * - Video clips are trimmed, center-crop fit to the movie's aspect ratio and overlaid in track
  *   z-order at their timeline position (PTS-shifted so content lines up with the playhead).
- * - Images are looped for the clip duration.
+ * - Images are looped for the clip duration (pre-scaled so multi-megapixel stills don't balloon
+ *   decode memory).
+ * - Non-overlapping clips on a video track are concatenated into one stream per track (not one
+ *   full-timeline overlay per clip) so long image slideshows stay within RAM; tracks composite
+ *   in z-order with a single overlay each.
  * - Description-only (skeleton) items render as large centered white text, matching the preview.
  * - Overlap transitions (alpha / noise / voronoi / slide / circle / pixelate) blend a clip in
  *   over the media playing underneath it.
  * - Audio clips honor their source offset (clipped sound effects), volume and position; voice
- *   clips with captions enabled get word-timed captions burned in.
+ *   clips with captions enabled get word-timed captions burned in via a single libass pass
+ *   (an `.ass` sidecar), not one filter-graph layer per caption chunk.
  *
  * The finished file is uploaded to Alibaba OSS and recorded as a [RenderRecord] so every render
  * remains replayable and downloadable.
@@ -89,13 +94,112 @@ object FFmpegService {
                 assetHasAudio[asset.id] = MediaUtil.probeHasAudio(localFile)
             }
 
-            onProgress(20, "Compiling timeline and filters...")
-
             var totalDuration = clips.maxOfOrNull { (it.timelineStart + (it.trimOut - it.trimIn)).toDouble() } ?: 0.0
             if (totalDuration <= 0) totalDuration = movie.totalDuration
             if (totalDuration <= 0) totalDuration = 10.0
 
             val (canvasWidth, canvasHeight) = resolutionForAspectRatio(movie.aspectRatio)
+
+            // Cap still-image decode size before the main graph. AI stills are often 2K–4K PNGs;
+            // holding dozens of them open as `-loop 1` inputs (and scale/crop'ing each inside a
+            // deep overlay chain) is what pushed FFmpeg past ~15 GiB RSS on long slideshows.
+            // Fit inside a box a bit larger than the canvas so per-clip offset-crop still has room.
+            onProgress(18, "Preparing still images...")
+            val imageMaxSide = maxOf(canvasWidth, canvasHeight) * 2
+            for ((assetId, srcFile) in downloadedAssets.toList()) {
+                val asset = assetsById[assetId] ?: continue
+                if (asset.type != AssetType.IMAGE) continue
+                val fitted = File(tempDir, "imgfit_${assetId}.png")
+                val prepared = withContext(Dispatchers.IO) {
+                    prepareStillImage(srcFile, fitted, imageMaxSide)
+                }
+                if (prepared != null) {
+                    downloadedAssets[assetId] = prepared
+                    if (prepared.absolutePath != srcFile.absolutePath) {
+                        withContext(Dispatchers.IO) { runCatching { srcFile.delete() } }
+                    }
+                }
+            }
+
+            onProgress(20, "Compiling timeline and filters...")
+
+            val videoTracksSorted = tracks.filter { it.type == TrackType.VIDEO }.sortedBy { it.zIndex }
+            val clipsByTrack = clips.groupBy { it.trackId }
+
+            // ------------------------------------------------------------------ video pre-pass
+            //
+            // IMPORTANT: holding dozens of `-loop 1` stills open in ONE FFmpeg process (whether
+            // overlaid or concat-filtered) still peaks at multi-GB RSS — measured ~15–19 GiB for
+            // ~40 AI PNGs — and earlyoom then SIGTERM-storms FFmpeg (exit 255 / exit 123
+            // "Received > 3 system signals"). 
+            //
+            // For sequential non-overlapping tracks (the common image-slideshow case) we pre-render
+            // EACH clip to a short H.264 segment in its own FFmpeg process (peak RAM ≈ one still),
+            // concat-demuxer them into one track file, and only feed that file into the main graph.
+            // Tracks that overlap or use SLIDE stay on the legacy per-clip overlay path (typically
+            // few clips, so safe).
+            val preRenderedTrackFiles = linkedMapOf<String, File>() // trackId -> mp4, z-order preserved
+            val preRenderedTrackIds = mutableSetOf<String>()
+            var renderedPieceCount = 0
+            val totalPiecesEstimate = videoTracksSorted.sumOf { t ->
+                val tc = clipsByTrack[t.id] ?: emptyList()
+                if (canConcatComposeTrack(tc.filter {
+                        (it.trimOut - it.trimIn) > 0f && assetsById.containsKey(it.assetId)
+                    })) tc.size else 0
+            }.coerceAtLeast(1)
+
+            for (track in videoTracksSorted) {
+                val trackClips = (clipsByTrack[track.id] ?: emptyList())
+                    .sortedBy { it.timelineStart }
+                    .filter { (it.trimOut - it.trimIn) > 0f && assetsById.containsKey(it.assetId) }
+                if (trackClips.isEmpty()) continue
+                if (!canConcatComposeTrack(trackClips)) continue
+                // Only file-pre-render when it actually saves memory (many pieces). A single clip
+                // is cheaper as a normal overlay input.
+                if (trackClips.size < 3) continue
+
+                logger.info(
+                    "Pre-rendering video track ${track.id} via per-clip segments " +
+                        "(${trackClips.size} clip(s)) to keep FFmpeg RAM flat"
+                )
+                val trackFile = withContext(Dispatchers.IO) {
+                    renderTrackViaSegmentFiles(
+                        tempDir = tempDir,
+                        trackId = track.id,
+                        trackClips = trackClips,
+                        assetsById = assetsById,
+                        downloadedAssets = downloadedAssets,
+                        totalDuration = totalDuration,
+                        canvasWidth = canvasWidth,
+                        canvasHeight = canvasHeight
+                    )
+                }
+                renderedPieceCount += trackClips.size
+                val pct = (20 + ((renderedPieceCount.toDouble() / totalPiecesEstimate) * 5).toInt())
+                    .coerceIn(20, 25)
+                onProgress(pct, "Prepared video track (${trackClips.size} clips)...")
+                preRenderedTrackFiles[track.id] = trackFile
+                preRenderedTrackIds += track.id
+            }
+
+            // Assets that still need to be raw inputs in the MAIN graph: anything used by
+            // non-pre-rendered video clips, plus every clip that contributes audio.
+            val assetsNeededAsInputs = linkedSetOf<String>()
+            for (clip in clips) {
+                val asset = assetsById[clip.assetId] ?: continue
+                val track = tracks.find { it.id == clip.trackId }
+                val isPreRenderedVideo =
+                    track?.type == TrackType.VIDEO && clip.trackId in preRenderedTrackIds
+                if (isPreRenderedVideo) {
+                    // Video pixels already baked; only pull the asset in if it also has audio we
+                    // must mix (unusual for pure IMAGE slideshows).
+                    if (assetHasAudio[asset.id] == true) assetsNeededAsInputs += asset.id
+                } else if (track?.type == TrackType.VIDEO) {
+                    if (asset.ossUrl.isNotBlank()) assetsNeededAsInputs += asset.id
+                } else if (asset.ossUrl.isNotBlank() && assetHasAudio[asset.id] == true) {
+                    assetsNeededAsInputs += asset.id
+                }
+            }
 
             val args = mutableListOf<String>()
             args.add(MediaUtil.ffmpegBinary)
@@ -107,13 +211,19 @@ object FFmpegService {
             args.add("-f"); args.add("lavfi"); args.add("-i")
             args.add("anullsrc=r=44100:cl=stereo:d=${totalDuration.ff()}")
 
-            // Media inputs, starting from index 2. Images are looped for their longest clip use.
-            val assetIdOrder = downloadedAssets.keys.toList()
-            val assetInputMap = mutableMapOf<String, Int>()
+            // Pre-rendered track files next (full-timeline H.264), then remaining raw media.
+            val trackInputMap = mutableMapOf<String, Int>()
             var inputIdx = 2
-            for (assetId in assetIdOrder) {
+            for ((trackId, trackFile) in preRenderedTrackFiles) {
+                args.add("-i"); args.add(trackFile.absolutePath)
+                trackInputMap[trackId] = inputIdx
+                inputIdx++
+            }
+
+            val assetInputMap = mutableMapOf<String, Int>()
+            for (assetId in assetsNeededAsInputs) {
                 val asset = assetsById[assetId] ?: continue
-                val localFile = downloadedAssets[assetId]!!
+                val localFile = downloadedAssets[assetId] ?: continue
                 if (asset.type == AssetType.IMAGE) {
                     val longestUse = clips.filter { it.assetId == assetId }
                         .maxOfOrNull { (it.trimOut - it.trimIn).toDouble() } ?: 5.0
@@ -130,237 +240,81 @@ object FFmpegService {
             val filters = mutableListOf<String>()
 
             // ------------------------------------------------------------------ video pipeline
-            val videoTrackIds = tracks.filter { it.type == TrackType.VIDEO }.map { it.id }.toSet()
-            val videoClips = clips.filter { it.trackId in videoTrackIds }
-                .sortedWith(
-                    compareBy<Clip> { clip -> tracks.first { it.id == clip.trackId }.zIndex }
-                        .thenBy { it.timelineStart }
-                )
-
-            // Clips grouped by their track, so each clip's coverage can be held until the NEXT clip
-            // on its own track begins when only a sub-frame sliver separates them (see below).
-            val clipsByTrack = clips.groupBy { it.trackId }
-
             var currentVideoTag = "0:v"
             var chain = 0
-            for (clip in videoClips) {
-                val asset = assetsById[clip.assetId] ?: continue
-                val duration = (clip.trimOut - clip.trimIn).toDouble()
-                if (duration <= 0) continue
-                val start = clip.timelineStart.toDouble()
-                val end = start + duration
-                // How long this clip stays on screen: its natural end, stretched to the next clip's
-                // start when only a sub-frame sliver separates them, so the black canvas never peeks
-                // through between two clips placed back-to-back (mirrors the preview's active-clip
-                // window via the shared [bridgedClipEnd]). The video overlay below holds its last
-                // frame (eof_action=repeat) across any such sliver.
-                val displayEnd = bridgedClipEnd(clip, clipsByTrack[clip.trackId] ?: listOf(clip)).toDouble()
-                val effects = parseEffectsConfig(clip.effectsConfig)
-                val rawEffects = try {
-                    json.parseToJsonElement(clip.effectsConfig).jsonObject
-                } catch (e: Exception) {
-                    null
-                }
 
-                if (asset.ossUrl.isBlank()) {
-                    if (asset.isTextElement) {
-                        // A first-class text element: styled text (color / font size / background)
-                        // composited over the current video with the clip's transition — the exact
-                        // analog of the styled TextClip in the preview. Built as its own canvas-sized
-                        // layer (a color source + drawtext) so transitions apply to it like any clip.
-                        currentVideoTag = renderTextElementLayer(
-                            filters, currentVideoTag, clip, asset, effects,
-                            start, displayEnd, duration, canvasWidth, canvasHeight
-                        )
-                        continue
-                    }
-                    // Placeholder (description-only) item: large centered white text over the video.
-                    val text = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "Untitled scene" }
-                    val nextTag = "v_text_${chain++}"
-                    val lines = wrapText(text, 34, 4)
-                    var tag = currentVideoTag
-                    lines.forEachIndexed { index, line ->
-                        val outTag = if (index == lines.lastIndex) nextTag else "v_textline_${chain++}"
-                        val yExpr = "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * (canvasHeight / 12)).ff()}"
-                        filters.add(
-                            "[$tag]drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
-                                "fontcolor=white:fontsize=${canvasHeight / 14}:x=(w-text_w)/2:y=$yExpr:" +
-                                "enable='between(t,${start.ff()},${displayEnd.ff()})'[$outTag]"
-                        )
-                        tag = outTag
-                    }
-                    currentVideoTag = nextTag
-                    continue
-                }
+            // 1) Composite pre-rendered track files in z-order (one overlay each).
+            for (track in videoTracksSorted) {
+                val tIdx = trackInputMap[track.id] ?: continue
+                val nextTag = "v_preroll_${track.id}"
+                filters.add("[$currentVideoTag][$tIdx:v]overlay=eof_action=pass:format=auto[$nextTag]")
+                currentVideoTag = nextTag
+                logger.info("Composited pre-rendered track ${track.id} (input $tIdx)")
+            }
 
-                val idx = assetInputMap[clip.assetId] ?: continue
-                val srcStart = asset.sourceOffsetSeconds + clip.trimIn
-                val srcEnd = asset.sourceOffsetSeconds + clip.trimOut
-
-                val videoFilters = mutableListOf<String>()
-                videoFilters.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
-                videoFilters.add("setpts=PTS-STARTPTS")
-                videoFilters.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
-                // Crop-fit honoring the clip's 0-100 offsets (50 = centered): 0 shows the
-                // left/top edge of the media, 100 the right/bottom edge.
-                val offsetFx = (effects.offsetX / 100.0).coerceIn(0.0, 1.0)
-                val offsetFy = (effects.offsetY / 100.0).coerceIn(0.0, 1.0)
-                videoFilters.add("crop=$canvasWidth:$canvasHeight:(iw-ow)*${offsetFx.ff()}:(ih-oh)*${offsetFy.ff()}")
-                videoFilters.add("fps=30")
-
-                // Color grading from effectsConfig (kept from the original renderer).
-                val cb = rawEffects?.get("colorbalance")?.jsonObject ?: rawEffects?.get("colorBalance")?.jsonObject
-                if (cb != null) {
-                    fun v(k: String) = cb[k]?.jsonPrimitive?.doubleOrNull ?: 0.0
-                    videoFilters.add(
-                        "colorbalance=rs=${v("rs").ff()}:gs=${v("gs").ff()}:bs=${v("bs").ff()}:rm=${v("rm").ff()}:gm=${v("gm").ff()}:bm=${v("bm").ff()}:rh=${v("rh").ff()}:gh=${v("gh").ff()}:bh=${v("bh").ff()}"
-                    )
-                } else {
-                    val brightness = rawEffects?.get("brightness")?.jsonPrimitive?.doubleOrNull ?: 0.0
-                    val contrast = rawEffects?.get("contrast")?.jsonPrimitive?.doubleOrNull ?: 1.0
-                    val saturation = rawEffects?.get("saturation")?.jsonPrimitive?.doubleOrNull ?: 1.0
-                    if (brightness != 0.0 || contrast != 1.0 || saturation != 1.0) {
-                        videoFilters.add("eq=brightness=${brightness.ff()}:contrast=${contrast.ff()}:saturation=${saturation.ff()}")
-                    }
-                }
-
-                // Transition-in over whatever is underneath (clip-local time 0..transition).
-                val transition = effects.transition
-                val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
-                val overlayExtra = buildTransitionFilters(
-                    videoFilters, transition, transitionDur, start, canvasWidth, canvasHeight
+            // 2) Legacy per-clip overlay for tracks we did not pre-render.
+            for (track in videoTracksSorted) {
+                if (track.id in preRenderedTrackIds) continue
+                val trackClips = (clipsByTrack[track.id] ?: emptyList())
+                    .sortedBy { it.timelineStart }
+                    .filter { (it.trimOut - it.trimIn) > 0f && assetsById.containsKey(it.assetId) }
+                if (trackClips.isEmpty()) continue
+                logger.info(
+                    "Composing video track ${track.id} via per-clip overlay " +
+                        "(${trackClips.size} clip(s))"
                 )
-
-                // Shift PTS so content plays in sync with its position on the timeline.
-                videoFilters.add("setpts=PTS+${start.ff()}/TB")
-
-                val trimmedTag = "v_trimmed_${clip.id}"
-                filters.add("[$idx:v]${videoFilters.joinToString(",")}[$trimmedTag]")
-
-                val nextVideoTag = "v_overlaid_${clip.id}"
-                // eof_action=repeat holds this clip's LAST decoded frame once its (trimmed) content
-                // ends, instead of dropping to the black canvas — so a sub-frame content tail, and
-                // any bridged sliver up to displayEnd, keep showing the frame rather than flashing
-                // black between this clip and the next.
-                filters.add(
-                    "[$currentVideoTag][$trimmedTag]overlay=eof_action=repeat:enable='between(t,${start.ff()},${displayEnd.ff()})'$overlayExtra[$nextVideoTag]"
-                )
-                currentVideoTag = nextVideoTag
+                for (clip in trackClips) {
+                    val result = overlayClipOntoVideo(
+                        filters = filters,
+                        currentVideoTag = currentVideoTag,
+                        clip = clip,
+                        trackClips = trackClips,
+                        assetsById = assetsById,
+                        assetInputMap = assetInputMap,
+                        canvasWidth = canvasWidth,
+                        canvasHeight = canvasHeight,
+                        chain = chain
+                    ) ?: continue
+                    currentVideoTag = result.videoTag
+                    chain = result.chain
+                }
             }
 
             // Captions for voice clips (burned in over the final video).
+            //
+            // IMPORTANT: captions used to be one full-movie `color`+`geq`+`drawtext` layer and one
+            // `overlay` per 4-word chunk (capped at 90). A long narrated movie — e.g. 1000+ words
+            // over a ~6 minute image sequence — produced ~90 full-duration filter branches and
+            // drove FFmpeg past 14 GiB RSS, after which earlyoom sent SIGTERM (exit 255,
+            // "Exiting normally, received signal 15"). Burn them in a single libass pass instead:
+            // collect every caption event, write one `.ass` sidecar, and apply one `ass=` filter.
+            // That keeps memory flat regardless of caption count and lifts the artificial 90-chunk
+            // cap so the whole transcript is subtitled.
             val voiceTrackIds = tracks.filter { it.type == TrackType.VOICE }.map { it.id }.toSet()
-            // Every caption chunk's on-timeline start, in ascending order. A caption is cut off the
-            // instant the NEXT caption chunk begins (see [captionVisibleEnd]) so captions from
-            // overlapping voice clips (e.g. on different voice tracks) never render on top of each
-            // other — a newly started caption immediately replaces any earlier one, mirroring the
-            // live preview. Collected with the SAME iteration order, skip conditions and 90-chunk
-            // cap as the render loop below so these starts line up with the captions actually burned
-            // in.
-            val captionStartTimes = mutableListOf<Double>()
-            run {
-                var collected = 0
-                for (clip in clips.filter { it.trackId in voiceTrackIds }) {
-                    val asset = assetsById[clip.assetId] ?: continue
-                    val captions = parseEffectsConfig(clip.effectsConfig).captions ?: continue
-                    if (!captions.enabled || asset.wordTimings.isEmpty()) continue
-                    for (chunk in asset.wordTimings.chunked(4)) {
-                        if (collected >= 90) break
-                        val visStart = clip.timelineStart + (chunk.first().start - clip.trimIn)
-                        val visEnd = clip.timelineStart + (chunk.last().end - clip.trimIn)
-                        if (visEnd <= clip.timelineStart.toDouble() ||
-                            visStart >= (clip.timelineStart + (clip.trimOut - clip.trimIn)).toDouble()
-                        ) continue
-                        captionStartTimes.add(visStart)
-                        collected++
-                    }
-                }
-            }
-            captionStartTimes.sort()
-
-            var captionChunks = 0
-            for (clip in clips.filter { it.trackId in voiceTrackIds }) {
-                val asset = assetsById[clip.assetId] ?: continue
-                val captions = parseEffectsConfig(clip.effectsConfig).captions ?: continue
-                if (!captions.enabled || asset.wordTimings.isEmpty()) continue
-
-                val fontSize = (captions.fontSizeSp * canvasHeight / 480.0).toInt().coerceIn(12, 120)
-                val color = captions.color.removePrefix("#").ifBlank { "FFFFFF" }
-                val captionFont = fontFileArg(captions.fontFamily, captions.fontUrl)
-                // Padding around the caption text, proportional to the font size, mirroring the
-                // preview chip's `padding(horizontal = 12.dp, vertical = 4.dp)` (roughly a 3:1 ratio).
-                val padH = (fontSize * 0.4).toInt().coerceAtLeast(6)
-                val padV = (fontSize * 0.2).toInt().coerceAtLeast(3)
-                // Estimated single-line text height (drawtext's text_h is ~1.2x the font size).
-                val textH = (fontSize * 1.2).toInt()
-                val boxHeight = textH + 2 * padV
-                // Corner radius mirrors the preview chip's RoundedCornerShape(8.dp), scaled to the
-                // render canvas the same way the font size is (both authored against a 480px stage).
-                val baseRadius = (8.0 * canvasHeight / 480.0).toInt().coerceAtLeast(2)
-                // Translucent black background (matches the preview's `Color.Black.copy(alpha=0.45f)`).
-                val boxAlpha255 = (0.45 * 255).toInt()
-
-                // Where the whole caption chip (box + text baked in) sits vertically. `h` here is the
-                // overlay input's height, i.e. the chip's own `boxHeight`, so `(H-h)/2` centers the
-                // chip in the frame; the top/bottom variants offset it by `padV` so the text inside
-                // ends up at the same line it used to. The text is centered WITHIN the chip below, so
-                // this only positions the chip — it never affects text-vs-box vertical alignment.
-                val boxYExpr = when (captions.position) {
-                    "top" -> "H/10-$padV"
-                    "center" -> "(H-h)/2"
-                    else -> "H-H/6-$padV"
-                }
-
-                for (chunk in asset.wordTimings.chunked(4)) {
-                    if (captionChunks >= 90) break
-                    val chunkStart = chunk.first().start
-                    val chunkEnd = chunk.last().end
-                    // Word timings are asset-relative; map into output time via the clip window.
-                    val visStart = clip.timelineStart + (chunkStart - clip.trimIn)
-                    val visEnd = clip.timelineStart + (chunkEnd - clip.trimIn)
-                    if (visEnd <= clip.timelineStart.toDouble() ||
-                        visStart >= (clip.timelineStart + (clip.trimOut - clip.trimIn)).toDouble()
-                    ) continue
-                    val text = chunk.joinToString(" ") { it.word }
-                    val chunkIdx = captionChunks++
-
-                    // Rounded background behind the caption. `drawtext`'s own `box=` only draws SQUARE
-                    // corners, so instead we build a box-sized color layer, round its corners with a
-                    // `geq` alpha mask and overlay it behind the text (the issue's workaround) — giving
-                    // the same rounded chip as the preview. The box is sized to an ESTIMATE of the text
-                    // width (drawtext's exact `text_w` isn't known here); a small over-estimate merely
-                    // leaves a little extra side padding, while both stay horizontally centered.
-                    val estTextWidth = (text.length * fontSize * 0.6).toInt()
-                    val boxWidth = (estTextWidth + 2 * padH).coerceIn(2 * padH + 1, canvasWidth)
-                    val radius = minOf(baseRadius, boxHeight / 2, boxWidth / 2).coerceAtLeast(1)
-
-                    val boxTag = "v_capbox_$chunkIdx"
-                    val nextTag = "v_cap_$chunkIdx"
-
-                    // Build the whole caption chip as one canvas-independent layer: a box-sized
-                    // color plane, its corners rounded by a `geq` alpha mask, with the text drawn
-                    // ON the plane and centered inside it via drawtext's OWN `text_h`
-                    // (`y=(h-text_h)/2`). Baking the text into the box this way keeps it perfectly
-                    // centered regardless of any text-height estimate — the box position below only
-                    // moves the finished chip, it can no longer misalign the text vs the box.
-                    filters.add(
-                        "color=c=black:s=${boxWidth}x${boxHeight}:r=30:d=${totalDuration.ff()},format=yuva420p," +
-                            "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':" +
-                            "a='${roundedRectAlphaExpression(radius, boxAlpha255)}'," +
-                            "drawtext=${captionFont}text='${escapeDrawtext(text)}':" +
-                            "fontcolor=0x$color:fontsize=$fontSize:borderw=2:bordercolor=black@0.7:" +
-                            "x=(w-text_w)/2:y=(h-text_h)/2[$boxTag]"
-                    )
-                    // Cut this caption off the moment the next caption chunk begins so two captions
-                    // (e.g. from overlapping voice clips on different tracks) never show at once.
-                    val visibleEnd = captionVisibleEnd(visStart, visEnd, captionStartTimes)
-                    // Overlay the finished chip at the caption position, only during its window.
-                    filters.add(
-                        "[$currentVideoTag][$boxTag]overlay=x=(W-w)/2:y=$boxYExpr:" +
-                            "enable='between(t,${visStart.ff()},${visibleEnd.ff()})'[$nextTag]"
-                    )
-                    currentVideoTag = nextTag
-                }
+            val captionEvents = collectCaptionEvents(
+                clips = clips.filter { it.trackId in voiceTrackIds },
+                assetsById = assetsById,
+                canvasHeight = canvasHeight
+            )
+            if (captionEvents.isNotEmpty()) {
+                val fontsDir = File(tempDir, "caption_fonts").apply { mkdirs() }
+                val assFile = File(tempDir, "captions.ass")
+                writeAssCaptionsFile(
+                    assFile = assFile,
+                    fontsDir = fontsDir,
+                    canvasWidth = canvasWidth,
+                    canvasHeight = canvasHeight,
+                    events = captionEvents
+                )
+                val nextTag = "v_captions"
+                val assPath = escapeFilterPath(assFile.absolutePath)
+                val fontsPath = escapeFilterPath(fontsDir.absolutePath)
+                filters.add(
+                    "[$currentVideoTag]ass=filename='$assPath':fontsdir='$fontsPath':" +
+                        "original_size=${canvasWidth}x${canvasHeight}[$nextTag]"
+                )
+                currentVideoTag = nextTag
+                logger.info("Burning ${captionEvents.size} caption event(s) via libass (${assFile.name})")
             }
 
             // ------------------------------------------------------------------ audio pipeline
@@ -440,7 +394,11 @@ object FFmpegService {
 
             withContext(Dispatchers.IO) {
                 val process = try {
-                    ProcessBuilder(args).start()
+                    ProcessBuilder(args)
+                        // Inherit nothing from the server's stdin; keep stdout/stderr as pipes so
+                        // progress parsing and "argument list too long" diagnostics stay reliable.
+                        .redirectInput(ProcessBuilder.Redirect.PIPE)
+                        .start()
                 } catch (e: java.io.IOException) {
                     // Previously ANY IOException here was treated as "ffmpeg not installed" and the
                     // render silently produced/uploaded a 28-byte mock file that was reported as a
@@ -454,28 +412,47 @@ object FFmpegService {
                     throw Exception("Failed to launch FFmpeg (${MediaUtil.ffmpegBinary}): ${e.message}", e)
                 }
 
-                process.errorStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line ->
-                        logger.info("[FFmpeg] $line")
-                        ffmpegLogTail.addLast(line)
-                        while (ffmpegLogTail.size > FFMPEG_LOG_TAIL_LINES) ffmpegLogTail.removeFirst()
-                        val seconds = parseFfmpegTime(line)
-                        if (seconds != null && totalDuration > 0) {
-                            val progress = ((seconds / totalDuration) * 100).toInt().coerceIn(0, 100)
-                            val scaledProgress = 25 + (progress * 0.6).toInt()
-                            onProgress(scaledProgress, "Rendering movie: $progress%...")
+                try {
+                    // Drain stdout on a side thread so a chatty build of FFmpeg can never fill the
+                    // pipe and deadlock while we only consume stderr for progress.
+                    val stdoutDrainer = Thread({
+                        runCatching { process.inputStream.copyTo(java.io.OutputStream.nullOutputStream()) }
+                    }, "ffmpeg-stdout-${job.id}").apply { isDaemon = true; start() }
+
+                    process.errorStream.bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            logger.info("[FFmpeg] $line")
+                            ffmpegLogTail.addLast(line)
+                            while (ffmpegLogTail.size > FFMPEG_LOG_TAIL_LINES) ffmpegLogTail.removeFirst()
+                            val seconds = parseFfmpegTime(line)
+                            if (seconds != null && totalDuration > 0) {
+                                val progress = ((seconds / totalDuration) * 100).toInt().coerceIn(0, 100)
+                                val scaledProgress = 25 + (progress * 0.6).toInt()
+                                onProgress(scaledProgress, "Rendering movie: $progress%...")
+                            }
                         }
                     }
-                }
-                val exitCode = process.waitFor()
-                if (exitCode != 0) {
-                    // Previously a non-zero exit silently fell back to a placeholder file and the
-                    // render was reported as successful. Surface the real failure instead.
-                    logger.error(
-                        "FFmpeg render failed for job ${job.id} (exit code $exitCode). FFmpeg output tail:\n" +
-                            ffmpegLogTail.joinToString("\n")
-                    )
-                    throw Exception("FFmpeg exited with code $exitCode. ${summarizeFfmpegError(ffmpegLogTail)}")
+                    val exitCode = process.waitFor()
+                    runCatching { stdoutDrainer.join(5_000) }
+                    if (exitCode != 0) {
+                        // Previously a non-zero exit silently fell back to a placeholder file and the
+                        // render was reported as successful. Surface the real failure instead.
+                        logger.error(
+                            "FFmpeg render failed for job ${job.id} (exit code $exitCode). FFmpeg output tail:\n" +
+                                ffmpegLogTail.joinToString("\n")
+                        )
+                        throw Exception("FFmpeg exited with code $exitCode. ${summarizeFfmpegError(ffmpegLogTail)}")
+                    }
+                } finally {
+                    // If the coroutine is cancelled mid-render (or we throw after launch), make sure
+                    // the child cannot linger and keep eating RAM — the failure mode that previously
+                    // left multi-GB FFmpeg processes around until earlyoom reaped them.
+                    if (process.isAlive) {
+                        process.destroy()
+                        if (!process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                            process.destroyForcibly()
+                        }
+                    }
                 }
             }
 
@@ -677,6 +654,714 @@ object FFmpegService {
                 }
             }
             false
+        }
+    }
+
+    /**
+     * Downscales a still into [outFile] so neither side exceeds [maxSide]. Returns the usable file
+     * (fitted output on success, otherwise the original [src]) — never null unless [src] is missing.
+     */
+    internal fun prepareStillImage(src: File, outFile: File, maxSide: Int): File? {
+        if (!src.exists() || src.length() == 0L) return null
+        if (maxSide < 2) return src
+        return try {
+            val pb = ProcessBuilder(
+                MediaUtil.ffmpegBinary, "-y",
+                "-i", src.absolutePath,
+                "-vf", "scale=w=$maxSide:h=$maxSide:force_original_aspect_ratio=decrease",
+                outFile.absolutePath
+            ).redirectErrorStream(true)
+            val proc = pb.start()
+            // Drain so a chatty ffmpeg can't fill the pipe.
+            val output = proc.inputStream.bufferedReader().readText()
+            val code = proc.waitFor()
+            if (code == 0 && outFile.exists() && outFile.length() > 0L) {
+                outFile
+            } else {
+                logger.warn(
+                    "Still-image prepare failed for ${src.name} (exit $code); using original. $output"
+                        .take(400)
+                )
+                src
+            }
+        } catch (e: Exception) {
+            logger.warn("Still-image prepare threw for ${src.name}: ${e.message}; using original.")
+            src
+        }
+    }
+
+    /**
+     * True when [trackClips] can be built with the memory-safe concat path: no timeline overlaps
+     * (after bridging) and no SLIDE transitions (which need per-clip overlay x/y against the layer
+     * underneath).
+     */
+    internal fun canConcatComposeTrack(trackClips: List<Clip>): Boolean {
+        if (trackClips.size <= 1) {
+            // A single SLIDE clip still needs the overlay path so x/y can animate over the base.
+            val only = trackClips.singleOrNull() ?: return true
+            return parseEffectsConfig(only.effectsConfig).transition?.type != TransitionType.SLIDE
+        }
+        val sorted = trackClips.sortedBy { it.timelineStart }
+        for (i in 0 until sorted.lastIndex) {
+            val a = sorted[i]
+            val b = sorted[i + 1]
+            val aEnd = bridgedClipEnd(a, sorted)
+            // Anything past a hair of float noise counts as a real overlap → overlay path.
+            if (aEnd > b.timelineStart + 1e-4f) return false
+        }
+        return sorted.none {
+            parseEffectsConfig(it.effectsConfig).transition?.type == TransitionType.SLIDE
+        }
+    }
+
+    /**
+     * Pre-renders a sequential track to a single H.264 file: one short FFmpeg invocation per clip
+     * (and per gap), then a concat demuxer pass. Peak RSS stays near one still/decode instead of
+     * holding every image input open at once.
+     */
+    internal fun renderTrackViaSegmentFiles(
+        tempDir: File,
+        trackId: String,
+        trackClips: List<Clip>,
+        assetsById: Map<String, Asset>,
+        downloadedAssets: Map<String, File>,
+        totalDuration: Double,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        onPiece: () -> Unit = {}
+    ): File {
+        val pieces = mutableListOf<File>()
+        var cursor = 0.0
+        val sorted = trackClips.sortedBy { it.timelineStart }
+        var gapIdx = 0
+
+        fun addBlackGap(duration: Double) {
+            if (duration <= 0.001) return
+            val gapFile = File(tempDir, "gap_${trackId}_${gapIdx++}.mp4")
+            renderSolidColorSegmentFile(
+                outFile = gapFile,
+                duration = duration,
+                canvasWidth = canvasWidth,
+                canvasHeight = canvasHeight,
+                color = "black"
+            )
+            pieces += gapFile
+            onPiece()
+        }
+
+        for (clip in sorted) {
+            val asset = assetsById[clip.assetId] ?: continue
+            val start = clip.timelineStart.toDouble()
+            val duration = (clip.trimOut - clip.trimIn).toDouble()
+            if (duration <= 0) continue
+            val displayEnd = bridgedClipEnd(clip, sorted).toDouble()
+            val displayDur = (displayEnd - start).coerceAtLeast(duration)
+
+            if (start > cursor + 0.001) addBlackGap(start - cursor)
+
+            val segFile = File(tempDir, "seg_${clip.id}.mp4")
+            when {
+                asset.ossUrl.isBlank() -> {
+                    // Placeholder / text element: render via a tiny lavfi+drawtext graph.
+                    renderPlaceholderSegmentFile(
+                        outFile = segFile,
+                        asset = asset,
+                        effects = parseEffectsConfig(clip.effectsConfig),
+                        duration = displayDur,
+                        canvasWidth = canvasWidth,
+                        canvasHeight = canvasHeight
+                    )
+                }
+                else -> {
+                    val src = downloadedAssets[asset.id]
+                        ?: throw Exception("Missing local file for asset ${asset.id} while pre-rendering")
+                    renderMediaClipSegmentFile(
+                        outFile = segFile,
+                        clip = clip,
+                        asset = asset,
+                        srcFile = src,
+                        effects = parseEffectsConfig(clip.effectsConfig),
+                        duration = duration,
+                        displayDur = displayDur,
+                        canvasWidth = canvasWidth,
+                        canvasHeight = canvasHeight
+                    )
+                }
+            }
+            pieces += segFile
+            onPiece()
+            cursor = maxOf(cursor, displayEnd)
+        }
+
+        if (cursor < totalDuration - 0.001) addBlackGap(totalDuration - cursor)
+        if (pieces.isEmpty()) {
+            val blank = File(tempDir, "track_${trackId}_blank.mp4")
+            renderSolidColorSegmentFile(blank, totalDuration, canvasWidth, canvasHeight, "black")
+            return blank
+        }
+
+        val outFile = File(tempDir, "track_${trackId}.mp4")
+        concatVideoFilesDemuxer(pieces, outFile)
+        return outFile
+    }
+
+    /** Solid-color H.264 segment used for timeline gaps in pre-rendered tracks. */
+    internal fun renderSolidColorSegmentFile(
+        outFile: File,
+        duration: Double,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        color: String
+    ) {
+        val dur = duration.coerceAtLeast(0.05)
+        runFfmpegChecked(
+            listOf(
+                MediaUtil.ffmpegBinary, "-y",
+                "-f", "lavfi",
+                "-i", "color=c=$color:s=${canvasWidth}x${canvasHeight}:r=30:d=${dur.ff()}",
+                "-frames:v", ((dur * 30.0).toInt().coerceAtLeast(1)).toString(),
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-an",
+                outFile.absolutePath
+            ),
+            label = "solid-segment ${outFile.name}"
+        )
+    }
+
+    /**
+     * Encodes one media clip to a canvas-sized H.264 segment. Fade transitions use RGB fade-from-
+     * black (no alpha) so the segment is a plain yuv420p file concat-demuxer can join.
+     */
+    internal fun renderMediaClipSegmentFile(
+        outFile: File,
+        clip: Clip,
+        asset: Asset,
+        srcFile: File,
+        effects: EffectsConfig,
+        duration: Double,
+        displayDur: Double,
+        canvasWidth: Int,
+        canvasHeight: Int
+    ) {
+        val rawEffects = try {
+            json.parseToJsonElement(clip.effectsConfig).jsonObject
+        } catch (_: Exception) {
+            null
+        }
+        val srcStart = asset.sourceOffsetSeconds + clip.trimIn
+        val srcEnd = asset.sourceOffsetSeconds + clip.trimOut
+        val vf = mutableListOf<String>()
+        if (asset.type != AssetType.IMAGE) {
+            vf.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
+            vf.add("setpts=PTS-STARTPTS")
+        }
+        vf.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
+        val offsetFx = (effects.offsetX / 100.0).coerceIn(0.0, 1.0)
+        val offsetFy = (effects.offsetY / 100.0).coerceIn(0.0, 1.0)
+        vf.add("crop=$canvasWidth:$canvasHeight:(iw-ow)*${offsetFx.ff()}:(ih-oh)*${offsetFy.ff()}")
+        vf.add("fps=30")
+        appendColorGrading(vf, rawEffects)
+
+        // Bake fade-style transitions as RGB fade-from-black. SLIDE is excluded from this path
+        // entirely (see canConcatComposeTrack). Alpha-only fades become RGB fades so segments stay
+        // yuv420p-friendly for the concat demuxer.
+        val transition = effects.transition
+        val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
+        if (transition != null && transition.type != TransitionType.NONE &&
+            transition.type != TransitionType.SLIDE && transitionDur > 0.0
+        ) {
+            when (transition.type) {
+                TransitionType.CIRCLE, TransitionType.VIGNETTE, TransitionType.VORONOI -> {
+                    // Complex reveals need alpha; approximate with a short RGB fade so we still
+                    // export something reasonable without a multi-input overlay graph.
+                    vf.add("fade=t=in:st=0:d=${transitionDur.ff()}")
+                }
+                else -> vf.add("fade=t=in:st=0:d=${transitionDur.ff()}")
+            }
+        }
+
+        val pad = displayDur - duration
+        if (pad > 0.001) {
+            vf.add("tpad=stop_mode=clone:stop_duration=${pad.ff()}")
+        }
+        vf.add("setsar=1")
+        vf.add("format=yuv420p")
+
+        val args = mutableListOf<String>()
+        args.add(MediaUtil.ffmpegBinary); args.add("-y")
+        if (asset.type == AssetType.IMAGE) {
+            args.add("-loop"); args.add("1")
+            args.add("-t"); args.add((duration + 0.25).ff())
+            args.add("-i"); args.add(srcFile.absolutePath)
+        } else {
+            args.add("-i"); args.add(srcFile.absolutePath)
+        }
+        args.add("-vf"); args.add(vf.joinToString(","))
+        args.add("-an")
+        args.add("-c:v"); args.add("libx264")
+        args.add("-preset"); args.add("ultrafast")
+        args.add("-pix_fmt"); args.add("yuv420p")
+        args.add("-t"); args.add(displayDur.ff())
+        args.add(outFile.absolutePath)
+        runFfmpegChecked(args, label = "clip-segment ${clip.id}")
+    }
+
+    /** Description-only / simple text stand-in as an H.264 segment. */
+    private fun renderPlaceholderSegmentFile(
+        outFile: File,
+        asset: Asset,
+        effects: EffectsConfig,
+        duration: Double,
+        canvasWidth: Int,
+        canvasHeight: Int
+    ) {
+        val text = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "Untitled scene" }
+        val lines = wrapText(text, 34, 4)
+        val draws = lines.mapIndexed { index, line ->
+            val yExpr =
+                "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * (canvasHeight / 12.0)).ff()}"
+            "drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
+                "fontcolor=white:fontsize=${canvasHeight / 14}:x=(w-text_w)/2:y=$yExpr"
+        }
+        // effects reserved for future text-element styling in the pre-render path.
+        @Suppress("UNUSED_PARAMETER")
+        val _effects = effects
+        runFfmpegChecked(
+            listOf(
+                MediaUtil.ffmpegBinary, "-y",
+                "-f", "lavfi",
+                "-i", "color=c=black:s=${canvasWidth}x${canvasHeight}:r=30:d=${duration.ff()}",
+                "-vf", draws.joinToString(","),
+                "-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-t", duration.ff(),
+                outFile.absolutePath
+            ),
+            label = "placeholder-segment ${asset.id}"
+        )
+    }
+
+    /**
+     * Joins [pieces] end-to-end with the concat demuxer (re-encode to normalize timebases). Each
+     * piece must already be canvas-sized yuv420p H.264.
+     */
+    internal fun concatVideoFilesDemuxer(pieces: List<File>, outFile: File) {
+        require(pieces.isNotEmpty()) { "concatVideoFilesDemuxer requires at least one piece" }
+        if (pieces.size == 1) {
+            pieces[0].copyTo(outFile, overwrite = true)
+            return
+        }
+        val listFile = File(outFile.parentFile, "${outFile.nameWithoutExtension}_concat.txt")
+        listFile.writeText(
+            pieces.joinToString("\n") { piece ->
+                // Single quotes in paths break the concat demuxer list syntax; escape them.
+                val p = piece.absolutePath.replace("'", "'\\''")
+                "file '$p'"
+            } + "\n"
+        )
+        runFfmpegChecked(
+            listOf(
+                MediaUtil.ffmpegBinary, "-y",
+                "-f", "concat", "-safe", "0",
+                "-i", listFile.absolutePath,
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-an",
+                outFile.absolutePath
+            ),
+            label = "concat-demuxer ${outFile.name}"
+        )
+    }
+
+    /** Runs FFmpeg and throws with stderr tail when the exit code is non-zero. */
+    internal fun runFfmpegChecked(args: List<String>, label: String) {
+        val pb = ProcessBuilder(args).redirectErrorStream(true)
+        val proc = pb.start()
+        val output = StringBuilder()
+        proc.inputStream.bufferedReader().useLines { lines ->
+            lines.forEach { line ->
+                if (output.length < 8_000) output.appendLine(line)
+            }
+        }
+        val code = proc.waitFor()
+        if (code != 0) {
+            logger.error("FFmpeg $label failed (exit $code):\n$output")
+            throw Exception(
+                "FFmpeg $label failed (exit $code). ${summarizeFfmpegError(output.lines())}"
+            )
+        }
+    }
+
+    /**
+     * Builds one full-timeline yuva track stream into [outputTag] by concatenating clip segments
+     * (and transparent gaps). Returns the next free [chain] counter value.
+     *
+     * Prefer [renderTrackViaSegmentFiles] for real renders (keeps RAM flat). This filter-only
+     * helper remains for unit tests and small in-graph compositions.
+     */
+    internal fun appendConcatTrack(
+        filters: MutableList<String>,
+        trackClips: List<Clip>,
+        assetsById: Map<String, Asset>,
+        assetInputMap: Map<String, Int>,
+        totalDuration: Double,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        chain: Int,
+        outputTag: String
+    ): Int {
+        var nextChain = chain
+        val pieceTags = mutableListOf<String>()
+        var cursor = 0.0
+
+        fun addTransparentGap(duration: Double) {
+            if (duration <= 0.001) return
+            val tag = "v_gap_${nextChain++}"
+            filters.add(
+                "color=c=black@0.0:s=${canvasWidth}x${canvasHeight}:r=30:d=${duration.ff()}," +
+                    "format=yuva420p,setsar=1,fps=30[$tag]"
+            )
+            pieceTags.add(tag)
+        }
+
+        val sorted = trackClips.sortedBy { it.timelineStart }
+        for (clip in sorted) {
+            val asset = assetsById[clip.assetId] ?: continue
+            val start = clip.timelineStart.toDouble()
+            val duration = (clip.trimOut - clip.trimIn).toDouble()
+            if (duration <= 0) continue
+            val displayEnd = bridgedClipEnd(clip, sorted).toDouble()
+            val displayDur = (displayEnd - start).coerceAtLeast(duration)
+
+            if (start > cursor + 0.001) addTransparentGap(start - cursor)
+
+            val pieceTag = "v_piece_${clip.id}"
+            val effects = parseEffectsConfig(clip.effectsConfig)
+            when {
+                asset.ossUrl.isBlank() && asset.isTextElement -> {
+                    appendTextElementSegment(
+                        filters = filters,
+                        clip = clip,
+                        asset = asset,
+                        effects = effects,
+                        duration = duration,
+                        displayDur = displayDur,
+                        canvasWidth = canvasWidth,
+                        canvasHeight = canvasHeight,
+                        outputTag = pieceTag
+                    )
+                }
+                asset.ossUrl.isBlank() -> {
+                    appendPlaceholderSegment(
+                        filters = filters,
+                        asset = asset,
+                        duration = displayDur,
+                        canvasWidth = canvasWidth,
+                        canvasHeight = canvasHeight,
+                        outputTag = pieceTag
+                    )
+                }
+                else -> {
+                    val idx = assetInputMap[clip.assetId]
+                    if (idx == null) {
+                        // Missing download — keep timeline length with a transparent stand-in.
+                        addTransparentGap(displayDur)
+                        cursor = maxOf(cursor, displayEnd)
+                        continue
+                    }
+                    appendMediaClipSegment(
+                        filters = filters,
+                        clip = clip,
+                        asset = asset,
+                        inputIndex = idx,
+                        effects = effects,
+                        duration = duration,
+                        displayDur = displayDur,
+                        canvasWidth = canvasWidth,
+                        canvasHeight = canvasHeight,
+                        outputTag = pieceTag,
+                        timelineStartForSlide = 0.0 // clip-local; concat path never uses SLIDE
+                    )
+                }
+            }
+            pieceTags.add(pieceTag)
+            cursor = maxOf(cursor, displayEnd)
+        }
+
+        if (cursor < totalDuration - 0.001) addTransparentGap(totalDuration - cursor)
+
+        when {
+            pieceTags.isEmpty() -> {
+                // Degenerate track: full-duration transparency.
+                filters.add(
+                    "color=c=black@0.0:s=${canvasWidth}x${canvasHeight}:r=30:d=${totalDuration.ff()}," +
+                        "format=yuva420p,setsar=1,fps=30[$outputTag]"
+                )
+            }
+            pieceTags.size == 1 -> {
+                filters.add("[${pieceTags[0]}]format=yuva420p,setsar=1,fps=30[$outputTag]")
+            }
+            else -> {
+                filters.add(
+                    "${pieceTags.joinToString("") { "[$it]" }}" +
+                        "concat=n=${pieceTags.size}:v=1:a=0,format=yuva420p,setsar=1[$outputTag]"
+                )
+            }
+        }
+        return nextChain
+    }
+
+    /**
+     * Clip-local media segment (trim → scale/crop → effects → optional transition → pad) written
+     * as yuva420p into [outputTag]. Used by the concat track builder.
+     */
+    private fun appendMediaClipSegment(
+        filters: MutableList<String>,
+        clip: Clip,
+        asset: Asset,
+        inputIndex: Int,
+        effects: EffectsConfig,
+        duration: Double,
+        displayDur: Double,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        outputTag: String,
+        timelineStartForSlide: Double
+    ) {
+        val rawEffects = try {
+            json.parseToJsonElement(clip.effectsConfig).jsonObject
+        } catch (_: Exception) {
+            null
+        }
+        val srcStart = asset.sourceOffsetSeconds + clip.trimIn
+        val srcEnd = asset.sourceOffsetSeconds + clip.trimOut
+        val videoFilters = mutableListOf<String>()
+        videoFilters.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
+        videoFilters.add("setpts=PTS-STARTPTS")
+        videoFilters.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
+        val offsetFx = (effects.offsetX / 100.0).coerceIn(0.0, 1.0)
+        val offsetFy = (effects.offsetY / 100.0).coerceIn(0.0, 1.0)
+        videoFilters.add(
+            "crop=$canvasWidth:$canvasHeight:(iw-ow)*${offsetFx.ff()}:(ih-oh)*${offsetFy.ff()}"
+        )
+        videoFilters.add("fps=30")
+        appendColorGrading(videoFilters, rawEffects)
+
+        val transition = effects.transition
+        val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
+        buildTransitionFilters(
+            videoFilters, transition, transitionDur, timelineStartForSlide, canvasWidth, canvasHeight
+        )
+
+        val pad = displayDur - duration
+        if (pad > 0.001) {
+            // Hold the last frame across a bridged sub-frame sliver (mirrors eof_action=repeat).
+            videoFilters.add("tpad=stop_mode=clone:stop_duration=${pad.ff()}")
+        }
+        videoFilters.add("format=yuva420p")
+        videoFilters.add("setsar=1")
+        filters.add("[$inputIndex:v]${videoFilters.joinToString(",")}[$outputTag]")
+    }
+
+    /** Description-only placeholder as a canvas-sized yuva segment with centered white text. */
+    private fun appendPlaceholderSegment(
+        filters: MutableList<String>,
+        asset: Asset,
+        duration: Double,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        outputTag: String
+    ) {
+        val text = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "Untitled scene" }
+        val lines = wrapText(text, 34, 4)
+        val parts = mutableListOf<String>()
+        parts.add(
+            "color=c=black@0.0:s=${canvasWidth}x${canvasHeight}:r=30:d=${duration.ff()},format=yuva420p"
+        )
+        lines.forEachIndexed { index, line ->
+            val yExpr =
+                "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * (canvasHeight / 12.0)).ff()}"
+            parts.add(
+                "drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
+                    "fontcolor=white:fontsize=${canvasHeight / 14}:x=(w-text_w)/2:y=$yExpr"
+            )
+        }
+        parts.add("setsar=1")
+        parts.add("fps=30")
+        filters.add("${parts.joinToString(",")}[$outputTag]")
+    }
+
+    /**
+     * First-class TEXT element as a clip-local yuva segment (no timeline PTS shift / overlay).
+     * Transition math runs in clip-local time so it matches the overlay path's fade/reveal.
+     */
+    private fun appendTextElementSegment(
+        filters: MutableList<String>,
+        clip: Clip,
+        asset: Asset,
+        effects: EffectsConfig,
+        duration: Double,
+        displayDur: Double,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        outputTag: String
+    ) {
+        val textCfg = effects.text ?: TextConfig()
+        val rawText = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "" }
+        val fontSize =
+            (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(8, canvasHeight)
+        val wrapWidth = textSafeAreaWrapWidth(canvasWidth, fontSize)
+        val lines = wrapText(rawText, wrapWidth, 40)
+        val fontColor = ffmpegDrawtextColor(textCfg.color)
+        val bgColor = ffmpegColorHex(textCfg.backgroundColor)
+        val bgAlpha = ffmpegColorAlpha(textCfg.backgroundColor)
+        val lineSpacing = textLineSpacing(fontSize)
+        val xExpr = textSafeAreaXExpr(canvasWidth)
+
+        val blockConstPx = (lines.size - 1) * lineSpacing
+        val blockHeightExpr = "(${blockConstPx.ff()}+text_h)"
+        val overflowExpr = "max(0,$blockHeightExpr-h)"
+        val padPerSideExpr = "2*${lineSpacing.ff()}*gt($blockHeightExpr,h)"
+        val scrollExtentExpr = "($overflowExpr+2*$padPerSideExpr)"
+        val scrollExpr = if (duration > 0.0) {
+            "+($overflowExpr*0.5+$padPerSideExpr-min(t/${duration.ff()},1)*$scrollExtentExpr)"
+        } else {
+            ""
+        }
+
+        val layer = mutableListOf<String>()
+        lines.forEachIndexed { index, line ->
+            val yExpr =
+                "'(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * lineSpacing).ff()}$scrollExpr'"
+            layer.add(
+                "drawtext=${fontFileArg(textCfg.fontFamily, textCfg.fontUrl)}text='${escapeDrawtext(line)}':" +
+                    "fontcolor=$fontColor:fontsize=$fontSize:x=$xExpr:y=$yExpr"
+            )
+        }
+        val transition = effects.transition
+        val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
+        // Clip-local transition window (start=0).
+        buildTransitionFilters(layer, transition, transitionDur, 0.0, canvasWidth, canvasHeight)
+
+        val pad = displayDur - duration
+        if (pad > 0.001) {
+            layer.add("tpad=stop_mode=clone:stop_duration=${pad.ff()}")
+        }
+        layer.add("format=yuva420p")
+        layer.add("setsar=1")
+        layer.add("fps=30")
+
+        val head =
+            "color=c=$bgColor@${bgAlpha.ff()}:s=${canvasWidth}x${canvasHeight}:r=30:d=${(displayDur + 0.05).ff()},format=yuva420p"
+        filters.add("$head,${layer.joinToString(",")}[$outputTag]")
+    }
+
+    private data class OverlayStepResult(val videoTag: String, val chain: Int)
+
+    /**
+     * Legacy per-clip overlay: processes one clip and composites it onto [currentVideoTag] with
+     * `enable='between(t,start,displayEnd)'`. Used when a track can't take the concat path.
+     */
+    private fun overlayClipOntoVideo(
+        filters: MutableList<String>,
+        currentVideoTag: String,
+        clip: Clip,
+        trackClips: List<Clip>,
+        assetsById: Map<String, Asset>,
+        assetInputMap: Map<String, Int>,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        chain: Int
+    ): OverlayStepResult? {
+        val asset = assetsById[clip.assetId] ?: return null
+        val duration = (clip.trimOut - clip.trimIn).toDouble()
+        if (duration <= 0) return null
+        val start = clip.timelineStart.toDouble()
+        val displayEnd = bridgedClipEnd(clip, trackClips).toDouble()
+        val effects = parseEffectsConfig(clip.effectsConfig)
+        var nextChain = chain
+
+        if (asset.ossUrl.isBlank()) {
+            if (asset.isTextElement) {
+                val tag = renderTextElementLayer(
+                    filters, currentVideoTag, clip, asset, effects,
+                    start, displayEnd, duration, canvasWidth, canvasHeight
+                )
+                return OverlayStepResult(tag, nextChain)
+            }
+            val text = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "Untitled scene" }
+            val nextTag = "v_text_${nextChain++}"
+            val lines = wrapText(text, 34, 4)
+            var tag = currentVideoTag
+            lines.forEachIndexed { index, line ->
+                val outTag = if (index == lines.lastIndex) nextTag else "v_textline_${nextChain++}"
+                val yExpr =
+                    "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * (canvasHeight / 12.0)).ff()}"
+                filters.add(
+                    "[$tag]drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
+                        "fontcolor=white:fontsize=${canvasHeight / 14}:x=(w-text_w)/2:y=$yExpr:" +
+                        "enable='between(t,${start.ff()},${displayEnd.ff()})'[$outTag]"
+                )
+                tag = outTag
+            }
+            return OverlayStepResult(nextTag, nextChain)
+        }
+
+        val idx = assetInputMap[clip.assetId] ?: return null
+        val rawEffects = try {
+            json.parseToJsonElement(clip.effectsConfig).jsonObject
+        } catch (_: Exception) {
+            null
+        }
+        val srcStart = asset.sourceOffsetSeconds + clip.trimIn
+        val srcEnd = asset.sourceOffsetSeconds + clip.trimOut
+        val videoFilters = mutableListOf<String>()
+        videoFilters.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
+        videoFilters.add("setpts=PTS-STARTPTS")
+        videoFilters.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
+        val offsetFx = (effects.offsetX / 100.0).coerceIn(0.0, 1.0)
+        val offsetFy = (effects.offsetY / 100.0).coerceIn(0.0, 1.0)
+        videoFilters.add(
+            "crop=$canvasWidth:$canvasHeight:(iw-ow)*${offsetFx.ff()}:(ih-oh)*${offsetFy.ff()}"
+        )
+        videoFilters.add("fps=30")
+        appendColorGrading(videoFilters, rawEffects)
+
+        val transition = effects.transition
+        val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
+        val overlayExtra = buildTransitionFilters(
+            videoFilters, transition, transitionDur, start, canvasWidth, canvasHeight
+        )
+        videoFilters.add("setpts=PTS+${start.ff()}/TB")
+
+        val trimmedTag = "v_trimmed_${clip.id}"
+        filters.add("[$idx:v]${videoFilters.joinToString(",")}[$trimmedTag]")
+        val nextVideoTag = "v_overlaid_${clip.id}"
+        filters.add(
+            "[$currentVideoTag][$trimmedTag]overlay=eof_action=repeat:" +
+                "enable='between(t,${start.ff()},${displayEnd.ff()})'$overlayExtra[$nextVideoTag]"
+        )
+        return OverlayStepResult(nextVideoTag, nextChain)
+    }
+
+    /** Shared color-grading branch used by both concat segments and legacy overlay clips. */
+    private fun appendColorGrading(videoFilters: MutableList<String>, rawEffects: JsonObject?) {
+        val cb = rawEffects?.get("colorbalance")?.jsonObject
+            ?: rawEffects?.get("colorBalance")?.jsonObject
+        if (cb != null) {
+            fun v(k: String) = cb[k]?.jsonPrimitive?.doubleOrNull ?: 0.0
+            videoFilters.add(
+                "colorbalance=rs=${v("rs").ff()}:gs=${v("gs").ff()}:bs=${v("bs").ff()}:" +
+                    "rm=${v("rm").ff()}:gm=${v("gm").ff()}:bm=${v("bm").ff()}:" +
+                    "rh=${v("rh").ff()}:gh=${v("gh").ff()}:bh=${v("bh").ff()}"
+            )
+        } else {
+            val brightness = rawEffects?.get("brightness")?.jsonPrimitive?.doubleOrNull ?: 0.0
+            val contrast = rawEffects?.get("contrast")?.jsonPrimitive?.doubleOrNull ?: 1.0
+            val saturation = rawEffects?.get("saturation")?.jsonPrimitive?.doubleOrNull ?: 1.0
+            if (brightness != 0.0 || contrast != 1.0 || saturation != 1.0) {
+                videoFilters.add(
+                    "eq=brightness=${brightness.ff()}:contrast=${contrast.ff()}:saturation=${saturation.ff()}"
+                )
+            }
         }
     }
 
@@ -1023,6 +1708,314 @@ object FFmpegService {
     }
 
     /**
+     * One burned-in caption chip: on-timeline [start]..[end] window, display [text], and the
+     * resolved style fields used when writing the `.ass` sidecar (see [writeAssCaptionsFile]).
+     */
+    internal data class CaptionEvent(
+        val start: Double,
+        val end: Double,
+        val text: String,
+        val fontFamily: String,
+        val fontUrl: String,
+        val fontSize: Int,
+        val colorHex: String,
+        val position: String,
+        val bold: Boolean
+    )
+
+    /**
+     * Collects every caption event that should be burned into the export from the given voice
+     * [clips]. Chunks word timings 4-at-a-time (same as the live preview), maps them into timeline
+     * time via each clip's window, and shortens each event so a newly started caption immediately
+     * replaces any earlier one ([captionVisibleEnd]). No artificial chunk cap — libass handles
+     * thousands of dialogue lines cheaply.
+     */
+    internal fun collectCaptionEvents(
+        clips: List<Clip>,
+        assetsById: Map<String, Asset>,
+        canvasHeight: Int
+    ): List<CaptionEvent> {
+        data class Raw(
+            val visStart: Double,
+            val visEnd: Double,
+            val text: String,
+            val fontFamily: String,
+            val fontUrl: String,
+            val fontSize: Int,
+            val colorHex: String,
+            val position: String,
+            val bold: Boolean
+        )
+        val raw = mutableListOf<Raw>()
+        for (clip in clips) {
+            val asset = assetsById[clip.assetId] ?: continue
+            val captions = parseEffectsConfig(clip.effectsConfig).captions ?: continue
+            if (!captions.enabled || asset.wordTimings.isEmpty()) continue
+
+            val fontSize = (captions.fontSizeSp * canvasHeight / 480.0).toInt().coerceIn(12, 120)
+            val colorHex = captions.color.removePrefix("#").ifBlank { "FFFFFF" }
+            val clipEnd = (clip.timelineStart + (clip.trimOut - clip.trimIn)).toDouble()
+
+            for (chunk in asset.wordTimings.chunked(4)) {
+                val visStart = clip.timelineStart + (chunk.first().start - clip.trimIn)
+                val visEnd = clip.timelineStart + (chunk.last().end - clip.trimIn)
+                if (visEnd <= clip.timelineStart.toDouble() || visStart >= clipEnd) continue
+                raw.add(
+                    Raw(
+                        visStart = visStart,
+                        visEnd = visEnd,
+                        text = chunk.joinToString(" ") { it.word },
+                        fontFamily = captions.fontFamily,
+                        fontUrl = captions.fontUrl,
+                        fontSize = fontSize,
+                        colorHex = colorHex,
+                        position = captions.position,
+                        bold = captions.fontWeight >= 600
+                    )
+                )
+            }
+        }
+        if (raw.isEmpty()) return emptyList()
+        val starts = raw.map { it.visStart }.sorted()
+        return raw.map { event ->
+            val end = captionVisibleEnd(event.visStart, event.visEnd, starts)
+            CaptionEvent(
+                start = event.visStart,
+                end = end.coerceAtLeast(event.visStart + 0.05),
+                text = event.text,
+                fontFamily = event.fontFamily,
+                fontUrl = event.fontUrl,
+                fontSize = event.fontSize,
+                colorHex = event.colorHex,
+                position = event.position,
+                bold = event.bold
+            )
+        }.filter { it.end > it.start }
+    }
+
+    /**
+     * Writes an Advanced SubStation Alpha sidecar that libass can burn in with a single `ass=`
+     * filter. Caption chips match the live preview: translucent black **rounded** background
+     * (ASS vector drawing — `BorderStyle=3` only supports square boxes) at alpha ≈ 0.45, white
+     * (or configured) text with a thin outline, and top/center/bottom placement via `\pos`.
+     * Any referenced font files are copied into [fontsDir] so the `ass` filter's `fontsdir=`
+     * can find them.
+     */
+    internal fun writeAssCaptionsFile(
+        assFile: File,
+        fontsDir: File,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        events: List<CaptionEvent>
+    ) {
+        fontsDir.mkdirs()
+        // One ASS Style per unique (font, size, color, bold) combo so mixed voice clips keep their
+        // own caption look without duplicating style lines for every dialogue event. Position is
+        // applied per-event via \pos, not via style Alignment/MarginV.
+        data class StyleKey(
+            val fontFamily: String,
+            val fontUrl: String,
+            val fontSize: Int,
+            val colorHex: String,
+            val bold: Boolean
+        )
+        val styleKeys = linkedMapOf<StyleKey, String>()
+        fun styleNameFor(event: CaptionEvent): String {
+            val key = StyleKey(
+                event.fontFamily, event.fontUrl, event.fontSize,
+                event.colorHex, event.bold
+            )
+            return styleKeys.getOrPut(key) { "Cap${styleKeys.size}" }
+        }
+        events.forEach { styleNameFor(it) }
+
+        // Stage fonts into fontsDir once per unique source file.
+        val stagedFontNames = mutableMapOf<String, String>() // styleName -> font family name for ASS
+        for ((key, styleName) in styleKeys) {
+            val fontPath = resolveFontFilePath(key.fontFamily, key.fontUrl)
+            val assFontName = if (fontPath != null) {
+                val dest = File(fontsDir, "${styleName}_${File(fontPath).name}")
+                if (!dest.exists()) {
+                    runCatching { File(fontPath).copyTo(dest, overwrite = true) }
+                        .onFailure { logger.warn("Could not stage caption font '$fontPath': ${it.message}") }
+                }
+                // Prefer the user-facing family name so libass matches the staged file by family;
+                // fall back to a sensible default when the family is "Default".
+                when {
+                    !key.fontFamily.isNullOrBlank() &&
+                        !key.fontFamily.equals("Default", ignoreCase = true) -> key.fontFamily
+                    else -> "DejaVu Sans"
+                }
+            } else {
+                "DejaVu Sans"
+            }
+            stagedFontNames[styleName] = assFontName
+        }
+
+        // Preview chip is Color.Black.copy(alpha=0.45f). ASS primary-alpha is inverted (00=opaque).
+        val chipFill = assColour("000000", alpha = 0.45)
+        val chipFillRgb = chipFill.substring(4) // BBGGRR after &HAA
+        val chipFillAlpha = chipFill.substring(2, 4) // AA transparency byte
+        val outline = assColour("000000", alpha = 0.7)
+        // Corner radius mirrors the preview chip's RoundedCornerShape(8.dp), scaled to the render
+        // canvas the same way the font size is (both authored against a 480px stage).
+        val baseRadius = (8.0 * canvasHeight / 480.0).toInt().coerceAtLeast(2)
+
+        val sb = StringBuilder()
+        sb.appendLine("[Script Info]")
+        sb.appendLine("ScriptType: v4.00+")
+        sb.appendLine("PlayResX: $canvasWidth")
+        sb.appendLine("PlayResY: $canvasHeight")
+        sb.appendLine("WrapStyle: 2")
+        sb.appendLine("ScaledBorderAndShadow: yes")
+        sb.appendLine("YCbCr Matrix: None")
+        sb.appendLine()
+        sb.appendLine("[V4+ Styles]")
+        sb.appendLine(
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, " +
+                "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, " +
+                "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
+        )
+        for ((key, styleName) in styleKeys) {
+            val fontName = stagedFontNames[styleName] ?: "DejaVu Sans"
+            val primary = assColour(key.colorHex, alpha = 1.0)
+            val boldFlag = if (key.bold) -1 else 0
+            // BorderStyle=1 (outline only) — the translucent rounded chip is drawn as a separate
+            // vector layer per event. Outline width ~2px matches the previous drawtext borderw=2.
+            sb.appendLine(
+                "Style: $styleName,$fontName,${key.fontSize},$primary,&H000000FF,$outline,&H00000000," +
+                    "$boldFlag,0,0,0,100,100,0,0,1,2,0,5,0,0,0,1"
+            )
+        }
+        sb.appendLine()
+        sb.appendLine("[Events]")
+        sb.appendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
+        for (event in events.sortedBy { it.start }) {
+            val style = styleNameFor(event)
+            val start = formatAssTime(event.start)
+            val end = formatAssTime(event.end)
+            val text = escapeAssText(event.text)
+
+            // Chip geometry mirrors the pre-ASS geq path / live preview padding ratios.
+            val padH = (event.fontSize * 0.4).toInt().coerceAtLeast(6)
+            val padV = (event.fontSize * 0.2).toInt().coerceAtLeast(3)
+            val textH = (event.fontSize * 1.2).toInt()
+            val boxHeight = textH + 2 * padV
+            val estTextWidth = (event.text.length * event.fontSize * 0.6).toInt()
+            val boxWidth = (estTextWidth + 2 * padH).coerceIn(2 * padH + 1, canvasWidth)
+            val radius = minOf(baseRadius, boxHeight / 2, boxWidth / 2).coerceAtLeast(1)
+
+            // Top of chip (same placement as the old overlay y= expressions), then center for \an5.
+            val boxTop = when (event.position) {
+                "top" -> canvasHeight / 10.0 - padV
+                "center" -> (canvasHeight - boxHeight) / 2.0
+                else -> canvasHeight - canvasHeight / 6.0 - padV
+            }
+            val cx = canvasWidth / 2
+            val cy = kotlin.math.round(boxTop + boxHeight / 2.0).toInt()
+            val drawing = assRoundedRectDrawing(boxWidth, boxHeight, radius)
+
+            // Layer 0: rounded translucent chip. Layer 1: text centered on the same point.
+            sb.appendLine(
+                "Dialogue: 0,$start,$end,$style,,0,0,0,," +
+                    "{\\an5\\pos($cx,$cy)\\p1\\bord0\\shad0\\1c&H$chipFillRgb&\\1a&H$chipFillAlpha&}" +
+                    "$drawing{\\p0}"
+            )
+            sb.appendLine(
+                "Dialogue: 1,$start,$end,$style,,0,0,0,," +
+                    "{\\an5\\pos($cx,$cy)}$text"
+            )
+        }
+        assFile.writeText(sb.toString())
+    }
+
+    /**
+     * ASS `\p1` drawing commands for a rounded rectangle of [width]×[height] with corner
+     * [radius], origin at the top-left of the box. Cubic Bézier corners use the standard
+     * quarter-circle kappa (0.55228475·r) so libass renders a smooth chip matching the preview's
+     * `RoundedCornerShape`.
+     */
+    internal fun assRoundedRectDrawing(width: Int, height: Int, radius: Int): String {
+        val w = width.coerceAtLeast(2)
+        val h = height.coerceAtLeast(2)
+        val r = radius.coerceIn(1, minOf(w, h) / 2)
+        val c = r * 0.5522847498
+        fun n(v: Double): Int = kotlin.math.round(v).toInt()
+        return buildString {
+            append("m $r 0 ")
+            append("l ${w - r} 0 ")
+            append("b ${n(w - r + c)} 0 $w ${n(r - c)} $w $r ")
+            append("l $w ${h - r} ")
+            append("b $w ${n(h - r + c)} ${n(w - r + c)} $h ${w - r} $h ")
+            append("l $r $h ")
+            append("b ${n(r - c)} $h 0 ${n(h - r + c)} 0 ${h - r} ")
+            append("l 0 $r ")
+            append("b 0 ${n(r - c)} ${n(r - c)} 0 $r 0")
+        }
+    }
+
+    /**
+     * ASS `&HAABBGGRR` colour literal. [alpha] is opacity 0..1 (1 = fully opaque); ASS stores the
+     * inverted transparency byte (00 = opaque, FF = transparent).
+     */
+    internal fun assColour(rgbHex: String, alpha: Double = 1.0): String {
+        val cleaned = rgbHex.removePrefix("#").let { c ->
+            when {
+                c.length == 8 -> c.substring(2) // AARRGGBB -> RRGGBB
+                c.length == 6 -> c
+                else -> "FFFFFF"
+            }
+        }.uppercase()
+        val rr = cleaned.substring(0, 2)
+        val gg = cleaned.substring(2, 4)
+        val bb = cleaned.substring(4, 6)
+        val a = ((1.0 - alpha.coerceIn(0.0, 1.0)) * 255.0).toInt().coerceIn(0, 255)
+        return "&H%02X%s%s%s".format(a, bb, gg, rr)
+    }
+
+    /** ASS dialogue timestamp `H:MM:SS.cs` (centiseconds). */
+    internal fun formatAssTime(seconds: Double): String {
+        val totalCs = kotlin.math.round(seconds.coerceAtLeast(0.0) * 100.0).toLong().coerceAtLeast(0L)
+        val h = totalCs / 360_000
+        val m = (totalCs % 360_000) / 6_000
+        val s = (totalCs % 6_000) / 100
+        val cs = totalCs % 100
+        return "$h:%02d:%02d.%02d".format(m.toInt(), s.toInt(), cs.toInt())
+    }
+
+    /** Escapes caption text for an ASS `Dialogue` payload. */
+    internal fun escapeAssText(text: String): String = text
+        .replace("\\", "\\\\")
+        .replace("{", "\\{")
+        .replace("}", "\\}")
+        .replace("\r\n", "\\N")
+        .replace("\n", "\\N")
+        .replace("\r", "\\N")
+
+    /** Escapes a filesystem path for use inside an FFmpeg filtergraph option value. */
+    internal fun escapeFilterPath(path: String): String = path
+        .replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+
+    /**
+     * Absolute path of the font file that [fontFileArg] would feed to drawtext for the given
+     * family/url, or null when nothing usable is available. Shared by drawtext and the ASS
+     * caption path so both renderers resolve fonts identically.
+     */
+    private fun resolveFontFilePath(fontFamily: String?, fontUrl: String?): String? {
+        if (!fontUrl.isNullOrBlank()) downloadedFontFile(fontUrl)?.let { return it }
+        bundledFontFile(fontFamily)?.let { return it }
+        val candidates = listOf(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+            "/System/Library/Fonts/Helvetica.ttc"
+        )
+        return candidates.firstOrNull { File(it).exists() }
+    }
+
+    /**
      * The `fontfile=...:` prefix for drawtext for the given [fontFamily] display name, so the
      * export uses the same font as the live preview. A non-blank [fontUrl] (the OSS-hosted `.ttf`
      * of a Google Fonts variant, from [TextConfig.fontUrl] / [CaptionConfig.fontUrl]) wins and is
@@ -1032,15 +2025,7 @@ object FFmpegService {
      * font file is found at all.
      */
     private fun fontFileArg(fontFamily: String? = null, fontUrl: String? = null): String {
-        if (!fontUrl.isNullOrBlank()) downloadedFontFile(fontUrl)?.let { return "fontfile=$it:" }
-        bundledFontFile(fontFamily)?.let { return "fontfile=$it:" }
-        val candidates = listOf(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-            "/System/Library/Fonts/Helvetica.ttc"
-        )
-        val found = candidates.firstOrNull { File(it).exists() } ?: return ""
+        val found = resolveFontFilePath(fontFamily, fontUrl) ?: return ""
         return "fontfile=$found:"
     }
 
@@ -1212,6 +2197,10 @@ object FFmpegService {
      * Distills a short, human-readable reason from FFmpeg's stderr [logTail]: the last few
      * non-empty, non-progress lines (which almost always carry the actual error). Kept short so it
      * fits a job's error field and the progress toast; the full output is in the server log.
+     *
+     * Special-cases SIGTERM ("received signal 15") — on developer machines this is almost always
+     * the userspace OOM killer (earlyoom) reaping an oversized FFmpeg filtergraph, so the message
+     * points at memory pressure rather than a mysterious exit code.
      */
     internal fun summarizeFfmpegError(logTail: Collection<String>): String {
         val meaningful = logTail
@@ -1219,6 +2208,17 @@ object FFmpegService {
             .filter { it.isNotEmpty() && !it.startsWith("frame=") }
         val reason = meaningful.takeLast(3).joinToString(" | ")
             .ifBlank { logTail.joinToString(" | ").trim() }
+        val looksLikeOomKill =
+            reason.contains("signal 15", ignoreCase = true) ||
+                reason.contains("SIGTERM", ignoreCase = true) ||
+                // earlyoom / repeated SIGTERM: FFmpeg hard-exits after several signals (exit 123).
+                reason.contains("Received > 3 system signals", ignoreCase = true) ||
+                reason.contains("Immediate exit requested", ignoreCase = true)
+        if (looksLikeOomKill) {
+            return "FFmpeg was terminated by the system (often the out-of-memory killer reaping " +
+                "an oversized render). Try again; if it keeps happening, free memory or shorten " +
+                "the timeline. FFmpeg output: ${reason.take(300)}"
+        }
         return if (reason.isBlank()) {
             "See the server log for the full FFmpeg output."
         } else {

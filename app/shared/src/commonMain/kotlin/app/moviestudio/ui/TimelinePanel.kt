@@ -68,9 +68,11 @@ import app.moviestudio.Track
 import app.moviestudio.TrackType
 import app.moviestudio.TransitionType
 import app.moviestudio.calculatedDuration
+import app.moviestudio.clipEnd
 import app.moviestudio.movedClipGroup
 import app.moviestudio.parseEffectsConfig
 import app.moviestudio.pickResizeEdge
+import app.moviestudio.rippleShiftedClips
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -114,8 +116,12 @@ private sealed interface DragSession {
         // Every selected clip captured at drag start (includes the anchor), so the whole group can
         // be shifted rigidly from its original positions.
         val movers: List<MovingClip>,
+        // Snapshot of every timeline clip at drag start + the end of the (rightmost) mover. Used
+        // by ripple mode so followers shift from fixed baselines (empty when ripple is off).
+        val rippleClips: List<Clip>,
+        val rippleThreshold: Float,
         var newStart: Float,
-        // The whole group at its current dragged position, staged for the commit.
+        // Movers (+ ripple followers) at the current dragged position, staged for the commit.
         var staged: List<Clip>
     ) : DragSession
     class ResizeLeft(
@@ -125,14 +131,22 @@ private sealed interface DragSession {
         var newStart: Float,
         var newTrimIn: Float,
         var snappedStart: Float,
-        var snappedTrimIn: Float
+        var snappedTrimIn: Float,
+        // Single resized clip staged for commit (left resize keeps the right edge fixed, so
+        // ripple has nothing to shift).
+        var staged: List<Clip>
     ) : DragSession
     class ResizeRight(
         val clip: Clip,
         val maxTrimOut: Float,
         val snapEdges: FloatArray,
+        // Snapshot + original end for ripple followers (empty snapshot when ripple is off).
+        val rippleClips: List<Clip>,
+        val rippleThreshold: Float,
         var newTrimOut: Float,
-        var snappedTrimOut: Float
+        var snappedTrimOut: Float,
+        // Resized clip (+ ripple followers) staged for the commit.
+        var staged: List<Clip>
     ) : DragSession
 }
 
@@ -220,6 +234,11 @@ fun TimelinePanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     var sequencerAsset by remember { mutableStateOf<Asset?>(null) }
     var showSequencer by remember { mutableStateOf(false) }
 
+    // Ripple (push/pull): moving or right-resizing a clip also shifts everything that starts at
+    // or after its original end, so gaps after the item stay constant while you tweak timing.
+    // Industry name is "Ripple" (Premiere/Avid); same idea as push/pull editing.
+    var rippleMode by remember { mutableStateOf(false) }
+
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
@@ -259,6 +278,7 @@ fun TimelinePanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                     Spacer(Modifier.width(6.dp))
                     TimelineCanvas(
                         viewModel,
+                        rippleMode = rippleMode,
                         onOpenAsset = { detailAsset = it },
                         modifier = Modifier.weight(1f).fillMaxHeight()
                     )
@@ -268,7 +288,7 @@ fun TimelinePanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
 
         Spacer(Modifier.height(6.dp))
 
-        // Scroll + zoom controls side by side, preceded by the split action.
+        // Scroll + zoom controls side by side, preceded by split + ripple tool toggles.
         val duration = max((timeline?.calculatedDuration() ?: 0.0).toFloat(), 10f)
         Row(verticalAlignment = Alignment.CenterVertically) {
             // Split the selected clip into two at the current playhead position.
@@ -277,6 +297,13 @@ fun TimelinePanel(viewModel: AppViewModel, modifier: Modifier = Modifier) {
                 compact = true,
                 enabled = viewModel.canSplitSelectedClip()
             ) { viewModel.splitSelectedClip() }
+            Spacer(Modifier.width(8.dp))
+            PillButton(
+                text = if (rippleMode) "✓ Ripple" else "Ripple",
+                compact = true,
+                container = if (rippleMode) Color(0xFF8F7BFF) else Color(0xFF322D40),
+                contentColor = if (rippleMode) Color.White else Color(0xFFB9B4C7)
+            ) { rippleMode = !rippleMode }
             Spacer(Modifier.width(10.dp))
             Text("↔", color = Color(0xFF8D89A0), fontSize = 13.sp)
             Slider(
@@ -528,6 +555,7 @@ private fun assetTypesForTrack(type: TrackType): Set<AssetType> = when (type) {
 @Composable
 private fun TimelineCanvas(
     viewModel: AppViewModel,
+    rippleMode: Boolean,
     onOpenAsset: (Asset) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -559,6 +587,7 @@ private fun TimelineCanvas(
     val scrollState by rememberUpdatedState(viewModel.scrollOffset)
     val assetsState by rememberUpdatedState(viewModel.libraryAssets)
     val notesState by rememberUpdatedState(viewModel.timelineNotes)
+    val rippleModeState by rememberUpdatedState(rippleMode)
 
     // A structural signature of the timeline that changes only when tracks or clips are added or
     // removed. Moving or resizing a clip — even re-homing it onto another track — keeps both the
@@ -768,17 +797,29 @@ private fun TimelineCanvas(
                                 // When the clip is too small for the two edge-grab zones to be
                                 // told apart, pick whichever edge can still expand the clip (the
                                 // other is already maxed out, e.g. trimIn already 0).
+                                // Ripple snapshots every clip at drag start so followers shift from fixed baselines.
+                                val rippleClips = if (rippleModeState) {
+                                    viewModel.timeline?.tracks?.flatMap { it.clips }.orEmpty()
+                                } else {
+                                    emptyList()
+                                }
                                 when (pickResizeEdge(offset.x, clipStartX, clipEndX, EDGE_GRAB, clip.trimIn, clip.trimOut, mediaCap)) {
                                     ResizeEdge.LEFT ->
                                         DragSession.ResizeLeft(
                                             clip, mediaCap, collectSnapEdges(viewModel.timeline, setOf(clip.id)),
                                             clip.timelineStart, clip.trimIn,
-                                            clip.timelineStart, clip.trimIn
+                                            clip.timelineStart, clip.trimIn,
+                                            staged = emptyList()
                                         )
                                     ResizeEdge.RIGHT ->
                                         DragSession.ResizeRight(
                                             clip, mediaCap, collectSnapEdges(viewModel.timeline, setOf(clip.id)),
-                                            clip.trimOut, clip.trimOut
+                                            rippleClips = rippleClips,
+                                            // Followers are everything that starts at/after this clip's end.
+                                            rippleThreshold = clipEnd(clip),
+                                            newTrimOut = clip.trimOut,
+                                            snappedTrimOut = clip.trimOut,
+                                            staged = emptyList()
                                         )
                                     null -> {
                                         // Capture every selected clip (incl. the anchor) with the
@@ -791,6 +832,9 @@ private fun TimelineCanvas(
                                                 }
                                             }
                                         }
+                                        // Ripple threshold: end of the rightmost mover so only
+                                        // clips after the whole selection are pushed/pulled.
+                                        val rippleThreshold = movers.maxOfOrNull { clipEnd(it.clip) } ?: clipEnd(clip)
                                         DragSession.MoveClip(
                                             anchor = clip,
                                             sourceTrackType = trackType ?: TrackType.VIDEO,
@@ -799,6 +843,8 @@ private fun TimelineCanvas(
                                             anchorOriginalStart = clip.timelineStart,
                                             anchorTrackIndex = trackIndex,
                                             movers = movers,
+                                            rippleClips = rippleClips,
+                                            rippleThreshold = rippleThreshold,
                                             newStart = clip.timelineStart,
                                             staged = emptyList()
                                         )
@@ -829,7 +875,14 @@ private fun TimelineCanvas(
                                 val tracks = viewModel.timeline?.tracks ?: emptyList()
                                 val targetIndex = trackIndexAt(change.position.y)
                                 val rowDelta = if (targetIndex in tracks.indices) targetIndex - session.anchorTrackIndex else 0
-                                session.staged = movedClipGroup(session.movers, tracks, delta, rowDelta)
+                                val moved = movedClipGroup(session.movers, tracks, delta, rowDelta)
+                                // Ripple: push/pull every non-selected clip that started at/after
+                                // the selection's original right edge by the same time delta.
+                                val moverIds = session.movers.mapTo(HashSet()) { it.clip.id }
+                                val rippled = rippleShiftedClips(
+                                    session.rippleClips, moverIds, session.rippleThreshold, delta
+                                )
+                                session.staged = moved + rippled
                                 viewModel.updateClipsLocal(session.staged)
                             }
                             is DragSession.ResizeLeft -> {
@@ -854,9 +907,11 @@ private fun TimelineCanvas(
                                 }
                                 session.snappedStart = start
                                 session.snappedTrimIn = trimIn
-                                viewModel.updateClipLocal(
+                                // Left resize keeps the right edge fixed, so ripple has no effect.
+                                session.staged = listOf(
                                     session.clip.copy(timelineStart = start, trimIn = trimIn)
                                 )
+                                viewModel.updateClipsLocal(session.staged)
                             }
                             is DragSession.ResizeRight -> {
                                 session.newTrimOut = (session.newTrimOut + dt)
@@ -878,7 +933,18 @@ private fun TimelineCanvas(
                                     }
                                 }
                                 session.snappedTrimOut = trimOut
-                                viewModel.updateClipLocal(session.clip.copy(trimOut = trimOut))
+                                val resized = session.clip.copy(trimOut = trimOut)
+                                // Growing/shrinking the right edge pushes/pulls followers by the
+                                // same duration delta (from the original end captured at drag start).
+                                val durationDelta = trimOut - session.clip.trimOut
+                                val rippled = rippleShiftedClips(
+                                    session.rippleClips,
+                                    setOf(session.clip.id),
+                                    session.rippleThreshold,
+                                    durationDelta
+                                )
+                                session.staged = listOf(resized) + rippled
+                                viewModel.updateClipsLocal(session.staged)
                             }
                             null -> {}
                         }
@@ -1010,13 +1076,12 @@ private fun mediaTrimCap(asset: Asset?): Float {
 }
 
 private fun commitDrag(viewModel: AppViewModel, session: DragSession?) {
+    // Every edit gesture stages the full set of clips to persist (the edited item plus any
+    // ripple followers). Empty staged means the pointer never moved — nothing to write.
     when (session) {
-        is DragSession.MoveClip ->
-            viewModel.updateClips(session.staged)
-        is DragSession.ResizeLeft ->
-            viewModel.updateClip(session.clip.copy(timelineStart = session.snappedStart, trimIn = session.snappedTrimIn))
-        is DragSession.ResizeRight ->
-            viewModel.updateClip(session.clip.copy(trimOut = session.snappedTrimOut))
+        is DragSession.MoveClip -> viewModel.updateClips(session.staged)
+        is DragSession.ResizeLeft -> viewModel.updateClips(session.staged)
+        is DragSession.ResizeRight -> viewModel.updateClips(session.staged)
         else -> {}
     }
 }

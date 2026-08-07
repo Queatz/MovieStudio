@@ -1,6 +1,8 @@
 package app.moviestudio
 
 import app.moviestudio.service.FFmpegService
+import app.moviestudio.service.MediaUtil
+import java.io.File
 import kotlin.test.*
 
 class FFmpegServiceErrorTest {
@@ -125,6 +127,295 @@ class FFmpegServiceErrorTest {
         assertEquals(3.0, FFmpegService.captionVisibleEnd(visStart = 0.0, visEnd = 5.0, sortedCaptionStarts = starts))
         // B itself has no later caption, so it keeps its natural end.
         assertEquals(8.0, FFmpegService.captionVisibleEnd(visStart = 3.0, visEnd = 8.0, sortedCaptionStarts = starts))
+    }
+
+    @Test
+    fun summarizeDetectsSigtermAsMemoryKill() {
+        // earlyoom (and similar userspace OOM killers) terminate oversized FFmpeg runs with SIGTERM,
+        // which FFmpeg reports as "Exiting normally, received signal 15." Surface that as a clear
+        // memory-pressure message instead of a cryptic exit code.
+        val summary = FFmpegService.summarizeFfmpegError(
+            listOf(
+                "[libx264 @ 0x1] kb/s:543.12",
+                "Exiting normally, received signal 15."
+            )
+        )
+        assertTrue(summary.contains("memory", ignoreCase = true), summary)
+        assertTrue(
+            summary.contains("terminated by the system", ignoreCase = true) ||
+                summary.contains("SIGTERM", ignoreCase = true),
+            summary
+        )
+    }
+
+    @Test
+    fun summarizeDetectsRepeatedSignalsAsMemoryKill() {
+        // When earlyoom keeps SIGTERM'ing a stuck multi-GB FFmpeg, the process hard-exits with
+        // "Received > 3 system signals" (exit 123) instead of a clean "signal 15" line.
+        val summary = FFmpegService.summarizeFfmpegError(
+            listOf(
+                "[out#0/mp4 @ 0x1] Task finished with error code: -1414092869 (Immediate exit requested)",
+                "Received > 3 system signals, hard exiting"
+            )
+        )
+        assertTrue(summary.contains("memory", ignoreCase = true), summary)
+        assertTrue(summary.contains("terminated by the system", ignoreCase = true), summary)
+    }
+
+    @Test
+    fun canConcatComposeTrackAllowsSequentialNonOverlappingClips() {
+        val clips = listOf(
+            Clip(id = "a", trackId = "t", assetId = "1", timelineStart = 0f, trimIn = 0f, trimOut = 5f, effectsConfig = "{}"),
+            Clip(id = "b", trackId = "t", assetId = "2", timelineStart = 5f, trimIn = 0f, trimOut = 3f, effectsConfig = "{}"),
+            Clip(
+                id = "c", trackId = "t", assetId = "3", timelineStart = 8f, trimIn = 0f, trimOut = 2f,
+                effectsConfig = """{"transition":{"type":"ALPHA"}}"""
+            )
+        )
+        assertTrue(FFmpegService.canConcatComposeTrack(clips))
+    }
+
+    @Test
+    fun canConcatComposeTrackRejectsOverlapsAndSlide() {
+        val overlapping = listOf(
+            Clip(id = "a", trackId = "t", assetId = "1", timelineStart = 0f, trimIn = 0f, trimOut = 5f, effectsConfig = "{}"),
+            Clip(id = "b", trackId = "t", assetId = "2", timelineStart = 4f, trimIn = 0f, trimOut = 3f, effectsConfig = "{}")
+        )
+        assertFalse(FFmpegService.canConcatComposeTrack(overlapping))
+
+        val slide = listOf(
+            Clip(
+                id = "s", trackId = "t", assetId = "1", timelineStart = 0f, trimIn = 0f, trimOut = 2f,
+                effectsConfig = """{"transition":{"type":"SLIDE"}}"""
+            )
+        )
+        assertFalse(FFmpegService.canConcatComposeTrack(slide))
+    }
+
+    @Test
+    fun appendConcatTrackEmitsConcatNotPerClipOverlay() {
+        // Filter-graph helper (used by unit tests / small graphs): sequential clips become one
+        // concat, not N full-timeline overlays.
+        val clips = listOf(
+            Clip(id = "c1", trackId = "t", assetId = "a1", timelineStart = 0f, trimIn = 0f, trimOut = 2f, effectsConfig = "{}"),
+            Clip(id = "c2", trackId = "t", assetId = "a2", timelineStart = 2f, trimIn = 0f, trimOut = 2f, effectsConfig = "{}"),
+            Clip(id = "c3", trackId = "t", assetId = "a3", timelineStart = 4f, trimIn = 0f, trimOut = 2f, effectsConfig = "{}")
+        )
+        val assets = listOf("a1", "a2", "a3").associateWith { id ->
+            Asset(
+                id = id, type = AssetType.IMAGE, ossUrl = "http://example/$id.png",
+                durationSeconds = 2.0, movieId = "m", tags = emptyList(), aiPrompt = null
+            )
+        }
+        val filters = mutableListOf<String>()
+        FFmpegService.appendConcatTrack(
+            filters = filters,
+            trackClips = clips,
+            assetsById = assets,
+            assetInputMap = mapOf("a1" to 2, "a2" to 3, "a3" to 4),
+            totalDuration = 10.0,
+            canvasWidth = 640,
+            canvasHeight = 360,
+            chain = 0,
+            outputTag = "v_track_t"
+        )
+        assertTrue(
+            filters.any { it.contains("concat=n=") && it.contains("[v_track_t]") },
+            "expected a concat into v_track_t, got:\n${filters.joinToString("\n")}"
+        )
+        assertTrue(
+            filters.any { it.contains("concat=n=4:v=1:a=0") },
+            "3 clips + trailing gap should concat n=4, got:\n${filters.joinToString("\n")}"
+        )
+        assertTrue(filters.none { it.contains("overlay=") })
+    }
+
+    @Test
+    fun renderTrackViaSegmentFilesKeepsRamFlatAndMatchesDuration() {
+        // Real render path: each still is encoded in its OWN FFmpeg process, then concat-demuxed.
+        // This is what stops earlyoom from SIGTERM'ing a 40-image slideshow.
+        val temp = java.nio.file.Files.createTempDirectory("ms_seg_test_").toFile()
+        try {
+            val imgA = File(temp, "a.png")
+            val imgB = File(temp, "b.png")
+            val imgC = File(temp, "c.png")
+            // Tiny solid PNGs via ffmpeg lavfi.
+            val pngs: List<Pair<File, String>> = listOf(
+                imgA to "red",
+                imgB to "green",
+                imgC to "blue"
+            )
+            for ((f, color) in pngs) {
+                FFmpegService.runFfmpegChecked(
+                    listOf(
+                        MediaUtil.ffmpegBinary, "-y",
+                        "-f", "lavfi", "-i", "color=c=$color:s=320x180:d=0.1",
+                        "-frames:v", "1", f.absolutePath
+                    ),
+                    label = "test-png"
+                )
+            }
+            val clips = listOf(
+                Clip(id = "c1", trackId = "t", assetId = "a", timelineStart = 0f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}"),
+                Clip(id = "c2", trackId = "t", assetId = "b", timelineStart = 1f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}"),
+                Clip(id = "c3", trackId = "t", assetId = "c", timelineStart = 2f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}")
+            )
+            val assets = mapOf(
+                "a" to Asset(id = "a", type = AssetType.IMAGE, ossUrl = "http://x/a.png", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null),
+                "b" to Asset(id = "b", type = AssetType.IMAGE, ossUrl = "http://x/b.png", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null),
+                "c" to Asset(id = "c", type = AssetType.IMAGE, ossUrl = "http://x/c.png", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null)
+            )
+            val files: Map<String, File> = mapOf("a" to imgA, "b" to imgB, "c" to imgC)
+            val out = FFmpegService.renderTrackViaSegmentFiles(
+                tempDir = temp,
+                trackId = "t",
+                trackClips = clips,
+                assetsById = assets,
+                downloadedAssets = files,
+                totalDuration = 4.0, // 3s clips + 1s trailing black
+                canvasWidth = 320,
+                canvasHeight = 180
+            )
+            assertTrue(out.exists() && out.length() > 0L, "track file should exist")
+            // Duration ~4s (allow small encoder tolerance).
+            val probe = ProcessBuilder(
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=nw=1:nk=1", out.absolutePath
+            ).redirectErrorStream(true).start()
+            val durStr = probe.inputStream.bufferedReader().readText().trim()
+            probe.waitFor()
+            val dur = durStr.toDoubleOrNull() ?: 0.0
+            assertTrue(dur in 3.5..4.5, "expected ~4s track, got $dur")
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun formatAssTimeUsesCentiseconds() {
+        assertEquals("0:00:00.00", FFmpegService.formatAssTime(0.0))
+        assertEquals("0:00:01.50", FFmpegService.formatAssTime(1.5))
+        assertEquals("0:01:01.00", FFmpegService.formatAssTime(61.0))
+        assertEquals("1:01:01.23", FFmpegService.formatAssTime(3661.23))
+    }
+
+    @Test
+    fun assColourIsAabbggrrWithInvertedAlpha() {
+        // Opaque white: alpha byte 00, BGR = FF FF FF.
+        assertEquals("&H00FFFFFF", FFmpegService.assColour("FFFFFF", alpha = 1.0))
+        // Opaque red (#FF0000) -> BGR 00 00 FF.
+        assertEquals("&H000000FF", FFmpegService.assColour("FF0000", alpha = 1.0))
+        // 45% opaque black matches the preview chip; transparency byte ≈ 0x8C.
+        val back = FFmpegService.assColour("000000", alpha = 0.45)
+        assertTrue(back.startsWith("&H"), back)
+        assertTrue(back.endsWith("000000"), back)
+        val alphaByte = back.substring(2, 4).toInt(16)
+        assertTrue(alphaByte in 0x80..0x95, "expected ~0x8C transparency for 0.45 opacity, got $alphaByte")
+    }
+
+    @Test
+    fun collectCaptionEventsChunksWordsAndCutsOverlaps() {
+        // 8 words -> two 4-word chunks. A second voice clip that starts mid-way must cut the first
+        // caption short so the two never stack (mirrors captionVisibleEnd).
+        val words = (0 until 8).map { i ->
+            WordTiming(word = "w$i", start = i.toDouble(), end = (i + 1).toDouble())
+        }
+        val assetA = Asset(
+            id = "a", type = AssetType.VOICE, ossUrl = "http://example/a.mp3",
+            durationSeconds = 8.0, movieId = "m", tags = emptyList(), aiPrompt = null,
+            wordTimings = words
+        )
+        val assetB = Asset(
+            id = "b", type = AssetType.VOICE, ossUrl = "http://example/b.mp3",
+            durationSeconds = 4.0, movieId = "m", tags = emptyList(), aiPrompt = null,
+            wordTimings = listOf(
+                WordTiming("x", 0.0, 1.0),
+                WordTiming("y", 1.0, 2.0),
+                WordTiming("z", 2.0, 3.0),
+                WordTiming("w", 3.0, 4.0)
+            )
+        )
+        val clipA = Clip(
+            id = "c1", trackId = "t", assetId = "a",
+            timelineStart = 0f, trimIn = 0f, trimOut = 8f,
+            effectsConfig = """{"captions":{"enabled":true}}"""
+        )
+        val clipB = Clip(
+            id = "c2", trackId = "t", assetId = "b",
+            timelineStart = 2f, trimIn = 0f, trimOut = 4f,
+            effectsConfig = """{"captions":{"enabled":true}}"""
+        )
+        val events = FFmpegService.collectCaptionEvents(
+            clips = listOf(clipA, clipB),
+            assetsById = mapOf("a" to assetA, "b" to assetB),
+            canvasHeight = 720
+        )
+        // clipA: chunks at 0..4 and 4..8; clipB: chunk at 2..6. After overlap cutting there should
+        // still be 3 events, and the first must end when clipB's caption begins at t=2.
+        assertEquals(3, events.size)
+        val first = events.first { it.text.startsWith("w0") }
+        assertEquals(0.0, first.start, absoluteTolerance = 1e-6)
+        assertEquals(2.0, first.end, absoluteTolerance = 1e-6)
+        assertTrue(events.any { it.text.startsWith("x") })
+    }
+
+    @Test
+    fun writeAssCaptionsFileEmitsStylesAndDialogue() {
+        val dir = kotlin.io.path.createTempDirectory("ass-test").toFile()
+        try {
+            val ass = java.io.File(dir, "captions.ass")
+            val fonts = java.io.File(dir, "fonts").apply { mkdirs() }
+            FFmpegService.writeAssCaptionsFile(
+                assFile = ass,
+                fontsDir = fonts,
+                canvasWidth = 1280,
+                canvasHeight = 720,
+                events = listOf(
+                    FFmpegService.CaptionEvent(
+                        start = 1.0, end = 2.5, text = "Hello {world}",
+                        fontFamily = "Default", fontUrl = "", fontSize = 42,
+                        colorHex = "FFFFFF", position = "bottom", bold = true
+                    )
+                )
+            )
+            val body = ass.readText()
+            assertTrue(body.contains("[Script Info]"), body)
+            assertTrue(body.contains("PlayResX: 1280"), body)
+            assertTrue(body.contains("PlayResY: 720"), body)
+            // Outline-only text style (BorderStyle=1); rounded chip is a separate vector layer.
+            assertTrue(body.contains(",1,2,0,5,"), "expected BorderStyle=1 outline style, got:\n$body")
+            assertFalse(body.contains(",3,"), "BorderStyle=3 square box must not be used, got:\n$body")
+            // Layer 0 = rounded-rect drawing, layer 1 = text, same timing window.
+            assertTrue(body.contains("Dialogue: 0,0:00:01.00,0:00:02.50,"), body)
+            assertTrue(body.contains("Dialogue: 1,0:00:01.00,0:00:02.50,"), body)
+            assertTrue(body.contains("\\p1"), "rounded chip must be an ASS drawing, got:\n$body")
+            assertTrue(body.contains("\\pos("), "chip and text share an absolute center, got:\n$body")
+            // Curly braces must be escaped so libass does not treat them as override blocks.
+            assertTrue(body.contains("Hello \\{world\\}"), body)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun assRoundedRectDrawingHasFourBezierCorners() {
+        val path = FFmpegService.assRoundedRectDrawing(width = 200, height = 60, radius = 12)
+        // Move to start of top edge, four cubic corners, close via final bezier back to start.
+        assertTrue(path.startsWith("m 12 0 "), path)
+        assertEquals(4, Regex("""\bb\b""").findAll(path).count(), "four corner beziers, got: $path")
+        assertTrue(path.contains("l 188 0"), "top edge to before TR corner, got: $path")
+        assertTrue(path.contains("l 200 48"), "right edge, got: $path")
+        assertTrue(path.contains("l 12 60") || path.contains("l 12 60 "), path)
+        // Radius is clamped when larger than half the short side.
+        val tight = FFmpegService.assRoundedRectDrawing(width = 20, height = 10, radius = 100)
+        assertTrue(tight.startsWith("m 5 0 "), "radius clamps to half height (5), got: $tight")
+    }
+
+    @Test
+    fun escapeFilterPathEscapesColonAndQuotes() {
+        assertEquals("/tmp/foo", FFmpegService.escapeFilterPath("/tmp/foo"))
+        assertEquals("/tmp/foo\\:bar", FFmpegService.escapeFilterPath("/tmp/foo:bar"))
+        assertEquals("/tmp/foo\\'bar", FFmpegService.escapeFilterPath("/tmp/foo'bar"))
     }
 
     @Test

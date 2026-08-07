@@ -77,6 +77,43 @@ fun movedClipGroup(
     )
 }
 
+/** Timeline end of a clip (start + trimmed on-timeline duration). */
+fun clipEnd(clip: Clip): Float = clip.timelineStart + (clip.trimOut - clip.trimIn)
+
+/**
+ * How close a clip's start may sit before [thresholdSeconds] and still count as a ripple
+ * follower. Absorbs float residue from start+trim math and tiny "flush" overlaps that look
+ * adjacent on screen but are a hair early numerically (e.g. next at 5.0 when end is 5.000001).
+ * ~1 ms — well under a frame at any common fps, so real intentional overlaps stay excluded.
+ */
+const val RIPPLE_THRESHOLD_EPSILON = 0.001f
+
+/**
+ * Clips shifted by ripple (push/pull) editing: every clip that starts at or after
+ * [thresholdSeconds] (within [RIPPLE_THRESHOLD_EPSILON]), except those in [excludeClipIds],
+ * receives [deltaSeconds] on its [Clip.timelineStart] (clamped at 0).
+ *
+ * [clips] must be a snapshot taken at drag start (not the live timeline) so reapplying this
+ * mid-gesture never compounds the shift. Always returns the full follower set (even when
+ * [deltaSeconds] is 0) so a live local update can restore originals if the drag returns home.
+ *
+ * Typical thresholds:
+ * - Move: original end of the (rightmost) moved clip — keeps gaps after the item constant.
+ * - Resize right: original end of the resized clip — growing/shrinking pushes/pulls followers.
+ * Left-edge resize keeps the right edge fixed, so ripple is a no-op for that gesture.
+ */
+fun rippleShiftedClips(
+    clips: List<Clip>,
+    excludeClipIds: Set<String>,
+    thresholdSeconds: Float,
+    deltaSeconds: Float
+): List<Clip> = clips.mapNotNull { clip ->
+    if (clip.id in excludeClipIds) return@mapNotNull null
+    // Follower if start is at/after the cut, or only slightly before (float / tiny overlap).
+    if (clip.timelineStart < thresholdSeconds - RIPPLE_THRESHOLD_EPSILON) return@mapNotNull null
+    clip.copy(timelineStart = (clip.timelineStart + deltaSeconds).coerceAtLeast(0f))
+}
+
 /**
  * Where a new track of [type] should land in [tracks]: immediately after the last existing track
  * of the same kind. When none of that type exist yet, the new track is appended at the end.

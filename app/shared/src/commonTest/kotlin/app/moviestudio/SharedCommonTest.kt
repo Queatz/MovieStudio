@@ -277,6 +277,77 @@ class SharedCommonTest {
     }
 
     @Test
+    fun testClipEnd() {
+        val clip = preloadClip("c", "t", "a").copy(timelineStart = 10f, trimIn = 2f, trimOut = 7f)
+        // End is start + (trimOut - trimIn) = 10 + 5.
+        assertEquals(15f, clipEnd(clip))
+    }
+
+    @Test
+    fun testRippleShiftedClips() {
+        // Clip A 0–5, B starts at 5 (flush after A), C starts at 12, D starts at 3 (overlaps A).
+        val a = preloadClip("a", "v", "x").copy(timelineStart = 0f, trimIn = 0f, trimOut = 5f)
+        val b = preloadClip("b", "v", "x").copy(timelineStart = 5f, trimIn = 0f, trimOut = 3f)
+        val c = preloadClip("c", "m", "x").copy(timelineStart = 12f, trimIn = 0f, trimOut = 4f)
+        val d = preloadClip("d", "v", "x").copy(timelineStart = 3f, trimIn = 0f, trimOut = 4f)
+        val all = listOf(a, b, c, d)
+
+        // Moving/resizing A: threshold = A's end (5). B and C shift; D (starts before 5) stays.
+        val pushed = rippleShiftedClips(all, excludeClipIds = setOf("a"), thresholdSeconds = 5f, deltaSeconds = 2f)
+        assertEquals(listOf("b", "c"), pushed.map { it.id })
+        assertEquals(7f, pushed[0].timelineStart)
+        assertEquals(14f, pushed[1].timelineStart)
+
+        // Pull left by 2s from the same threshold.
+        val pulled = rippleShiftedClips(all, excludeClipIds = setOf("a"), thresholdSeconds = 5f, deltaSeconds = -2f)
+        assertEquals(listOf("b", "c"), pulled.map { it.id })
+        assertEquals(3f, pulled[0].timelineStart)
+        assertEquals(10f, pulled[1].timelineStart)
+
+        // Excluded ids never move (the item being edited).
+        assertEquals(
+            emptyList(),
+            rippleShiftedClips(all, excludeClipIds = setOf("a", "b", "c", "d"), thresholdSeconds = 0f, deltaSeconds = 5f)
+        )
+
+        // Zero delta still returns followers at their original starts so a live drag that
+        // returns home can restore them (local updates only touch listed clips).
+        val restored = rippleShiftedClips(all, excludeClipIds = setOf("a"), thresholdSeconds = 5f, deltaSeconds = 0f)
+        assertEquals(listOf("b", "c"), restored.map { it.id })
+        assertEquals(5f, restored[0].timelineStart)
+        assertEquals(12f, restored[1].timelineStart)
+
+        // Pulling past 0 clamps starts at 0.
+        val clamped = rippleShiftedClips(
+            listOf(b.copy(timelineStart = 1f)),
+            excludeClipIds = emptySet(),
+            thresholdSeconds = 0f,
+            deltaSeconds = -5f
+        )
+        assertEquals(0f, clamped.single().timelineStart)
+
+        // Reapplying from the same snapshot with a new total delta does not compound.
+        val once = rippleShiftedClips(all, setOf("a"), 5f, 2f)
+        val again = rippleShiftedClips(all, setOf("a"), 5f, 3f)
+        assertEquals(7f, once.first { it.id == "b" }.timelineStart)
+        assertEquals(8f, again.first { it.id == "b" }.timelineStart)
+
+        // Near-adjacent: next starts a hair before the cut (tiny overlap / float residue)
+        // still ripples; a clear mid-clip overlap still does not.
+        val almostFlush = preloadClip("near", "v", "x").copy(timelineStart = 5f - 0.0005f, trimIn = 0f, trimOut = 2f)
+        val floatEnd = 5f + 1e-6f // edited end slightly past an exact 5.0 start
+        val nearIncluded = rippleShiftedClips(
+            listOf(almostFlush, b.copy(timelineStart = 5f), d),
+            excludeClipIds = setOf("a"),
+            thresholdSeconds = floatEnd,
+            deltaSeconds = 1f
+        )
+        assertEquals(listOf("near", "b"), nearIncluded.map { it.id })
+        // Well before the cut (more than RIPPLE_THRESHOLD_EPSILON) stays put.
+        assertTrue(nearIncluded.none { it.id == "d" })
+    }
+
+    @Test
     fun testTrackInsertIndexAfterLastOfKind() {
         // Default movie layout: Video, Music, Voice.
         val tracks = listOf(
