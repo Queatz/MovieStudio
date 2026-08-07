@@ -171,6 +171,15 @@ class ModelsTest {
     }
 
     @Test
+    fun trackVolumeBoostDoublesVoiceOnly() {
+        assertEquals(2.0, VOICE_VOLUME_BOOST, 0.0001)
+        assertEquals(VOICE_VOLUME_BOOST, trackVolumeBoost(TrackType.VOICE), 0.0001)
+        assertEquals(1.0, trackVolumeBoost(TrackType.MUSIC), 0.0001)
+        assertEquals(1.0, trackVolumeBoost(TrackType.EFFECTS), 0.0001)
+        assertEquals(1.0, trackVolumeBoost(TrackType.VIDEO), 0.0001)
+    }
+
+    @Test
     fun buildWordTimingsDistributesWordsEvenly() {
         val timings = buildWordTimings("one two three four", 8.0)
         assertEquals(4, timings.size)

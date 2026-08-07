@@ -73,6 +73,7 @@ import app.moviestudio.setPreviewOverlayVisible
 import app.moviestudio.shared.resources.Res
 import app.moviestudio.shared.resources.asap
 import app.moviestudio.shared.resources.yuyu
+import app.moviestudio.trackVolumeBoost
 import app.moviestudio.updateAudioPlayback
 import app.moviestudio.volumeAt
 import coil3.compose.AsyncImage
@@ -163,7 +164,9 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                 positionSeconds = active.asset.sourceOffsetSeconds + active.clip.trimIn +
                     (playhead - active.clip.timelineStart).toDouble(),
                 // The volume-over-time envelope (when present) is evaluated at the playhead.
-                volume = effects.volumeAt((playhead - active.clip.timelineStart).toDouble())
+                // Voice tracks get the same VOICE_VOLUME_BOOST as the FFmpeg export.
+                volume = effects.volumeAt((playhead - active.clip.timelineStart).toDouble()) *
+                    trackVolumeBoost(active.trackType)
             )
         }
     LaunchedEffect(audioItems, viewModel.isPlaying) {

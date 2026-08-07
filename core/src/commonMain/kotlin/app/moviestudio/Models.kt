@@ -1028,6 +1028,16 @@ data class VolumePoint(
 /** The maximum gain a clip's volume (flat or keyframed) can be raised to (200%). */
 const val MAX_CLIP_VOLUME: Double = 2.0
 
+/**
+ * Extra linear gain applied on top of a voice-track clip's [EffectsConfig.volume] / envelope in
+ * live preview and FFmpeg export, so dialogue sits above beds at default faders.
+ */
+const val VOICE_VOLUME_BOOST: Double = 2.0
+
+/** Playback gain multiplier for clips on [trackType] (voice is boosted; everything else is unity). */
+fun trackVolumeBoost(trackType: TrackType): Double =
+    if (trackType == TrackType.VOICE) VOICE_VOLUME_BOOST else 1.0
+
 private val effectsJson = Json { ignoreUnknownKeys = true }
 
 /**

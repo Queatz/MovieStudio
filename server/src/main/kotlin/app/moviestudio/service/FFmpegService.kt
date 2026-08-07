@@ -33,8 +33,9 @@ import java.util.UUID
  * - Overlap transitions (alpha / noise / voronoi / slide / circle / pixelate) blend a clip in
  *   over the media playing underneath it.
  * - Audio clips honor their source offset (clipped sound effects), volume and position; voice
- *   clips with captions enabled get word-timed captions burned in via a single libass pass
- *   (an `.ass` sidecar), not one filter-graph layer per caption chunk.
+ *   track clips get an extra [VOICE_VOLUME_BOOST] on top of their envelope so dialogue sits above
+ *   beds. Voice clips with captions enabled get word-timed captions burned in via a single libass
+ *   pass (an `.ass` sidecar), not one filter-graph layer per caption chunk.
  *
  * The finished file is uploaded to Alibaba OSS and recorded as a [RenderRecord] so every render
  * remains replayable and downloadable.
@@ -321,6 +322,9 @@ object FFmpegService {
             // Every clip that carries an audio stream contributes to the mix — including video
             // clips on video tracks, whose embedded audio must be preserved. Clips with no audio
             // stream (images, silent video, description-only items) are filtered out below.
+            // Voice-track clips get VOICE_VOLUME_BOOST on top of their stored volume / envelope so
+            // dialogue is not buried by unity-gain music and video beds (mirrors live preview).
+            val tracksById = tracks.associateBy { it.id }
             val audioClips = clips.sortedBy { it.timelineStart }
             val audioStreamTags = mutableListOf<String>()
             for (clip in audioClips) {
@@ -332,7 +336,8 @@ object FFmpegService {
                 if (duration <= 0) continue
 
                 val effects = parseEffectsConfig(clip.effectsConfig)
-                val volume = effects.volume
+                val boost = trackVolumeBoost(tracksById[clip.trackId]?.type ?: TrackType.VIDEO)
+                val volume = effects.volume * boost
                 val srcStart = asset.sourceOffsetSeconds + clip.trimIn
                 val srcEnd = asset.sourceOffsetSeconds + clip.trimOut
 
@@ -341,8 +346,14 @@ object FFmpegService {
                 audioFilters.add("asetpts=PTS-STARTPTS")
                 if (effects.volumeKeyframes.isNotEmpty()) {
                     // Volume-over-time envelope: evaluated per frame; 't' is clip-relative
-                    // because the chain runs after asetpts=PTS-STARTPTS.
-                    audioFilters.add("volume=volume='${volumeEnvelopeExpression(effects.volumeKeyframes)}':eval=frame")
+                    // because the chain runs after asetpts=PTS-STARTPTS. Scale keyframe gains by
+                    // the same voice boost used for flat volume.
+                    val keyframes = if (boost != 1.0) {
+                        effects.volumeKeyframes.map { it.copy(volume = it.volume * boost) }
+                    } else {
+                        effects.volumeKeyframes
+                    }
+                    audioFilters.add("volume=volume='${volumeEnvelopeExpression(keyframes)}':eval=frame")
                 } else if (volume != 1.0) {
                     audioFilters.add("volume=${volume.ff()}")
                 }
