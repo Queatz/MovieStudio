@@ -70,7 +70,7 @@ data class MusicSequenceRequest(val movieId: String? = null, val sequence: Music
 private val json = Json { ignoreUnknownKeys = true }
 
 /**
- * The most reference images WAN 2.7 R2V accepts in one generation (the `reference_image` entries
+ * The most reference images WAN 3.0 R2V accepts in one generation (the `reference_image` entries
  * under `input.media`). This is the single budget the reference photos are balanced within — see
  * [balanceReferenceImages] — so it must stay in sync with the `take(...)` cap the R2V request
  * builder applies (`QwenAIService.buildVideoRequestBody`).

@@ -9,7 +9,7 @@ Acting as an "AI Director," the application orchestrates multiple generative AI 
 ### ✨ Key Features
 * **Movie Skeletons (Prompt-to-Movie):** Describe a scene or a whole movie and Qwen plans placeholder items straight onto the timeline at the playhead — each one generatable (and regeneratable, with restorable history) with one click.
 * **Multi-Track Timeline Editor:** Draggable/resizable clips, a scrubbable playhead, zoom + scroll controls, per-clip transitions (alpha, noise, voronoi, slide, circle, vignette, pixelate) over overlapping media, volume, and space-bar play/pause.
-* **Generate Anything:** WAN 2.7 video (T2V / I2V / R2V picked predictably from your inputs), images, Fun-Music songs (AI lyrics + theme + instrumental), sound effects (video ➜ audio extraction + clipping), and Qwen TTS voiceovers with word-timed transcripts and captions.
+* **Generate Anything:** WAN 3.0 video (T2V / I2V / R2V picked predictably from your inputs), images, Fun-Music songs (AI lyrics + theme + instrumental), sound effects (video ➜ audio extraction + clipping), and Qwen TTS voiceovers with word-timed transcripts and captions.
 * **Voice Suite:** Preset Qwen voices plus voice cloning, editable transcripts that re-run through Qwen for word offsets, a visual word-timing editor, and a caption editor with a font chooser.
 * **Saved Characters & Scenes:** Reusable libraries (name, description, up to 3 reference images) that plug into generations as R2V references.
 * **Global Media Library:** One holistic asset library across every movie — uploads, AI generations, sequencer tracks, frame captures, sound effects.
@@ -79,9 +79,9 @@ Recognized variables:
 | `QWEN_OPENAI_BASE_URL` | OpenAI-compatible endpoint (`<host>/compatible-mode/v1`).                             |
 | `QWEN_DASHSCOPE_BASE_URL` | DashScope endpoint (`<host>/api/v1`).                                                 |
 | `QWEN_CHAT_MODEL` | LLM for prompt refinement, lyrics/themes and skeleton planning (default `qwen-plus`). |
-| `QWEN_VIDEO_MODEL_T2V` | WAN text-to-video model (default `wan2.7-t2v`).                                       |
-| `QWEN_VIDEO_MODEL_I2V` | WAN image-to-video model (default `wan2.7-i2v`).                                      |
-| `QWEN_VIDEO_MODEL_R2V` | WAN reference-to-video model (default `wan2.7-r2v`).                                  |
+| `QWEN_VIDEO_MODEL_T2V` | WAN text-to-video model (default `wan3.0-t2v`).                                       |
+| `QWEN_VIDEO_MODEL_I2V` | WAN image-to-video model (default `wan3.0-i2v`).                                      |
+| `QWEN_VIDEO_MODEL_R2V` | WAN reference-to-video model (default `wan3.0-r2v`).                                  |
 | `QWEN_IMAGE_MODEL` | Text-to-image model (default `qwen-image-3.0-pro`).                                   |
 | `QWEN_IMAGE_EDIT_MODEL` | Image-to-image editing model (default `qwen-image-3.0-pro`; same unified model as above). |
 | `QWEN_MUSIC_MODEL` | Music generation model (default `fun-music-v1`).                                      |

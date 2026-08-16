@@ -426,7 +426,7 @@ class ModelsTest {
         val movie = Movie(
             id = "m1", title = "Heist", totalDuration = 42.0, status = MovieStatus.IN_PRODUCTION,
             createdAt = 123L, aspectRatio = "16:9",
-            lastImageResolution = "1328*1328", lastImageModel = "wan2.7-image-pro",
+            lastImageResolution = "1328*1328", lastImageModel = "wan3.0-image-pro",
             lastVideoResolution = "1280*720",
             lastVoice = "Ethan",
             lastStyleId = "style-pretty-anime"
@@ -434,7 +434,7 @@ class ModelsTest {
         val decoded = json.decodeFromString(Movie.serializer(), json.encodeToString(Movie.serializer(), movie))
         assertEquals(movie, decoded)
         assertEquals("1328*1328", decoded.lastImageResolution)
-        assertEquals("wan2.7-image-pro", decoded.lastImageModel)
+        assertEquals("wan3.0-image-pro", decoded.lastImageModel)
         assertEquals("1280*720", decoded.lastVideoResolution)
         assertEquals("Ethan", decoded.lastVoice)
         assertEquals("style-pretty-anime", decoded.lastStyleId)
@@ -556,7 +556,7 @@ class ModelsTest {
     fun aiLedgerComputesPerCallCostAndTotals() {
         val ledger = listOf(
             AiLedgerEntry(description = "Refined video prompt", model = "qwen-plus", tokens = 1000, costPerToken = 0.0000004),
-            AiLedgerEntry(description = "Generated video (wan2.7-t2v)", model = "wan2.7-t2v", tokens = 0, costPerToken = 0.000002)
+            AiLedgerEntry(description = "Generated video (wan3.0-t2v)", model = "wan3.0-t2v", tokens = 0, costPerToken = 0.000002)
         )
         // Each entry's USD cost is tokens × the per-token price (0 tokens -> free).
         assertEquals(0.0004, ledger[0].costUsd, 1e-9)
@@ -636,8 +636,8 @@ class ModelsTest {
     @Test
     fun imageModelLookupFallsBackToTheDefaultModel() {
         // A known id resolves to its model (case-insensitively).
-        assertEquals(IMAGE_MODEL_WAN_PRO, imageModelById("wan2.7-image-pro"))
-        assertEquals(IMAGE_MODEL_WAN, imageModelById("WAN2.7-IMAGE"))
+        assertEquals(IMAGE_MODEL_WAN_PRO, imageModelById("wan3.0-image-pro"))
+        assertEquals(IMAGE_MODEL_WAN, imageModelById("WAN3.0-IMAGE"))
         // Blank / null / unknown ids fall back to the configured default (Qwen Image 3.0).
         assertEquals(DEFAULT_IMAGE_MODEL_ID, imageModelById("").id)
         assertEquals(DEFAULT_IMAGE_MODEL_ID, imageModelById(null).id)
@@ -649,10 +649,10 @@ class ModelsTest {
     fun generationSetupModelRoundTripsAndDefaultsToBlank() {
         // The model field defaults to blank (server picks its default) and survives a round-trip.
         assertEquals("", GenerationSetup(kind = "image").model)
-        val setup = GenerationSetup(kind = "image", prompt = "p", model = "wan2.7-image-pro")
+        val setup = GenerationSetup(kind = "image", prompt = "p", model = "wan3.0-image-pro")
         val decoded = Json.decodeFromString(GenerationSetup.serializer(), Json.encodeToString(GenerationSetup.serializer(), setup))
         assertEquals(setup, decoded)
-        assertEquals("wan2.7-image-pro", decoded.model)
+        assertEquals("wan3.0-image-pro", decoded.model)
     }
 
     @Test
@@ -695,5 +695,20 @@ class ModelsTest {
         assertEquals("1920*1080", resolutionForAspect(1920, knownIsWidth = true, aspectRatio = "16:9"))
         assertEquals("1920*1080", resolutionForAspect(1080, knownIsWidth = false, aspectRatio = "16:9"))
         assertEquals("1000*1000", resolutionForAspect(1000, knownIsWidth = true, aspectRatio = "1:1"))
+    }
+
+    @Test
+    fun wan30VideoSizesIncludeTwoKAndThirtySecondCap() {
+        // WAN 3.0 video sizes cover the new 2K tier alongside the existing 480p/720p/1080p sets.
+        assertTrue("2560*1440" in SUPPORTED_VIDEO_SIZES)
+        assertTrue("1440*2560" in SUPPORTED_VIDEO_SIZES)
+        assertTrue("1920*1920" in SUPPORTED_VIDEO_SIZES)
+        assertTrue("3360*1440" in SUPPORTED_VIDEO_SIZES)
+        assertTrue("1440*3360" in SUPPORTED_VIDEO_SIZES)
+        // Shared image size list stays aligned with the video 2K tiers.
+        assertTrue("2560*1440" in SUPPORTED_IMAGE_SIZES)
+        // Generation length is 2–30 seconds.
+        assertEquals(2, MIN_VIDEO_DURATION_SECONDS)
+        assertEquals(30, MAX_VIDEO_DURATION_SECONDS)
     }
 }

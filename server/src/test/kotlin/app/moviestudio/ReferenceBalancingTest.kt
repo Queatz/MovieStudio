@@ -8,7 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Unit tests for the reference-image budget balancing that feeds WAN 2.7 R2V. The critical
+ * Unit tests for the reference-image budget balancing that feeds WAN 3.0 R2V. The critical
  * behaviour is that when the user selects more subjects (extra reference photos + characters +
  * scenes) than WAN can accept, at least one photo from every selection still survives instead of a
  * whole subject being silently dropped, and that each surviving photo is bound by index to its

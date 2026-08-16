@@ -55,7 +55,7 @@ class AssetLedgerTest {
         // Cost per token is a tiny fraction of a cent, but always positive.
         val chatRate = QwenConfig.usdPerToken(QwenConfig.chatModel)
         val ttsRate = QwenConfig.usdPerToken(QwenConfig.ttsModel)
-        val defaultRate = QwenConfig.usdPerToken("wan2.7-t2v")
+        val defaultRate = QwenConfig.usdPerToken("wan3.0-t2v")
         assertTrue(chatRate > 0.0 && chatRate < 0.01)
         assertTrue(ttsRate > 0.0 && ttsRate < 0.01)
         assertTrue(defaultRate > 0.0)
@@ -83,7 +83,7 @@ class AssetLedgerTest {
             setup = GenerationSetup(kind = "video", prompt = "a cat surfing"),
             targetType = "VIDEO"
         )
-        val genCall = AiLedgerEntry("Generated video (wan2.7-t2v)", "wan2.7-t2v", tokens = 1200, costPerToken = 0.000002)
+        val genCall = AiLedgerEntry("Generated video (wan3.0-t2v)", "wan3.0-t2v", tokens = 1200, costPerToken = 0.000002)
         val created = GenerationCommon.finalize(
             job, payload, "https://oss.example/v.mp4", 5.0, ledgerEntries = listOf(genCall)
         )

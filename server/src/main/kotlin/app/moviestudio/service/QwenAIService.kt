@@ -7,6 +7,8 @@ import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.GenerationSetup
 import app.moviestudio.Job
+import app.moviestudio.MAX_VIDEO_DURATION_SECONDS
+import app.moviestudio.MIN_VIDEO_DURATION_SECONDS
 import app.moviestudio.QWEN_VOICE_CATALOG
 import app.moviestudio.SUPPORTED_IMAGE_MODELS
 import app.moviestudio.TTS_DEFAULT_PITCH
@@ -131,7 +133,7 @@ internal fun isDrivingAudioMediaRejection(error: Throwable): Boolean {
  * (Qwen / DashScope) APIs.
  *
  * Supported generation tasks (all executed asynchronously through the job queue):
- * - video: WAN 2.7 family — T2V (prompt only), I2V (first-frame image), R2V (reference images);
+ * - video: WAN 3.0 family — T2V (prompt only), I2V (first-frame image), R2V (reference images);
  *          when a selected character has a linked voice, prompt dialogue is TTS'd and attached as
  *          driving audio for in-video speech.
  * - image: text-to-image, or image-to-image editing when a base image is attached.
@@ -492,7 +494,7 @@ object QwenAIService : AIGenerationService {
         onProgress(100, "Generation completed")
     }
 
-    /** WAN 2.7 video generation: model picked predictably by the setup (T2V / I2V / R2V / video-edit). */
+    /** WAN 3.0 video generation: model picked predictably by the setup (T2V / I2V / R2V / video-edit). */
     private suspend fun executeVideo(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val modelKind = setup.resolveVideoModelKind()
@@ -764,14 +766,14 @@ object QwenAIService : AIGenerationService {
     }
 
     /**
-     * Builds the DashScope video-synthesis request body for the WAN 2.7 family. Pure and
+     * Builds the DashScope video-synthesis request body for the WAN 3.0 family. Pure and
      * network-free so the per-[modelKind] input shape can be unit-tested (see
      * `QwenVideoRequestTest`); [modelKind] comes from [GenerationSetup.resolveVideoModelKind].
      *
      * The kind decides which optional input the body carries under `input`:
      * - i2v: the first-frame image as a list of media objects under `media`, where each entry is
-     *        `{ "type": "first_frame", "url": <url> }` — the shape WAN 2.7 image-to-video
-     *        documents (see the Model Studio "Wan 2.7 - image-to-video" API reference, which also
+     *        `{ "type": "first_frame", "url": <url> }` — the shape WAN 3.0 image-to-video
+     *        documents (see the Model Studio "Wan 3.0 - image-to-video" API reference, which also
      *        allows `last_frame`/`driving_audio`/`first_clip` entries). Model Studio rejects the
      *        legacy `img_url` with "Field required: input.media", a scalar `media` with "Input
      *        should be a valid list: input.media", a list of bare URL strings with the same
@@ -811,7 +813,7 @@ object QwenAIService : AIGenerationService {
             put("prompt", refinedPrompt)
             if (setup.negativePrompt.isNotBlank()) put("negative_prompt", setup.negativePrompt)
             when (modelKind) {
-                // WAN 2.7 I2V expects the first-frame image as a list of media objects under
+                // WAN 3.0 I2V expects the first-frame image as a list of media objects under
                 // `input.media`, each `{ "type": ..., "url": ... }`. A `first_frame` entry drives
                 // basic image-to-video; a bare URL or an `{ "image": <url> }` entry is rejected
                 // with "Field required: input.media.0.url & Field required: input.media.0.type".
@@ -829,7 +831,7 @@ object QwenAIService : AIGenerationService {
                     })
                     appendDrivingAudioMedia(this, drivingAudioUrl)
                 })
-                // WAN 2.7 R2V expects the reference images as a list of media objects under
+                // WAN 3.0 R2V expects the reference images as a list of media objects under
                 // `input.media`, each `{ "type": "reference_image", "url": <url> }`. Only the
                 // media types reference_image / reference_video / first_frame are accepted (a
                 // `reference` type is rejected with "Input should be 'reference_image',
@@ -846,7 +848,7 @@ object QwenAIService : AIGenerationService {
                     }
                     appendDrivingAudioMedia(this, drivingAudioUrl)
                 })
-                // WAN 2.7 video-edit expects the base video — and every optional reference image —
+                // WAN 3.0 video-edit expects the base video — and every optional reference image —
                 // as a list of media objects under `input.media`, each `{ "type": ..., "url": ... }`,
                 // like R2V. The base clip is a `video` entry and optional reference images ride
                 // along as `reference_image` entries. The video-edit model only accepts the media
@@ -880,7 +882,7 @@ object QwenAIService : AIGenerationService {
             // it; the other kinds honor the requested duration.
             if (modelKind != "videoedit") {
                 val dur = setup.durationSeconds.toInt()
-                if (dur in 1..15) put("duration", dur)
+                if (dur in MIN_VIDEO_DURATION_SECONDS..MAX_VIDEO_DURATION_SECONDS) put("duration", dur)
             }
         }
     }
@@ -908,7 +910,7 @@ object QwenAIService : AIGenerationService {
         val baseImageUrl = setup.imageUrl?.takeIf { it.isNotBlank() }?.let(OssService::freshDownloadUrl)
         val model = resolveImageModel(setup, isEdit = baseImageUrl != null)
         onProgress(15, if (baseImageUrl != null) "Submitting image edit task ($model)..." else "Submitting image task ($model)...")
-        // Every image model (the qwen-image family and the WAN 2.7 image models) is invoked
+        // Every image model (the qwen-image family and the WAN 3.0 image models) is invoked
         // through the chat-style multimodal-generation/generation endpoint - the legacy Wanx
         // aigc/text2image and aigc/image2image endpoints reject these model names with
         // HTTP 400 "url error, please check url！" (model name / API endpoint mismatch).
@@ -1463,7 +1465,7 @@ object QwenAIService : AIGenerationService {
             putJsonObject("parameters") {
                 put("size", "1280*720")
                 val dur = setup.durationSeconds.toInt()
-                if (dur in 1..15) put("duration", dur)
+                if (dur in MIN_VIDEO_DURATION_SECONDS..MAX_VIDEO_DURATION_SECONDS) put("duration", dur)
             }
         }
         return runAsyncGenerationTask(

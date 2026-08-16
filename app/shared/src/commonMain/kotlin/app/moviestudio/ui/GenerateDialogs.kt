@@ -42,6 +42,8 @@ import app.moviestudio.AssetType
 import app.moviestudio.DEFAULT_VOICE_ID
 import app.moviestudio.GenerationSetup
 import app.moviestudio.ImageModel
+import app.moviestudio.MAX_VIDEO_DURATION_SECONDS
+import app.moviestudio.MIN_VIDEO_DURATION_SECONDS
 import app.moviestudio.MusicSequence
 import app.moviestudio.NetworkService
 import app.moviestudio.SEQUENCER_MAX_PITCH
@@ -90,7 +92,7 @@ private val setupJson = Json { ignoreUnknownKeys = true; isLenient = true }
 /**
  * The "generate video / image" dialog (simple yet powerful): a prompt plus optional inputs — a
  * start image (with an optional end image for I2V), reference images, saved characters and
- * scenes. The WAN 2.7 model is selected predictably from what the user attaches (T2V / I2V / R2V)
+ * scenes. The WAN 3.0 model is selected predictably from what the user attaches (T2V / I2V / R2V)
  * and shown live. The full setup is stored on the generated asset so it can be retried or tweaked
  * later.
  */
@@ -162,10 +164,10 @@ fun GenerateMediaDialog(
         } else {
             initialSetup.durationSeconds
         }
-        mutableStateOf(initial.coerceIn(2.0, 15.0))
+        mutableStateOf(initial.coerceIn(MIN_VIDEO_DURATION_SECONDS.toDouble(), MAX_VIDEO_DURATION_SECONDS.toDouble()))
     }
     // The selected image-generation model (multi-model support). Video generation always uses the
-    // WAN 2.7 family, so this only drives image generation; a regenerate keeps the stored model,
+    // WAN 3.0 family, so this only drives image generation; a regenerate keeps the stored model,
     // while a fresh generation picks up the movie's last-used image model, if any.
     var imageModel by remember {
         mutableStateOf(
@@ -226,7 +228,7 @@ fun GenerateMediaDialog(
         styleId = styleId,
         durationSeconds = duration,
         resolution = resolution,
-        // Only image generation exposes a model choice; video always uses the WAN 2.7 family.
+        // Only image generation exposes a model choice; video always uses the WAN 3.0 family.
         model = if (kind == "image") imageModel.id else ""
     )
     val modelKind = setup.resolveVideoModelKind()
@@ -234,10 +236,10 @@ fun GenerateMediaDialog(
         kind == "image" && !imageUrl.isNullOrBlank() -> "Image edit (image-to-image)"
         kind == "image" && (referenceImages.isNotEmpty() || characterIds.isNotEmpty() || sceneIds.isNotEmpty()) -> "Qwen R2I (Reference-to-image)"
         kind == "image" -> "Text-to-image"
-        modelKind == "videoedit" -> "WAN 2.7 Video edit"
-        modelKind == "i2v" -> "WAN 2.7 I2V (image-to-video)"
-        modelKind == "r2v" -> "WAN 2.7 R2V (reference-to-video)"
-        else -> "WAN 2.7 T2V (text-to-video)"
+        modelKind == "videoedit" -> "WAN 3.0 Video edit"
+        modelKind == "i2v" -> "WAN 3.0 I2V (image-to-video)"
+        modelKind == "r2v" -> "WAN 3.0 R2V (reference-to-video)"
+        else -> "WAN 3.0 T2V (text-to-video)"
     }
 
     // Keep the selected size valid when switching between video and image generation, or when the
@@ -406,7 +408,7 @@ fun GenerateMediaDialog(
         }
 
         if (kind == "video") {
-            // Base video: attach a source clip to edit it with the wan2.7-videoedit model.
+            // Base video: attach a source clip to edit it with the wan3.0-videoedit model.
             SectionLabel("Base video (switches to video editing)")
             // Preview of the currently attached base video.
             videoUrl?.let { url ->
@@ -733,7 +735,7 @@ fun GenerateMediaDialog(
                     LabeledSlider(
                         label = "Duration",
                         value = duration.toFloat(),
-                        valueRange = 2f..15f,
+                        valueRange = MIN_VIDEO_DURATION_SECONDS.toFloat()..MAX_VIDEO_DURATION_SECONDS.toFloat(),
                         valueText = "${duration.roundToInt()}s",
                         onValueChange = { duration = it.toDouble() }
                     )
@@ -882,7 +884,7 @@ private fun ModelAndResolutionField(
 /**
  * Compact summary field that shows a resolution's aspect label and its "W×H" size and opens the
  * [VideoResolutionDialog] via [onClick]. The video counterpart of [ModelAndResolutionField], minus
- * the model (video generation always uses the WAN 2.7 family). Clipped before the clickable per
+ * the model (video generation always uses the WAN 3.0 family). Clipped before the clickable per
  * the project's rounded-hover guideline.
  */
 @Composable
@@ -920,7 +922,7 @@ private fun ResolutionField(
  * The full-dialog resolution picker for video generation, opened from [ResolutionField]. Mirrors
  * [ImageResolutionPicker]'s orientation-grouped sections (Landscape / Portrait / Square) over the
  * shared [SUPPORTED_VIDEO_SIZES] tiers, but has no model section and no custom size (video
- * generation always uses the WAN 2.7 tier list, with no per-model resolution limits to validate
+ * generation always uses the WAN 3.0 tier list, with no per-model resolution limits to validate
  * a custom size against).
  */
 @Composable
@@ -1731,12 +1733,12 @@ fun SequencerDialog(viewModel: AppViewModel, existingAsset: Asset?, onDismiss: (
 private fun sfxModelLabel(model: String): String = when (model) {
     "fun-audiogen" -> "Direct (text-to-audio)"
     "fun-audiogen-vd" -> "Video-driven (audio scoring)"
-    else -> "WAN 2.7 (video + audio extraction)"
+    else -> "WAN 3.0 (video + audio extraction)"
 }
 
 /**
  * Sound-effect generation with a selectable mode: direct synthesizes audio straight from the
- * prompt, video-driven scores a generated WAN source video, and the classic WAN 2.7 pipeline
+ * prompt, video-driven scores a generated WAN source video, and the classic WAN 3.0 pipeline
  * renders a short video whose audio track the server extracts into the library. With an
  * [initialAsset], the dialog opens pre-filled from that asset's stored generation setup and
  * regenerates from it into a brand-new asset (the original asset is left unchanged).
@@ -1777,11 +1779,11 @@ fun SoundEffectDialog(viewModel: AppViewModel, initialAsset: Asset? = null, onDi
                     "The sound is synthesized directly from your description and drops " +
                         "into the sound-effects library, ready to clip."
                 "fun-audiogen-vd" ->
-                    "WAN 2.7 generates a short video for your prompt, then the audio is scored " +
+                    "WAN 3.0 generates a short video for your prompt, then the audio is scored " +
                         "to match the visuals — the result lands in the " +
                         "sound-effects library, ready to clip."
                 else ->
-                    "WAN 2.7 generates a short video for your prompt; its audio track is extracted " +
+                    "WAN 3.0 generates a short video for your prompt; its audio track is extracted " +
                         "into the sound-effects library, ready to clip."
             },
             style = MaterialTheme.typography.bodySmall,

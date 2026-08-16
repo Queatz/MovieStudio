@@ -134,7 +134,7 @@ data class AssetVersion(
  */
 @Serializable
 data class AiLedgerEntry(
-    // Human-readable details of the AI call, e.g. "Generated video (wan2.7-t2v)".
+    // Human-readable details of the AI call, e.g. "Generated video (wan3.0-t2v)".
     val description: String,
     // The AI model the call used.
     val model: String,
@@ -1212,7 +1212,7 @@ fun sequencerRowFrequency(pitch: Int): Double {
  * (see [Asset.generationConfig]) so generations can be retried or tweaked and re-run.
  *
  * The model is selected predictably from the attached inputs:
- * - video + a base video -> video edit (wan2.7-videoedit)
+ * - video + a base video -> video edit (wan3.0-videoedit)
  * - video + reference images / characters / scenes -> R2V
  * - video + a start image -> I2V
  * - video + prompt only -> T2V
@@ -1241,7 +1241,7 @@ data class GenerationSetup(
     // (and [endFrameVideoUrl] over [endImageUrl] for the end frame).
     val startFrameVideoUrl: String? = null,
     val endFrameVideoUrl: String? = null,
-    // A base video to edit (switches video generation to the wan2.7-videoedit model).
+    // A base video to edit (switches video generation to the wan3.0-videoedit model).
     val videoUrl: String? = null,
     val referenceImages: List<String> = emptyList(),
     val characterIds: List<String> = emptyList(),
@@ -1252,7 +1252,7 @@ data class GenerationSetup(
     val styleId: String? = null,
     val durationSeconds: Double = 5.0,
     val resolution: String = "1280*720",
-    // Image-generation model id (one of [SUPPORTED_IMAGE_MODELS], e.g. "wan2.7-image-pro"); blank
+    // Image-generation model id (one of [SUPPORTED_IMAGE_MODELS], e.g. "wan3.0-image-pro"); blank
     // lets the server use its configured default. Only meaningful for image generation.
     val model: String = "",
     // Music-specific options.
@@ -1320,13 +1320,24 @@ data class AiChatMessage(
  */
 val SUPPORTED_ASPECT_RATIOS: List<String> = listOf("16:9", "9:16", "1:1", "4:3", "21:9")
 
+/** Minimum video generation length in seconds (WAN 3.0). */
+const val MIN_VIDEO_DURATION_SECONDS: Int = 2
+
+/** Maximum video generation length in seconds (WAN 3.0 supports up to 30s). */
+const val MAX_VIDEO_DURATION_SECONDS: Int = 30
+
 /**
- * Video generation sizes supported by the WAN 2.7 family (480p / 720p / 1080p tiers, landscape,
- * portrait, square and 21:9 ultrawide variants).
+ * Video generation sizes supported by the WAN 3.0 family (480p / 720p / 1080p / 2K tiers,
+ * landscape, portrait, square and 21:9 ultrawide variants).
  */
 val SUPPORTED_VIDEO_SIZES: List<String> = listOf(
+    // 720p
     "1280*720", "720*1280", "960*960", "1680*720", "720*1680",
+    // 1080p
     "1920*1080", "1080*1920", "1440*1440", "2520*1080", "1080*2520",
+    // 2K (WAN 3.0)
+    "2560*1440", "1440*2560", "1920*1920", "3360*1440", "1440*3360",
+    // 480p
     "832*480", "480*832", "624*624", "1120*480", "480*1120"
 )
 
@@ -1340,6 +1351,8 @@ val SUPPORTED_IMAGE_SIZES: List<String> = listOf(
     "960*960", "1920*1080", "1080*1920", "1440*1440",
     "832*480", "480*832", "624*624",
     "1680*720", "720*1680", "2520*1080", "1080*2520", "1120*480", "480*1120",
+    // 2K video-aligned tiers (shared with [SUPPORTED_VIDEO_SIZES]).
+    "2560*1440", "1440*2560", "1920*1920", "3360*1440", "1440*3360",
     "1328*1328", "1664*928", "928*1664", "1472*1140", "1140*1472"
 )
 
@@ -1360,9 +1373,9 @@ val SUPPORTED_IMAGE_SIZES: List<String> = listOf(
  */
 @Serializable
 data class ImageModel(
-    // DashScope model id sent to the API, e.g. "wan2.7-image-pro".
+    // DashScope model id sent to the API, e.g. "wan3.0-image-pro".
     val id: String,
-    // User-facing name shown in the model dropdown, e.g. "Wan 2.7 Pro".
+    // User-facing name shown in the model dropdown, e.g. "Wan 3.0 Pro".
     val displayName: String,
     // Short capability blurb shown alongside the dropdown.
     val description: String,
@@ -1379,12 +1392,12 @@ data class ImageModel(
 )
 
 /**
- * Wan 2.7 Pro (`wan2.7-image-pro`): the top image tier, generating up to 4K (3840×2160) — the
+ * Wan 3.0 Pro (`wan3.0-image-pro`): the top image tier, generating up to 4K (3840×2160) — the
  * largest of the three models.
  */
 val IMAGE_MODEL_WAN_PRO: ImageModel = ImageModel(
-    id = "wan2.7-image-pro",
-    displayName = "Wan 2.7 Pro",
+    id = "wan3.0-image-pro",
+    displayName = "Wan 3.0 Pro",
     description = "Highest detail, up to 4K (3840×2160).",
     minPixels = 512L * 512L,
     maxPixels = 3840L * 2160L,
@@ -1401,12 +1414,12 @@ val IMAGE_MODEL_WAN_PRO: ImageModel = ImageModel(
 )
 
 /**
- * Wan 2.7 (`wan2.7-image`): the standard Wan image tier, generating up to roughly 2.5K
+ * Wan 3.0 (`wan3.0-image`): the standard Wan image tier, generating up to roughly 2.5K
  * (2560×1440).
  */
 val IMAGE_MODEL_WAN: ImageModel = ImageModel(
-    id = "wan2.7-image",
-    displayName = "Wan 2.7",
+    id = "wan3.0-image",
+    displayName = "Wan 3.0",
     description = "Great quality, up to 2.5K (2560×1440).",
     minPixels = 512L * 512L,
     maxPixels = 2560L * 1440L,
@@ -1455,7 +1468,7 @@ val IMAGE_MODEL_QWEN: ImageModel = ImageModel(
 )
 
 /**
- * The selectable image-generation models, in dropdown order (Wan 2.7 Pro, Wan 2.7, Qwen Image 3.0).
+ * The selectable image-generation models, in dropdown order (Wan 3.0 Pro, Wan 3.0, Qwen Image 3.0).
  */
 val SUPPORTED_IMAGE_MODELS: List<ImageModel> = listOf(IMAGE_MODEL_WAN_PRO, IMAGE_MODEL_WAN, IMAGE_MODEL_QWEN)
 
