@@ -1,6 +1,7 @@
 package app.moviestudio.service
 
 import app.moviestudio.DEFAULT_IMAGE_MODEL_ID
+import app.moviestudio.DEFAULT_VIDEO_MODEL_ID
 import app.moviestudio.config.Env
 import org.slf4j.LoggerFactory
 
@@ -17,10 +18,13 @@ import org.slf4j.LoggerFactory
  * - QWEN_OPENAI_BASE_URL       OpenAI-compatible endpoint (<host>/compatible-mode/v1).
  * - QWEN_DASHSCOPE_BASE_URL    DashScope endpoint (<host>/api/v1).
  * - QWEN_CHAT_MODEL            LLM model used to refine prompts / plan skeletons (default qwen-plus).
- * - QWEN_VIDEO_MODEL_T2V       WAN text-to-video model (default wan3.0-t2v).
- * - QWEN_VIDEO_MODEL_I2V       WAN image-to-video model (default wan3.0-i2v).
- * - QWEN_VIDEO_MODEL_R2V       WAN reference-to-video model (default wan3.0-r2v).
- * - QWEN_VIDEO_MODEL_EDIT      WAN video-editing model (default wan3.0-videoedit).
+ * - QWEN_VIDEO_MODEL           Unified WAN 3.0 video model (default [DEFAULT_VIDEO_MODEL_ID];
+ *                              use wan3.0-video-prime for the faster sibling). T2V / I2V /
+ *                              R2V / edit are media inputs on this one model.
+ * - QWEN_VIDEO_MODEL_T2V       Optional override for prompt-only video (defaults to QWEN_VIDEO_MODEL).
+ * - QWEN_VIDEO_MODEL_I2V       Optional override for image-to-video (defaults to QWEN_VIDEO_MODEL).
+ * - QWEN_VIDEO_MODEL_R2V       Optional override for reference-to-video (defaults to QWEN_VIDEO_MODEL).
+ * - QWEN_VIDEO_MODEL_EDIT      Optional override for video-edit (defaults to QWEN_VIDEO_MODEL).
  * - QWEN_IMAGE_MODEL           Text-to-image model (default [DEFAULT_IMAGE_MODEL_ID]).
  * - QWEN_IMAGE_EDIT_MODEL      Image-to-image editing model. Qwen Image is a single unified model
  *                              for both text-to-image and image-editing (unlike the older "max"
@@ -51,14 +55,13 @@ object QwenConfig {
 
     val chatModel: String = Env.get("QWEN_CHAT_MODEL", "qwen-plus")
 
-    // WAN 3.0 video model family. The concrete model is chosen predictably from the generation
-    // setup: text only -> T2V, first-frame image -> I2V, reference images/characters/scenes -> R2V.
-    val videoModelT2V: String = Env.get("QWEN_VIDEO_MODEL_T2V", Env.get("QWEN_VIDEO_MODEL", "wan3.0-t2v"))
-    val videoModelI2V: String = Env.get("QWEN_VIDEO_MODEL_I2V", "wan3.0-i2v")
-    val videoModelR2V: String = Env.get("QWEN_VIDEO_MODEL_R2V", "wan3.0-r2v")
-    // Video-editing model: takes a base video plus a prompt (and optional reference images) and
-    // repaints/edits the source clip. Selected when a base video is attached to the setup.
-    val videoModelEdit: String = Env.get("QWEN_VIDEO_MODEL_EDIT", "wan3.0-videoedit")
+    // Unified Wan 3.0 video model. T2V / I2V / R2V / edit are different `input.media` shapes on
+    // the same id; optional per-kind env vars still exist for overrides.
+    val videoModel: String = Env.get("QWEN_VIDEO_MODEL", DEFAULT_VIDEO_MODEL_ID)
+    val videoModelT2V: String = Env.get("QWEN_VIDEO_MODEL_T2V", videoModel)
+    val videoModelI2V: String = Env.get("QWEN_VIDEO_MODEL_I2V", videoModel)
+    val videoModelR2V: String = Env.get("QWEN_VIDEO_MODEL_R2V", videoModel)
+    val videoModelEdit: String = Env.get("QWEN_VIDEO_MODEL_EDIT", videoModel)
 
     // Default model id comes from core [DEFAULT_IMAGE_MODEL_ID] (SSOT); env can still override.
     val imageModel: String = Env.get("QWEN_IMAGE_MODEL", DEFAULT_IMAGE_MODEL_ID)

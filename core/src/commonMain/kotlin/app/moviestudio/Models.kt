@@ -134,7 +134,7 @@ data class AssetVersion(
  */
 @Serializable
 data class AiLedgerEntry(
-    // Human-readable details of the AI call, e.g. "Generated video (wan3.0-t2v)".
+    // Human-readable details of the AI call, e.g. "Generated video (wan3.0-video)".
     val description: String,
     // The AI model the call used.
     val model: String,
@@ -1211,8 +1211,9 @@ fun sequencerRowFrequency(pitch: Int): Double {
  * A complete, reusable description of an AI media generation. Stored on the generated asset
  * (see [Asset.generationConfig]) so generations can be retried or tweaked and re-run.
  *
- * The model is selected predictably from the attached inputs:
- * - video + a base video -> video edit (wan3.0-videoedit)
+ * Video always uses the unified Wan 3.0 model ([DEFAULT_VIDEO_MODEL_ID]); the attached
+ * inputs only change the request's `input.media` (T2V / I2V / R2V / video-edit):
+ * - video + a base video -> video edit (`reference` / source video media)
  * - video + reference images / characters / scenes -> R2V
  * - video + a start image -> I2V
  * - video + prompt only -> T2V
@@ -1241,7 +1242,7 @@ data class GenerationSetup(
     // (and [endFrameVideoUrl] over [endImageUrl] for the end frame).
     val startFrameVideoUrl: String? = null,
     val endFrameVideoUrl: String? = null,
-    // A base video to edit (switches video generation to the wan3.0-videoedit model).
+    // A base video to edit (same wan3.0-video model; request switches to video-edit media).
     val videoUrl: String? = null,
     val referenceImages: List<String> = emptyList(),
     val characterIds: List<String> = emptyList(),
@@ -1327,19 +1328,63 @@ const val MIN_VIDEO_DURATION_SECONDS: Int = 2
 const val MAX_VIDEO_DURATION_SECONDS: Int = 30
 
 /**
- * Video generation sizes supported by the WAN 3.0 family (480p / 720p / 1080p / 2K tiers,
- * landscape, portrait, square and 21:9 ultrawide variants).
+ * Video generation sizes the studio offers. Wan 3.0's API takes a resolution tier
+ * (`480P` / `720P` / `1080P`) plus a ratio rather than these pixel sizes; [wanVideoResolutionTier]
+ * and [wanVideoRatio] map a picked size onto those parameters. 2K studio presets collapse to 1080P
+ * because the video API does not expose a 2K tier.
  */
 val SUPPORTED_VIDEO_SIZES: List<String> = listOf(
     // 720p
     "1280*720", "720*1280", "960*960", "1680*720", "720*1680",
     // 1080p
     "1920*1080", "1080*1920", "1440*1440", "2520*1080", "1080*2520",
-    // 2K (WAN 3.0)
+    // 2K studio presets (mapped down to 1080P on the Wan 3.0 video API)
     "2560*1440", "1440*2560", "1920*1920", "3360*1440", "1440*3360",
     // 480p
     "832*480", "480*832", "624*624", "1120*480", "480*1120"
 )
+
+/**
+ * Official Wan 3.0 video model id (DashScope). T2V / I2V / R2V / video-edit are media inputs on
+ * this one model — there is no `wan3.0-t2v` family. `wan3.0-video-prime` is the faster sibling
+ * and can be selected via `QWEN_VIDEO_MODEL`.
+ */
+const val DEFAULT_VIDEO_MODEL_ID: String = "wan3.0-video"
+
+/**
+ * Aspect ratios the Wan 3.0 video API accepts (plus `adaptive` for anything else, e.g. 21:9).
+ */
+val WAN_VIDEO_RATIOS: List<String> = listOf("16:9", "9:16", "1:1", "4:3", "3:4")
+
+/**
+ * Maps a studio "W*H" size onto Wan 3.0's `parameters.resolution` tier. 2K presets collapse to
+ * `1080P` because the video API only documents 480P / 720P / 1080P.
+ */
+fun wanVideoResolutionTier(size: String): String {
+    val (width, height) = parseResolution(size) ?: return "720P"
+    val shortEdge = minOf(width, height)
+    return when {
+        shortEdge >= 1080 -> "1080P"
+        shortEdge >= 720 -> "720P"
+        else -> "480P"
+    }
+}
+
+/**
+ * Maps a studio "W*H" size onto Wan 3.0's `parameters.ratio`. Closest official ratio wins when
+ * it is within 5%; otherwise `adaptive` (used for 21:9 ultrawide and malformed sizes).
+ */
+fun wanVideoRatio(size: String): String {
+    val (width, height) = parseResolution(size) ?: return "adaptive"
+    val ratio = width.toFloat() / height.toFloat()
+    val match = WAN_VIDEO_RATIOS.minByOrNull { candidate ->
+        val target = aspectRatioToFloat(candidate)
+        if (target > ratio) target / ratio else ratio / target
+    } ?: return "adaptive"
+    val target = aspectRatioToFloat(match)
+    val closeness = if (target > ratio) target / ratio else ratio / target
+    return if (closeness <= 1.05f) match else "adaptive"
+}
 
 /**
  * Image generation sizes offered by the text-to-image / image-edit models. Includes every

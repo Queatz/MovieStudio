@@ -408,7 +408,7 @@ fun GenerateMediaDialog(
         }
 
         if (kind == "video") {
-            // Base video: attach a source clip to edit it with the wan3.0-videoedit model.
+            // Base video: attach a source clip to edit it (same wan3.0-video model, edit media).
             SectionLabel("Base video (switches to video editing)")
             // Preview of the currently attached base video.
             videoUrl?.let { url ->

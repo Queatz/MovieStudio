@@ -1,6 +1,7 @@
 package app.moviestudio
 
 import app.moviestudio.service.QwenAIService
+import app.moviestudio.service.QwenConfig
 import app.moviestudio.storage.OssService
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -69,11 +70,21 @@ class QwenVideoRequestTest {
     }
 
     @Test
+    fun defaultVideoModelsAreTheUnifiedWan30Id() {
+        // DashScope rejects wan3.0-t2v / i2v / r2v / videoedit with "Model not exist."
+        assertEquals(DEFAULT_VIDEO_MODEL_ID, QwenConfig.videoModel)
+        assertEquals(DEFAULT_VIDEO_MODEL_ID, QwenConfig.videoModelT2V)
+        assertEquals(DEFAULT_VIDEO_MODEL_ID, QwenConfig.videoModelI2V)
+        assertEquals(DEFAULT_VIDEO_MODEL_ID, QwenConfig.videoModelR2V)
+        assertEquals(DEFAULT_VIDEO_MODEL_ID, QwenConfig.videoModelEdit)
+    }
+
+    @Test
     fun i2vSendsFirstFrameImageAsInputMediaList() {
         val setup = GenerationSetup(kind = "video", prompt = "A cat", imageUrl = "https://oss/first-frame.png")
         assertEquals("i2v", setup.resolveVideoModelKind())
 
-        val body = QwenAIService.buildVideoRequestBody(setup, "A cat, cinematic", "i2v", "wan3.0-i2v")
+        val body = QwenAIService.buildVideoRequestBody(setup, "A cat, cinematic", "i2v", DEFAULT_VIDEO_MODEL_ID)
         val input = body.input()
 
         assertEquals(listOf("https://oss/first-frame.png"), input.firstFrameUrls(), "I2V must send the image as a first_frame media object under input.media")
@@ -91,7 +102,7 @@ class QwenVideoRequestTest {
         )
         assertEquals("i2v", setup.resolveVideoModelKind())
 
-        val body = QwenAIService.buildVideoRequestBody(setup, "A cat, cinematic", "i2v", "wan3.0-i2v")
+        val body = QwenAIService.buildVideoRequestBody(setup, "A cat, cinematic", "i2v", DEFAULT_VIDEO_MODEL_ID)
         val input = body.input()
 
         assertEquals(listOf("https://oss/first-frame.png"), input.firstFrameUrls(), "the start image must remain the first_frame media object")
@@ -103,13 +114,17 @@ class QwenVideoRequestTest {
         val setup = GenerationSetup(kind = "video", prompt = "A dog", resolution = "1920*1080")
         assertEquals("t2v", setup.resolveVideoModelKind())
 
-        val body = QwenAIService.buildVideoRequestBody(setup, "A dog, cinematic", "t2v", "wan3.0-t2v")
+        val body = QwenAIService.buildVideoRequestBody(setup, "A dog, cinematic", "t2v", DEFAULT_VIDEO_MODEL_ID)
         val input = body.input()
 
         assertEquals("A dog, cinematic", input.str("prompt"))
         assertNull(input["media"])
         assertNull(input["img_url"])
-        assertEquals("1920*1080", body.getValue("parameters").jsonObject.str("size"))
+        assertEquals(DEFAULT_VIDEO_MODEL_ID, body.str("model"))
+        val params = body.getValue("parameters").jsonObject
+        assertEquals("1080P", params.str("resolution"))
+        assertEquals("16:9", params.str("ratio"))
+        assertNull(params["size"])
     }
 
     @Test
@@ -121,9 +136,10 @@ class QwenVideoRequestTest {
             resolution = "2560*1440",
             durationSeconds = 30.0,
         )
-        val body = QwenAIService.buildVideoRequestBody(setup, "A long take, cinematic", "t2v", "wan3.0-t2v")
+        val body = QwenAIService.buildVideoRequestBody(setup, "A long take, cinematic", "t2v", DEFAULT_VIDEO_MODEL_ID)
         val params = body.getValue("parameters").jsonObject
-        assertEquals("2560*1440", params.str("size"))
+        assertEquals("1080P", params.str("resolution"))
+        assertEquals("16:9", params.str("ratio"))
         assertEquals("30", params.str("duration"))
     }
 
@@ -133,15 +149,15 @@ class QwenVideoRequestTest {
         val setup = GenerationSetup(kind = "video", prompt = "A hero", referenceImages = refs)
         assertEquals("r2v", setup.resolveVideoModelKind())
 
-        val body = QwenAIService.buildVideoRequestBody(setup, "A hero, cinematic", "r2v", "wan3.0-r2v")
+        val body = QwenAIService.buildVideoRequestBody(setup, "A hero, cinematic", "r2v", DEFAULT_VIDEO_MODEL_ID)
         val input = body.input()
 
         assertEquals(refs, input.referenceUrls(), "R2V must send reference images as reference_image media objects under input.media")
         assertNull(input["ref_images_url"], "R2V must not send the legacy ref_images_url field")
         assertEquals(
-            "1280*720",
-            body.getValue("parameters").jsonObject.str("size"),
-            "R2V must send an explicit output size, otherwise the task fails with a missing 'resolution' error",
+            "720P",
+            body.getValue("parameters").jsonObject.str("resolution"),
+            "R2V must send an explicit output resolution, otherwise the task fails with a missing 'resolution' error",
         )
     }
 
@@ -150,7 +166,7 @@ class QwenVideoRequestTest {
         val setup = GenerationSetup(kind = "video", prompt = "Repaint", videoUrl = "https://oss/base.mp4")
         assertEquals("videoedit", setup.resolveVideoModelKind())
 
-        val body = QwenAIService.buildVideoRequestBody(setup, "Repaint, cinematic", "videoedit", "wan3.0-videoedit")
+        val body = QwenAIService.buildVideoRequestBody(setup, "Repaint, cinematic", "videoedit", DEFAULT_VIDEO_MODEL_ID)
         val input = body.input()
 
         assertEquals(
@@ -172,7 +188,8 @@ class QwenVideoRequestTest {
         // The edited clip inherits the base video's resolution and length, so no output size or
         // duration parameter is sent.
         val parameters = body.getValue("parameters").jsonObject
-        assertNull(parameters["size"], "video edit must not send an output size (it follows the base video)")
+        assertNull(parameters["resolution"], "video edit must not send an output resolution (it follows the base video)")
+        assertNull(parameters["ratio"], "video edit must not send an output ratio (it follows the base video)")
         assertNull(parameters["duration"], "video edit must not send a duration (it follows the base video)")
     }
 
@@ -193,7 +210,7 @@ class QwenVideoRequestTest {
         )
         assertEquals("videoedit", setup.resolveVideoModelKind())
 
-        val body = QwenAIService.buildVideoRequestBody(setup, "Repaint, cinematic", "videoedit", "wan3.0-videoedit")
+        val body = QwenAIService.buildVideoRequestBody(setup, "Repaint, cinematic", "videoedit", DEFAULT_VIDEO_MODEL_ID)
         val input = body.input()
 
         assertEquals(listOf("https://oss/base.mp4"), input.videoUrls())
@@ -223,7 +240,7 @@ class QwenVideoRequestTest {
         val staleUrl = ossUrl(objectKey)
         val setup = GenerationSetup(kind = "video", prompt = "A cat", imageUrl = staleUrl)
 
-        val body = QwenAIService.buildVideoRequestBody(setup, "A cat, cinematic", "i2v", "wan3.0-i2v")
+        val body = QwenAIService.buildVideoRequestBody(setup, "A cat, cinematic", "i2v", DEFAULT_VIDEO_MODEL_ID)
         val mediaUrl = body.input().firstFrameUrls().single()
 
         assertEquals(objectKey, OssService.objectKeyFromUrl(mediaUrl))
@@ -241,7 +258,7 @@ class QwenVideoRequestTest {
             setup,
             "A hero says hello",
             "r2v",
-            "wan3.0-r2v",
+            DEFAULT_VIDEO_MODEL_ID,
             drivingAudioUrl = staleDriving,
         )
         val input = body.input()
@@ -269,7 +286,7 @@ class QwenVideoRequestTest {
             setup,
             "A cat speaks",
             "i2v",
-            "wan3.0-i2v",
+            DEFAULT_VIDEO_MODEL_ID,
             drivingAudioUrl = "https://oss/drive.mp3",
         )
         val input = body.input()
@@ -291,7 +308,7 @@ class QwenVideoRequestTest {
             setup,
             "A hero",
             "r2v",
-            "wan3.0-r2v",
+            DEFAULT_VIDEO_MODEL_ID,
             drivingAudioUrl = "   ",
         )
         val input = body.input()
@@ -305,7 +322,7 @@ class QwenVideoRequestTest {
             GenerationSetup(kind = "video", prompt = "A dog"),
             "A dog",
             "t2v",
-            "wan3.0-t2v",
+            DEFAULT_VIDEO_MODEL_ID,
             drivingAudioUrl = "https://oss/drive.mp3",
         )
         assertNull(t2v.input()["media"], "t2v has no media list; driving audio is ignored in v1")
@@ -314,7 +331,7 @@ class QwenVideoRequestTest {
             GenerationSetup(kind = "video", prompt = "Repaint", videoUrl = "https://oss/base.mp4"),
             "Repaint",
             "videoedit",
-            "wan3.0-videoedit",
+            DEFAULT_VIDEO_MODEL_ID,
             drivingAudioUrl = "https://oss/drive.mp3",
         )
         assertEquals(listOf("video"), edit.input().mediaTypes())

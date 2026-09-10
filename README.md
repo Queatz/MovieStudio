@@ -79,9 +79,8 @@ Recognized variables:
 | `QWEN_OPENAI_BASE_URL` | OpenAI-compatible endpoint (`<host>/compatible-mode/v1`).                             |
 | `QWEN_DASHSCOPE_BASE_URL` | DashScope endpoint (`<host>/api/v1`).                                                 |
 | `QWEN_CHAT_MODEL` | LLM for prompt refinement, lyrics/themes and skeleton planning (default `qwen-plus`). |
-| `QWEN_VIDEO_MODEL_T2V` | WAN text-to-video model (default `wan3.0-t2v`).                                       |
-| `QWEN_VIDEO_MODEL_I2V` | WAN image-to-video model (default `wan3.0-i2v`).                                      |
-| `QWEN_VIDEO_MODEL_R2V` | WAN reference-to-video model (default `wan3.0-r2v`).                                  |
+| `QWEN_VIDEO_MODEL` | Unified WAN 3.0 video model (default `wan3.0-video`; use `wan3.0-video-prime` for the faster sibling). T2V / I2V / R2V / edit are media inputs on this one model. |
+| `QWEN_VIDEO_MODEL_T2V` / `_I2V` / `_R2V` / `_EDIT` | Optional per-kind overrides (default to `QWEN_VIDEO_MODEL`). |
 | `QWEN_IMAGE_MODEL` | Text-to-image model (default `qwen-image-3.0-pro`).                                   |
 | `QWEN_IMAGE_EDIT_MODEL` | Image-to-image editing model (default `qwen-image-3.0-pro`; same unified model as above). |
 | `QWEN_MUSIC_MODEL` | Music generation model (default `fun-music-v1`).                                      |

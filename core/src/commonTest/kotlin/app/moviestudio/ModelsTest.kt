@@ -556,7 +556,7 @@ class ModelsTest {
     fun aiLedgerComputesPerCallCostAndTotals() {
         val ledger = listOf(
             AiLedgerEntry(description = "Refined video prompt", model = "qwen-plus", tokens = 1000, costPerToken = 0.0000004),
-            AiLedgerEntry(description = "Generated video (wan3.0-t2v)", model = "wan3.0-t2v", tokens = 0, costPerToken = 0.000002)
+            AiLedgerEntry(description = "Generated video (wan3.0-video)", model = "wan3.0-video", tokens = 0, costPerToken = 0.000002)
         )
         // Each entry's USD cost is tokens × the per-token price (0 tokens -> free).
         assertEquals(0.0004, ledger[0].costUsd, 1e-9)
@@ -710,5 +710,15 @@ class ModelsTest {
         // Generation length is 2–30 seconds.
         assertEquals(2, MIN_VIDEO_DURATION_SECONDS)
         assertEquals(30, MAX_VIDEO_DURATION_SECONDS)
+        assertEquals("wan3.0-video", DEFAULT_VIDEO_MODEL_ID)
+        // Pixel sizes map onto Wan 3.0's resolution/ratio parameters.
+        assertEquals("720P", wanVideoResolutionTier("1280*720"))
+        assertEquals("1080P", wanVideoResolutionTier("1920*1080"))
+        assertEquals("1080P", wanVideoResolutionTier("2560*1440"))
+        assertEquals("480P", wanVideoResolutionTier("832*480"))
+        assertEquals("16:9", wanVideoRatio("1280*720"))
+        assertEquals("9:16", wanVideoRatio("720*1280"))
+        assertEquals("1:1", wanVideoRatio("960*960"))
+        assertEquals("adaptive", wanVideoRatio("1680*720"))
     }
 }

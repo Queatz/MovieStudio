@@ -17,6 +17,8 @@ import app.moviestudio.TTS_MAX_PITCH
 import app.moviestudio.TTS_MAX_SPEED
 import app.moviestudio.TTS_MIN_PITCH
 import app.moviestudio.TTS_MIN_SPEED
+import app.moviestudio.wanVideoRatio
+import app.moviestudio.wanVideoResolutionTier
 import app.moviestudio.VOICE_SAMPLE_TEXT
 import app.moviestudio.VoiceClone
 import app.moviestudio.VoiceDesign
@@ -494,7 +496,7 @@ object QwenAIService : AIGenerationService {
         onProgress(100, "Generation completed")
     }
 
-    /** WAN 3.0 video generation: model picked predictably by the setup (T2V / I2V / R2V / video-edit). */
+    /** WAN 3.0 video generation: one model ([QwenConfig.videoModel]); media shape follows the setup. */
     private suspend fun executeVideo(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val modelKind = setup.resolveVideoModelKind()
@@ -785,8 +787,8 @@ object QwenAIService : AIGenerationService {
      *        rejected with "Input should be 'reference_image', 'reference_video' or 'first_frame':
      *        input.media.0.type"), and sending references under the legacy `ref_images_url` is
      *        rejected with "Field required: input.media". R2V also needs an explicit output
-     *        `size` — without it the task fails with "'NoneType' object has no attribute
-     *        'resolution'". Optional character speech may ride along as `driving_audio`; if R2V
+     *        `resolution`/`ratio` — without them the task fails with "'NoneType' object has no
+     *        attribute 'resolution'". Optional character speech may ride along as `driving_audio`; if R2V
      *        rejects that media type, [executeVideo] retries once as I2V.
      * - videoedit: the base clip as a `{ "type": "video", "url": <url> }` media object under
      *        `input.media`, plus optional `reference_image` entries — the same `input.media` list
@@ -795,7 +797,7 @@ object QwenAIService : AIGenerationService {
      *        `first_frame` entry) is rejected with "Input should be 'video' or 'reference_image':
      *        input.media.0.type", and the legacy scalar `video_url` field is rejected with "Field
      *        required: input.media". The edited clip inherits the source video's resolution and
-     *        length, so no output `size` or `duration` parameter is sent for it.
+     *        length, so no output `resolution`/`ratio` or `duration` parameter is sent for it.
      *
      * @param drivingAudioUrl optional OSS URL of character speech synthesized for this job. When
      * non-blank, appended as `{ "type": "driving_audio", "url": ... }` on R2V and I2V media lists.
@@ -872,11 +874,12 @@ object QwenAIService : AIGenerationService {
             }
         }
         putJsonObject("parameters") {
-            // T2V and R2V need an explicit output size; I2V infers it from its first-frame image
-            // and video-edit inherits the source video's resolution, so neither sends a `size`.
-            // R2V without a size fails with "'NoneType' object has no attribute 'resolution'".
-            if (modelKind != "i2v" && modelKind != "videoedit") {
-                put("size", setup.resolution.ifBlank { "1280*720" })
+            // Wan 3.0 takes `resolution` (480P/720P/1080P) + `ratio`, not a pixel `size`.
+            // Video-edit inherits the source clip, so it sends neither.
+            if (modelKind != "videoedit") {
+                val size = setup.resolution.ifBlank { "1280*720" }
+                put("resolution", wanVideoResolutionTier(size))
+                put("ratio", wanVideoRatio(size))
             }
             // Video-edit output length always matches the base video, so no `duration` is sent for
             // it; the other kinds honor the requested duration.
@@ -1463,7 +1466,8 @@ object QwenAIService : AIGenerationService {
                 put("prompt", "${setup.prompt}. Rich, clear sound design; the audio is the star.")
             }
             putJsonObject("parameters") {
-                put("size", "1280*720")
+                put("resolution", "720P")
+                put("ratio", "16:9")
                 val dur = setup.durationSeconds.toInt()
                 if (dur in MIN_VIDEO_DURATION_SECONDS..MAX_VIDEO_DURATION_SECONDS) put("duration", dur)
             }
