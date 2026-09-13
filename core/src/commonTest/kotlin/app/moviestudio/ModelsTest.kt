@@ -721,4 +721,30 @@ class ModelsTest {
         assertEquals("1:1", wanVideoRatio("960*960"))
         assertEquals("adaptive", wanVideoRatio("1680*720"))
     }
+
+    @Test
+    fun wanRequestedDurationUsesSmartDurationSentinel() {
+        assertEquals(
+            WAN_SMART_DURATION_SECONDS,
+            GenerationSetup(kind = "video", smartDuration = true).wanRequestedDuration()
+        )
+        // Smart Duration wins over a slider value that would otherwise be sent.
+        assertEquals(
+            WAN_SMART_DURATION_SECONDS,
+            GenerationSetup(kind = "video", durationSeconds = 12.0, smartDuration = true).wanRequestedDuration()
+        )
+        assertEquals(5, GenerationSetup(kind = "video").wanRequestedDuration())
+        assertEquals(30, GenerationSetup(kind = "video", durationSeconds = 30.0).wanRequestedDuration())
+        assertNull(GenerationSetup(kind = "video", durationSeconds = 1.0).wanRequestedDuration())
+    }
+
+    @Test
+    fun generationSetupSmartDurationDefaultsFalseAndRoundTrips() {
+        val json = Json { ignoreUnknownKeys = true }
+        val decoded = json.decodeFromString(GenerationSetup.serializer(), """{"kind":"video"}""")
+        assertFalse(decoded.smartDuration)
+        val encoded = json.encodeToString(GenerationSetup.serializer(), GenerationSetup(kind = "video", smartDuration = true))
+        val roundTripped = json.decodeFromString(GenerationSetup.serializer(), encoded)
+        assertTrue(roundTripped.smartDuration)
+    }
 }

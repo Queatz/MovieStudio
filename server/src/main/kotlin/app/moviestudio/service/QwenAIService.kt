@@ -17,6 +17,7 @@ import app.moviestudio.TTS_MAX_PITCH
 import app.moviestudio.TTS_MAX_SPEED
 import app.moviestudio.TTS_MIN_PITCH
 import app.moviestudio.TTS_MIN_SPEED
+import app.moviestudio.wanRequestedDuration
 import app.moviestudio.wanVideoRatio
 import app.moviestudio.wanVideoResolutionTier
 import app.moviestudio.VOICE_SAMPLE_TEXT
@@ -882,10 +883,9 @@ object QwenAIService : AIGenerationService {
                 put("ratio", wanVideoRatio(size))
             }
             // Video-edit output length always matches the base video, so no `duration` is sent for
-            // it; the other kinds honor the requested duration.
+            // it; the other kinds honor the requested duration (`-1` is WAN Smart Duration).
             if (modelKind != "videoedit") {
-                val dur = setup.durationSeconds.toInt()
-                if (dur in MIN_VIDEO_DURATION_SECONDS..MAX_VIDEO_DURATION_SECONDS) put("duration", dur)
+                setup.wanRequestedDuration()?.let { put("duration", it) }
             }
         }
     }

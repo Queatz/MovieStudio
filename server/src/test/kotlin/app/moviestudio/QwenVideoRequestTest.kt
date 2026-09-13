@@ -144,6 +144,29 @@ class QwenVideoRequestTest {
     }
 
     @Test
+    fun t2vSmartDurationSendsMinusOne() {
+        val setup = GenerationSetup(kind = "video", prompt = "A dog", smartDuration = true, durationSeconds = 12.0)
+        val body = QwenAIService.buildVideoRequestBody(setup, "A dog, cinematic", "t2v", DEFAULT_VIDEO_MODEL_ID)
+        val params = body.getValue("parameters").jsonObject
+        assertEquals("-1", params.str("duration"), "Smart Duration must send duration=-1 so WAN picks the length")
+    }
+
+    @Test
+    fun videoEditOmitsDurationEvenWithSmartDuration() {
+        val setup = GenerationSetup(
+            kind = "video",
+            prompt = "Repaint",
+            videoUrl = "https://oss/base.mp4",
+            smartDuration = true,
+        )
+        val body = QwenAIService.buildVideoRequestBody(setup, "Repaint, cinematic", "videoedit", DEFAULT_VIDEO_MODEL_ID)
+        assertNull(
+            body.getValue("parameters").jsonObject["duration"],
+            "video-edit output length matches the base clip, so Smart Duration must not send duration",
+        )
+    }
+
+    @Test
     fun r2vSendsReferenceImagesAsInputMediaList() {
         val refs = listOf("https://oss/a.png", "https://oss/b.png")
         val setup = GenerationSetup(kind = "video", prompt = "A hero", referenceImages = refs)

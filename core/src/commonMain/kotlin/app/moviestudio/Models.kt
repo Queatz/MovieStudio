@@ -1252,6 +1252,9 @@ data class GenerationSetup(
     // "\n\nVisual style: <style text>\n\n". Blank/null means no style.
     val styleId: String? = null,
     val durationSeconds: Double = 5.0,
+    // When true, WAN 3.0 Smart Duration is used: the duration slider is hidden and the
+    // request sends duration=-1 so the model picks a length from the prompt and media.
+    val smartDuration: Boolean = false,
     val resolution: String = "1280*720",
     // Image-generation model id (one of [SUPPORTED_IMAGE_MODELS], e.g. "wan3.0-image-pro"); blank
     // lets the server use its configured default. Only meaningful for image generation.
@@ -1326,6 +1329,24 @@ const val MIN_VIDEO_DURATION_SECONDS: Int = 2
 
 /** Maximum video generation length in seconds (WAN 3.0 supports up to 30s). */
 const val MAX_VIDEO_DURATION_SECONDS: Int = 30
+
+/**
+ * Sentinel `parameters.duration` value that enables WAN 3.0 Smart Duration: the model
+ * picks a suitable length from the prompt and attached media instead of a fixed 2–30s.
+ */
+const val WAN_SMART_DURATION_SECONDS: Int = -1
+
+/**
+ * The `parameters.duration` integer sent to Wan 3.0 video generation. [WAN_SMART_DURATION_SECONDS]
+ * (`-1`) lets the model pick the length; otherwise a 2–30s integer. Null means omit the field
+ * (out-of-range or unset). Video-edit still omits duration at the request builder — output length
+ * always matches the base clip.
+ */
+fun GenerationSetup.wanRequestedDuration(): Int? {
+    if (smartDuration) return WAN_SMART_DURATION_SECONDS
+    val dur = durationSeconds.toInt()
+    return dur.takeIf { it in MIN_VIDEO_DURATION_SECONDS..MAX_VIDEO_DURATION_SECONDS }
+}
 
 /**
  * Video generation sizes the studio offers. Wan 3.0's API takes a resolution tier

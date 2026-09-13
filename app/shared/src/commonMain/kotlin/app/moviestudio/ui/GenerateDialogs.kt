@@ -166,6 +166,7 @@ fun GenerateMediaDialog(
         }
         mutableStateOf(initial.coerceIn(MIN_VIDEO_DURATION_SECONDS.toDouble(), MAX_VIDEO_DURATION_SECONDS.toDouble()))
     }
+    var smartDuration by remember { mutableStateOf(initialSetup.smartDuration) }
     // The selected image-generation model (multi-model support). Video generation always uses the
     // WAN 3.0 family, so this only drives image generation; a regenerate keeps the stored model,
     // while a fresh generation picks up the movie's last-used image model, if any.
@@ -227,6 +228,7 @@ fun GenerateMediaDialog(
         sceneIds = sceneIds,
         styleId = styleId,
         durationSeconds = duration,
+        smartDuration = kind == "video" && smartDuration,
         resolution = resolution,
         // Only image generation exposes a model choice; video always uses the WAN 3.0 family.
         model = if (kind == "image") imageModel.id else ""
@@ -732,13 +734,21 @@ fun GenerateMediaDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
-                    LabeledSlider(
-                        label = "Duration",
-                        value = duration.toFloat(),
-                        valueRange = MIN_VIDEO_DURATION_SECONDS.toFloat()..MAX_VIDEO_DURATION_SECONDS.toFloat(),
-                        valueText = "${duration.roundToInt()}s",
-                        onValueChange = { duration = it.toDouble() }
+                    LabeledSwitch(
+                        label = "Smart Duration",
+                        checked = smartDuration,
+                        onCheckedChange = { smartDuration = it },
+                        description = "Let WAN pick the video length."
                     )
+                    if (!smartDuration) {
+                        LabeledSlider(
+                            label = "Duration",
+                            value = duration.toFloat(),
+                            valueRange = MIN_VIDEO_DURATION_SECONDS.toFloat()..MAX_VIDEO_DURATION_SECONDS.toFloat(),
+                            valueText = "${duration.roundToInt()}s",
+                            onValueChange = { duration = it.toDouble() }
+                        )
+                    }
                 }
             }
 
