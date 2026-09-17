@@ -40,6 +40,9 @@ import org.slf4j.LoggerFactory
  * - QWEN_AUDIO_MODEL           Sound-effect model (Alibaba ThinkSound), used both text-to-audio
  *                              and video-driven (default thinksound-v1); served by the
  *                              audio-generation/audio-synthesis endpoint.
+ * - QWEN_TRANSCRIPTION_MODEL   Speech-to-text model for voice transcripts (default
+ *                              qwen-audio-3.0-asr-flash). The audio file is sent to Qwen; the
+ *                              clip description is never used as a stand-in transcript.
  * - QWEN_POLL_INTERVAL_MS      Async task poll interval in ms (default 3000).
  * - QWEN_POLL_TIMEOUT_MS       Async task max wait in ms (default 300000).
  * - QWEN_IMAGE_USD_PER_CALL    Flat USD price per generated/edited image, since Qwen-Image bills
@@ -83,7 +86,7 @@ object QwenConfig {
     // video_url is attached. Note: "fun-audiogen"/"fun-audiogen-vd" are the UI mode selectors, not
     // the DashScope model id, which is thinksound-v1.
     val audioModel: String = Env.get("QWEN_AUDIO_MODEL", "thinksound-v1")
-    val transcriptionModel: String = Env.get("QWEN_TRANSCRIPTION_MODEL", "paraformer-v2")
+    val transcriptionModel: String = Env.get("QWEN_TRANSCRIPTION_MODEL", "qwen-audio-3.0-asr-flash")
 
     // Realtime (streaming) speech recognition used for hold-to-dictate on browsers without the
     // Web Speech API (e.g. Firefox). DashScope exposes it over a duplex WebSocket.

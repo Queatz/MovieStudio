@@ -8,7 +8,9 @@ import app.moviestudio.Job
 import app.moviestudio.JobStatus
 import app.moviestudio.JobType
 import app.moviestudio.database.AssetRepository
+import app.moviestudio.database.ClipRepository
 import app.moviestudio.database.JobRepository
+import app.moviestudio.database.TrackRepository
 import app.moviestudio.job.JobQueueWorker
 import app.moviestudio.service.AiJobPayload
 import app.moviestudio.service.AIGenerationService
@@ -39,6 +41,9 @@ data class RestoreVersionRequest(val versionIndex: Int)
 
 @Serializable
 data class ClipAudioRequest(val startSeconds: Double, val endSeconds: Double, val name: String = "")
+
+@Serializable
+data class ExtractVoiceRequest(val clipId: String)
 
 private val payloadJson = Json { ignoreUnknownKeys = true }
 
@@ -249,6 +254,54 @@ fun Route.assetRoutes() {
                 )
                 JobRepository.insert(job)
                 // A new job was started: make sure the queue worker is running to pick it up.
+                JobQueueWorker.start()
+                call.respond(HttpStatusCode.Accepted, job)
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, e.message ?: "Internal Server Error")
+            }
+        }
+
+        // Extracts the audio of this (video) asset as a VOICE library item via the generation
+        // queue, then places a muted, captions-on clip on the voice track at [clipId]'s window.
+        post("/{id}/extract-voice") {
+            try {
+                val id = call.parameters["id"] ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing id")
+                val request = call.receive<ExtractVoiceRequest>()
+                val asset = AssetRepository.getById(id)
+                    ?: return@post call.respond(HttpStatusCode.NotFound, "Asset not found")
+                if (asset.ossUrl.isBlank()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, "Asset has no media to extract voice from")
+                }
+                val sourceClip = ClipRepository.getById(request.clipId)
+                    ?: return@post call.respond(HttpStatusCode.NotFound, "Clip not found")
+                if (sourceClip.assetId != asset.id) {
+                    return@post call.respond(HttpStatusCode.BadRequest, "Clip does not use this asset")
+                }
+                val movieId = TrackRepository.getById(sourceClip.trackId)?.movieId
+                    ?: asset.movieId
+                    ?: ""
+                val labelSource = (asset.description ?: asset.aiPrompt).orEmpty().ifBlank { "asset" }
+                val payload = AiJobPayload(
+                    setup = GenerationSetup(
+                        kind = "extract-voice",
+                        prompt = "Voice from: $labelSource".trim()
+                    ),
+                    sourceUrl = asset.ossUrl,
+                    sourceClipId = sourceClip.id,
+                    targetType = AssetType.VOICE.name
+                )
+                val job = Job(
+                    id = UUID.randomUUID().toString(),
+                    movieId = movieId,
+                    type = JobType.AI_GEN,
+                    status = JobStatus.PENDING,
+                    payload = payloadJson.encodeToString(AiJobPayload.serializer(), payload),
+                    resultUrl = null,
+                    label = "Extract voice: ${labelSource.take(50)}",
+                    createdAt = System.currentTimeMillis(),
+                    sourceAssetId = asset.id
+                )
+                JobRepository.insert(job)
                 JobQueueWorker.start()
                 call.respond(HttpStatusCode.Accepted, job)
             } catch (e: Exception) {

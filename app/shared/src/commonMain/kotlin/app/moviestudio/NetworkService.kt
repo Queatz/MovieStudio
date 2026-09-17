@@ -364,6 +364,13 @@ object NetworkService {
         return json.decodeFromString(Job.serializer(), responseText)
     }
 
+    /** Extracts a video clip's audio as a VOICE library item and places it on the timeline (async job). */
+    suspend fun extractVoice(assetId: String, clipId: String): Job {
+        val body = buildJsonObject { put("clipId", clipId) }.toString()
+        val responseText = client.post(url("/api/assets/$assetId/extract-voice"), body)
+        return json.decodeFromString(Job.serializer(), responseText)
+    }
+
     /** Clips a window out of a sound asset into a new sound-effect asset. */
     suspend fun clipAudio(assetId: String, startSeconds: Double, endSeconds: Double, name: String): Asset {
         val body = buildJsonObject {

@@ -63,7 +63,8 @@ import kotlin.math.roundToInt
 /**
  * Inspector for the selected timeline clip: transition-in over overlapping media (with a live
  * percentage-of-clip control), captions (voice clips), volume (any audio-carrying clip — the audio
- * tracks plus video clips whose media has sound) and clip actions.
+ * tracks plus video clips whose media has sound), extracting a voiceover from a video clip, and
+ * clip actions.
  */
 @Composable
 fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
@@ -103,6 +104,15 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
                 GhostPillButton("⧉ Duplicate", compact = true) { viewModel.duplicateClip(clip.id) }
                 Spacer(Modifier.height(6.dp))
                 GhostPillButton("🗑 Remove", compact = true) { viewModel.deleteClip(clip.id) }
+                val canExtractVoice = track.type == TrackType.VIDEO &&
+                    asset?.type == AssetType.VIDEO &&
+                    asset.let { !it.isDescriptionOnly && it.ossUrl.isNotBlank() } == true
+                if (canExtractVoice) {
+                    Spacer(Modifier.height(6.dp))
+                    GhostPillButton("🎙 Extract voice", compact = true) {
+                        viewModel.extractVoiceFromClip(clip)
+                    }
+                }
             }
         }
 

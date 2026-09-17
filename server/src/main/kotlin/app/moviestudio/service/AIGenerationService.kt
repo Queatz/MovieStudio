@@ -6,10 +6,15 @@ import app.moviestudio.AiLedgerEntry
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.AssetVersion
+import app.moviestudio.CaptionConfig
+import app.moviestudio.Clip
+import app.moviestudio.EffectsConfig
 import app.moviestudio.GenerationSetup
 import app.moviestudio.Job
 import app.moviestudio.JobStatus
 import app.moviestudio.QWEN_VOICE_CATALOG
+import app.moviestudio.Track
+import app.moviestudio.TrackType
 import app.moviestudio.VoiceClone
 import app.moviestudio.VoiceDesign
 import app.moviestudio.VoicePreset
@@ -17,7 +22,9 @@ import app.moviestudio.WordTiming
 import app.moviestudio.database.AssetRepository
 import app.moviestudio.database.ClipRepository
 import app.moviestudio.database.JobRepository
+import app.moviestudio.database.TrackRepository
 import app.moviestudio.database.VoiceCloneRepository
+import app.moviestudio.encodeEffectsConfig
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -37,8 +44,10 @@ data class AiJobPayload(
     val assetId: String? = null,
     // Optional explicit target asset type name (VIDEO/IMAGE/MUSIC/VOICE/AUDIO).
     val targetType: String? = null,
-    // For extract-audio tasks: the media URL to pull the audio track from.
-    val sourceUrl: String? = null
+    // For extract-audio / extract-voice tasks: the media URL to pull the audio track from.
+    val sourceUrl: String? = null,
+    // For extract-voice: the video clip whose timeline window the new voice clip should match.
+    val sourceClipId: String? = null
 )
 
 /**
@@ -207,7 +216,7 @@ object GenerationCommon {
         return when (payload.setup.kind) {
             "image" -> AssetType.IMAGE
             "music" -> AssetType.MUSIC
-            "tts" -> AssetType.VOICE
+            "tts", "extract-voice" -> AssetType.VOICE
             "sfx", "extract-audio" -> AssetType.AUDIO
             else -> AssetType.VIDEO
         }
@@ -318,5 +327,47 @@ object GenerationCommon {
 
         JobRepository.update(job.copy(status = JobStatus.COMPLETED, resultUrl = ossUrl))
         return asset
+    }
+
+    /**
+     * Places a newly extracted voice asset onto the movie's voice track at the source video
+     * clip's window. Volume is muted (the video still carries the original sound) and captions
+     * are enabled so the transcript can burn in. Creates a voice track when the movie has none.
+     * No-ops when the source clip or movie cannot be resolved, leaving the library asset in place.
+     */
+    fun placeExtractedVoiceClip(job: Job, payload: AiJobPayload, voiceAsset: Asset) {
+        val sourceClipId = payload.sourceClipId?.takeIf { it.isNotBlank() } ?: return
+        val sourceClip = ClipRepository.getById(sourceClipId) ?: return
+        val movieId = job.movieId.takeIf { it.isNotBlank() } ?: return
+
+        val tracks = TrackRepository.queryByMovieId(movieId)
+        val voiceTrack = tracks.firstOrNull { it.type == TrackType.VOICE } ?: run {
+            val created = Track(
+                id = UUID.randomUUID().toString(),
+                movieId = movieId,
+                type = TrackType.VOICE,
+                zIndex = (tracks.maxOfOrNull { it.zIndex } ?: -1) + 1
+            )
+            TrackRepository.insert(created)
+            created
+        }
+
+        ClipRepository.insert(
+            Clip(
+                id = UUID.randomUUID().toString(),
+                trackId = voiceTrack.id,
+                assetId = voiceAsset.id,
+                timelineStart = sourceClip.timelineStart,
+                trimIn = sourceClip.trimIn,
+                trimOut = sourceClip.trimOut,
+                effectsConfig = encodeEffectsConfig(
+                    EffectsConfig(
+                        volume = 0.0,
+                        captions = CaptionConfig(enabled = true)
+                    )
+                )
+            )
+        )
+        TimelineService.refreshMovieDuration(movieId)
     }
 }

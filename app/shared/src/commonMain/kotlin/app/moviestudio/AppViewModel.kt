@@ -1531,6 +1531,21 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Extracts the audio of a video clip as a voiceover library item (async generation). The
+     * server places a muted, captions-on voice clip on the timeline at the original clip.
+     */
+    fun extractVoiceFromClip(clip: Clip) {
+        viewModelScope.launch {
+            try {
+                NetworkService.extractVoice(clip.assetId, clip.id)
+                refreshActiveJobs()
+            } catch (e: Exception) {
+                errorMessage = "Failed to start voice extraction: ${e.message}"
+            }
+        }
+    }
+
     /** Saves a clipped window of a sound asset as a new sound effect. */
     fun clipAudioAsset(asset: Asset, startSeconds: Double, endSeconds: Double, name: String) {
         viewModelScope.launch {

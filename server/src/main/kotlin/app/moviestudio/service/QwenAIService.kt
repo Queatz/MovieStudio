@@ -145,7 +145,8 @@ internal fun isDrivingAudioMediaRejection(error: Throwable): Boolean {
  * - sfx:   sound effects via the mode picked in the setup — direct text-to-audio, video-driven
  *          (scoring a WAN source video) both backed by [QwenConfig.audioModel], or the legacy
  *          WAN video generation followed by ffmpeg audio extraction.
- * - extract-audio: pulls the audio track out of an existing media URL.
+ * - extract-audio: pulls the audio track out of an existing media URL into an AUDIO asset.
+ * - extract-voice: same extraction into a VOICE asset, transcribed and placed on the timeline.
  *
  * Generated media is always downloaded and re-hosted on our own Alibaba OSS bucket, and the
  * media duration is probed with ffprobe so timeline placement is accurate.
@@ -491,6 +492,7 @@ object QwenAIService : AIGenerationService {
             "tts" -> executeTts(job, payload, ledger, onProgress)
             "sfx" -> executeSoundEffect(job, payload, ledger, onProgress)
             "extract-audio" -> executeExtractAudio(job, payload, ledger, onProgress)
+            "extract-voice" -> executeExtractVoice(job, payload, ledger, onProgress)
             "image" -> executeImage(job, payload, ledger, onProgress)
             else -> executeVideo(job, payload, ledger, onProgress)
         }
@@ -1513,30 +1515,51 @@ object QwenAIService : AIGenerationService {
     }
 
     /** Extracts the audio track from an existing media URL into a new sound asset. */
-    private suspend fun executeExtractAudio(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
+    private suspend fun executeExtractAudio(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit): Asset {
         val sourceUrl = payload.sourceUrl
-            ?: throw IllegalStateException("extract-audio job ${job.id} missing sourceUrl")
+            ?: throw IllegalStateException("${payload.setup.kind} job ${job.id} missing sourceUrl")
         onProgress(20, "Downloading source media...")
         val extensionGuess = sourceUrl.substringBefore('?').substringAfterLast('.', "mp4").take(4)
         val sourceFile = MediaUtil.downloadToTemp(sourceUrl, ".$extensionGuess")
         try {
             onProgress(50, "Extracting audio track with ffmpeg...")
             val audioFile = MediaUtil.extractAudio(sourceFile)
+            val prefix = if (payload.setup.kind == "extract-voice") "voice" else "audio"
             if (audioFile != null) {
-                val duration = MediaUtil.probeDurationSeconds(audioFile) ?: 5.0
-                onProgress(80, "Uploading extracted audio to Alibaba OSS...")
-                val objectKey = "ai-generated/${job.movieId}/audio-${UUID.randomUUID()}.mp3"
-                val ossUrl = OssService.uploadFile(objectKey, audioFile)
-                GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
-                runCatching { audioFile.delete() }
+                try {
+                    val duration = MediaUtil.probeDurationSeconds(audioFile) ?: 5.0
+                    onProgress(80, "Uploading extracted audio to Alibaba OSS...")
+                    val objectKey = "ai-generated/${job.movieId}/$prefix-${UUID.randomUUID()}.mp3"
+                    val ossUrl = OssService.uploadFile(objectKey, audioFile)
+                    return GenerationCommon.finalize(job, payload, ossUrl, duration, ledgerEntries = ledger)
+                } finally {
+                    runCatching { audioFile.delete() }
+                }
             } else {
                 // No extraction available: reference the source directly (players read its audio track).
                 val duration = MediaUtil.probeDurationSeconds(sourceFile) ?: 5.0
-                GenerationCommon.finalize(job, payload, sourceUrl, duration, ledgerEntries = ledger)
+                return GenerationCommon.finalize(job, payload, sourceUrl, duration, ledgerEntries = ledger)
             }
         } finally {
             runCatching { sourceFile.delete() }
         }
+    }
+
+    /**
+     * Extracts a video's audio as a VOICE library item, auto-transcribes it, and drops a muted
+     * captions-on clip onto the voice track at the source video clip's position.
+     */
+    private suspend fun executeExtractVoice(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
+        val asset = executeExtractAudio(job, payload, ledger, onProgress)
+        onProgress(90, "Transcribing extracted voice...")
+        val transcribed = try {
+            generateTranscript(asset)
+        } catch (e: Exception) {
+            logger.warn("Transcript failed for extracted voice ${asset.id}: ${e.message}")
+            asset
+        }
+        onProgress(95, "Adding voice clip to the timeline...")
+        GenerationCommon.placeExtractedVoiceClip(job, payload, transcribed)
     }
 
     // ------------------------------------------------------------------------------------------
@@ -1544,16 +1567,11 @@ object QwenAIService : AIGenerationService {
     // ------------------------------------------------------------------------------------------
 
     override suspend fun generateTranscript(asset: Asset): Asset {
-        val ledger = mutableListOf<AiLedgerEntry>()
-        val (text, timings) = try {
-            transcribe(asset.ossUrl, asset.durationSeconds, ledger)
-        } catch (e: Exception) {
-            logger.warn("Qwen transcription failed for asset ${asset.id}, falling back to prompt text: ${e.message}")
-            val fallback = asset.transcript?.takeIf { it.isNotBlank() }
-                ?: asset.aiPrompt?.takeIf { it.isNotBlank() }
-                ?: ""
-            fallback to TranscriptUtil.buildWordTimings(fallback, asset.durationSeconds)
+        if (asset.ossUrl.isBlank()) {
+            throw IllegalStateException("Asset ${asset.id} has no audio to transcribe")
         }
+        val ledger = mutableListOf<AiLedgerEntry>()
+        val (text, timings) = transcribe(asset.ossUrl, asset.durationSeconds, ledger)
         val updated = asset.copy(transcript = text, wordTimings = timings, ledger = asset.ledger + ledger)
         AssetRepository.update(updated)
         logger.info("Generated transcript for asset ${asset.id} (${timings.size} words)")
@@ -1561,60 +1579,156 @@ object QwenAIService : AIGenerationService {
     }
 
     /**
-     * Best-effort speech-to-text via the DashScope async ASR (paraformer) endpoint. Returns the
-     * transcript text and per-word timings extracted from the recognizer output. Any failure is
-     * surfaced to the caller, which falls back to a prompt-derived transcript.
+     * Speech-to-text via Qwen ASR ([QwenConfig.transcriptionModel]). The audio file itself is
+     * sent as `input_audio` — never the asset description/prompt — and word timings come from
+     * the recognizer when present.
      */
     private suspend fun transcribe(audioUrl: String, durationSeconds: Double, ledger: MutableList<AiLedgerEntry>): Pair<String, List<WordTiming>> {
-        val transcriptionUrl = runAsyncGenerationTask(
-            submitUrl = "${QwenConfig.dashScopeBaseUrl}/services/audio/asr/transcription",
-            requestBody = buildJsonObject {
-                put("model", QwenConfig.transcriptionModel)
-                putJsonObject("input") {
-                    put("file_urls", buildJsonArray { add(JsonPrimitive(audioUrl)) })
-                }
-            },
-            mediaUrlKeys = listOf("transcription_url", "url"),
-            ledger = ledger,
-            ledgerModel = QwenConfig.transcriptionModel,
-            ledgerDescription = "Auto-transcribed voiceover (${QwenConfig.transcriptionModel})",
-        ) { /* no-op progress */ }
-
-        // The transcription document lives on a plain (pre-signed) URL: no auth headers needed.
-        val resultJson = httpClient.get(transcriptionUrl).bodyAsText()
-        return parseTranscription(resultJson, durationSeconds)
+        if (!QwenConfig.isConfigured) {
+            throw IllegalStateException("Qwen is not configured; cannot transcribe audio")
+        }
+        val freshUrl = OssService.freshDownloadUrl(audioUrl)
+        val response = postJson(
+            "${QwenConfig.dashScopeBaseUrl}/services/aigc/multimodal-generation/generation",
+            buildAsrRequestBody(QwenConfig.transcriptionModel, freshUrl),
+            async = false,
+            timeoutSeconds = 180,
+            disableSse = true,
+        )
+        ledger.recordCall(
+            "Transcribed audio (${QwenConfig.transcriptionModel})",
+            QwenConfig.transcriptionModel,
+            response,
+        )
+        return parseAsrResponse(response, durationSeconds)
     }
 
     /**
-     * Parses a paraformer transcription document into transcript text and [WordTiming]s. Uses the
-     * recognizer's own millisecond timestamps when available, otherwise evenly distributes words.
+     * DashScope body for Qwen-Audio-3.0-ASR-Flash: one user message whose only content is the
+     * audio URL. No text/description is sent, so the model transcribes speech rather than
+     * restating a prompt. Pure and network-free so its shape can be unit-tested.
      */
-    private fun parseTranscription(rawJson: String, durationSeconds: Double): Pair<String, List<WordTiming>> {
-        val root = json.parseToJsonElement(rawJson).jsonObject
-        val transcripts = root["transcripts"]?.jsonArray
-        val firstTranscript = transcripts?.firstOrNull()?.jsonObject
-        val text = firstTranscript?.get("text")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+    internal fun buildAsrRequestBody(model: String, audioUrl: String): JsonObject = buildJsonObject {
+        put("model", model)
+        putJsonObject("input") {
+            put("messages", buildJsonArray {
+                add(buildJsonObject {
+                    put("role", "user")
+                    put("content", buildJsonArray {
+                        add(buildJsonObject {
+                            put("type", "input_audio")
+                            putJsonObject("input_audio") {
+                                put("data", audioUrl)
+                            }
+                        })
+                    })
+                })
+            })
+        }
+        asrAudioFormat(audioUrl)?.let { format ->
+            putJsonObject("parameters") {
+                put("format", format)
+            }
+        }
+    }
 
+    /** Audio container hint from the URL extension, used as the ASR `parameters.format`. */
+    internal fun asrAudioFormat(audioUrl: String): String? {
+        val ext = audioUrl.substringBefore('?').substringAfterLast('.', "").lowercase()
+        return when (ext) {
+            "mp3" -> "mp3"
+            "wav" -> "wav"
+            "pcm" -> "pcm"
+            "ogg", "opus" -> "ogg"
+            "flac" -> "flac"
+            "aac", "m4a" -> "aac"
+            "amr" -> "amr"
+            else -> null
+        }
+    }
+
+    /**
+     * Reads transcript text and [WordTiming]s out of a Qwen ASR (or legacy paraformer document)
+     * response. Recognizer timestamps are used when present; otherwise words are spread evenly
+     * across [durationSeconds].
+     */
+    internal fun parseAsrResponse(response: JsonObject, durationSeconds: Double): Pair<String, List<WordTiming>> {
+        val output = response["output"]?.jsonObject ?: response
         val timings = mutableListOf<WordTiming>()
-        firstTranscript?.get("sentences")?.jsonArray?.forEach { sentence ->
-            sentence.jsonObject["words"]?.jsonArray?.forEach { wordEl ->
-                val obj = wordEl.jsonObject
-                val word = (obj["text"]?.jsonPrimitive?.contentOrNull
-                    ?: obj["word"]?.jsonPrimitive?.contentOrNull)?.trim()
-                val beginMs = obj["begin_time"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
-                val endMs = obj["end_time"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
-                if (!word.isNullOrBlank() && beginMs != null && endMs != null) {
-                    timings.add(WordTiming(word, beginMs / 1000.0, endMs / 1000.0))
+
+        fun addWordsFrom(obj: JsonObject) {
+            val words = obj["words"]?.jsonArray ?: return
+            for (wordEl in words) {
+                val wordObj = wordEl.jsonObject
+                val word = (wordObj["text"]?.jsonPrimitive?.contentOrNull
+                    ?: wordObj["word"]?.jsonPrimitive?.contentOrNull)?.trim()
+                val begin = parseAsrTimestampSeconds(
+                    wordObj["begin_time"]?.jsonPrimitive?.contentOrNull,
+                    durationSeconds,
+                )
+                val end = parseAsrTimestampSeconds(
+                    wordObj["end_time"]?.jsonPrimitive?.contentOrNull,
+                    durationSeconds,
+                )
+                if (!word.isNullOrBlank() && begin != null && end != null) {
+                    timings.add(WordTiming(word, begin, end))
                 }
             }
         }
 
-        val resolvedText = if (text.isNotBlank()) text else timings.joinToString(" ") { it.word }
-        if (resolvedText.isBlank()) {
-            throw IllegalStateException("Transcription document had no usable text")
+        fun walk(obj: JsonObject) {
+            addWordsFrom(obj)
+            obj["sentence"]?.let { sentence ->
+                runCatching { walk(sentence.jsonObject) }
+                runCatching { sentence.jsonArray.forEach { walk(it.jsonObject) } }
+            }
+            obj["sentences"]?.jsonArray?.forEach { walk(it.jsonObject) }
+            obj["transcripts"]?.jsonArray?.forEach { walk(it.jsonObject) }
         }
-        val resolvedTimings = timings.ifEmpty { TranscriptUtil.buildWordTimings(resolvedText, durationSeconds) }
-        return resolvedText to resolvedTimings
+        walk(output)
+
+        fun textOf(value: String?): String? = value?.trim()?.takeIf { it.isNotBlank() }
+        val sentencesJoined = output["sentences"]?.jsonArray
+            ?.mapNotNull { textOf(it.jsonObject["text"]?.jsonPrimitive?.contentOrNull) }
+            ?.joinToString(" ")
+            ?.takeIf { it.isNotBlank() }
+        val choiceContent = output["choices"]?.jsonArray
+            ?.firstOrNull()?.jsonObject
+            ?.get("message")?.jsonObject
+            ?.get("content")
+        val choiceText = choiceContent?.let { content ->
+            textOf(runCatching { content.jsonPrimitive.contentOrNull }.getOrNull())
+                ?: runCatching {
+                    content.jsonArray.mapNotNull { item ->
+                        textOf(runCatching { item.jsonPrimitive.contentOrNull }.getOrNull())
+                            ?: textOf(item.jsonObject["text"]?.jsonPrimitive?.contentOrNull)
+                    }.joinToString(" ").takeIf { it.isNotBlank() }
+                }.getOrNull()
+        }
+
+        val text = textOf(output["text"]?.jsonPrimitive?.contentOrNull)
+            ?: sentencesJoined
+            ?: textOf(output["sentence"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull)
+            ?: output["transcripts"]?.jsonArray
+                ?.firstOrNull()?.jsonObject
+                ?.get("text")?.jsonPrimitive?.contentOrNull
+                ?.let(::textOf)
+            ?: choiceText
+            ?: timings.joinToString(" ") { it.word }
+        if (text.isBlank()) {
+            throw IllegalStateException("Qwen ASR returned no usable transcript")
+        }
+        val resolvedTimings = timings.ifEmpty { TranscriptUtil.buildWordTimings(text, durationSeconds) }
+        return text to resolvedTimings
+    }
+
+    /**
+     * Converts an ASR timestamp to seconds. Values larger than the audio duration are treated as
+     * milliseconds (Qwen/DashScope's usual unit); smaller values are already seconds.
+     */
+    internal fun parseAsrTimestampSeconds(raw: String?, durationSeconds: Double): Double? {
+        val value = raw?.toDoubleOrNull() ?: return null
+        return if (value > durationSeconds + 1.0) value / 1000.0 else value
     }
 
     // ------------------------------------------------------------------------------------------
@@ -1834,10 +1948,17 @@ object QwenAIService : AIGenerationService {
         }
     }
 
-    private suspend fun postJson(url: String, body: JsonObject, async: Boolean, timeoutSeconds: Long = 240): JsonObject {
+    private suspend fun postJson(
+        url: String,
+        body: JsonObject,
+        async: Boolean,
+        timeoutSeconds: Long = 240,
+        disableSse: Boolean = false,
+    ): JsonObject {
         val response = httpClient.post(url) {
             header("Authorization", "Bearer ${QwenConfig.apiKey}")
             if (async) header("X-DashScope-Async", "enable")
+            if (disableSse) header("X-DashScope-SSE", "disable")
             contentType(ContentType.Application.Json)
             timeout { requestTimeoutMillis = timeoutSeconds * 1000 }
             setBody(json.encodeToString(JsonObject.serializer(), body))
