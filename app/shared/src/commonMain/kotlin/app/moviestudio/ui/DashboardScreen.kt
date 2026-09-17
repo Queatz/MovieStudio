@@ -5,6 +5,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +24,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -60,6 +62,8 @@ import app.moviestudio.displayName
 @Composable
 fun DashboardScreen(viewModel: AppViewModel) {
     var showCreateDialog by remember { mutableStateOf(false) }
+    // null = All; otherwise only movies with that lifecycle status are shown.
+    var statusFilter by remember { mutableStateOf<MovieStatus?>(null) }
 
     // Load tips and issues up-front so the header buttons can show their unread/open counts
     // without the panels having been opened first.
@@ -144,36 +148,88 @@ fun DashboardScreen(viewModel: AppViewModel) {
                 }
             }
         } else {
-            val (activeMovies, archivedMovies) = viewModel.movies.partition { it.status != MovieStatus.ARCHIVED }
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 260.dp),
-                modifier = Modifier.fillMaxSize().padding(20.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                items(activeMovies, key = { it.id }) { movie ->
-                    MovieCard(
-                        movie = movie,
-                        onOpen = { viewModel.openMovie(movie) },
-                        onDelete = { viewModel.deleteMovie(movie) }
-                    )
+            Column(Modifier.fillMaxSize()) {
+                // Status filter chips (All + each MovieStatus), matching the library tab pills.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(start = 20.dp, end = 20.dp, top = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val filters: List<MovieStatus?> = listOf(null) + MovieStatus.entries
+                    filters.forEach { candidate ->
+                        val selected = candidate == statusFilter
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50)) // clip BEFORE clickable: pill hover
+                                .background(
+                                    if (selected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.surfaceVariant
+                                )
+                                .clickable { statusFilter = candidate }
+                                .padding(horizontal = 12.dp, vertical = 5.dp)
+                        ) {
+                            Text(
+                                candidate?.displayName() ?: "All",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (selected) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
-                if (archivedMovies.isNotEmpty()) {
-                    item(span = { GridItemSpan(maxLineSpan) }, key = "archived-header") {
+                val visibleMovies = if (statusFilter == null) {
+                    viewModel.movies
+                } else {
+                    viewModel.movies.filter { it.status == statusFilter }
+                }
+                if (visibleMovies.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
-                            "Archived",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = if (activeMovies.isEmpty()) 0.dp else 8.dp)
+                            "No movies with this status.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    items(archivedMovies, key = { it.id }) { movie ->
-                        MovieCard(
-                            movie = movie,
-                            onOpen = { viewModel.openMovie(movie) },
-                            onDelete = { viewModel.deleteMovie(movie) }
-                        )
+                } else {
+                    val (activeMovies, archivedMovies) = if (statusFilter == null) {
+                        visibleMovies.partition { it.status != MovieStatus.ARCHIVED }
+                    } else {
+                        visibleMovies to emptyList()
+                    }
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 260.dp),
+                        modifier = Modifier.fillMaxSize().padding(20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        items(activeMovies, key = { it.id }) { movie ->
+                            MovieCard(
+                                movie = movie,
+                                onOpen = { viewModel.openMovie(movie) },
+                                onDelete = { viewModel.deleteMovie(movie) }
+                            )
+                        }
+                        if (archivedMovies.isNotEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }, key = "archived-header") {
+                                Text(
+                                    "Archived",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = if (activeMovies.isEmpty()) 0.dp else 8.dp)
+                                )
+                            }
+                            items(archivedMovies, key = { it.id }) { movie ->
+                                MovieCard(
+                                    movie = movie,
+                                    onOpen = { viewModel.openMovie(movie) },
+                                    onDelete = { viewModel.deleteMovie(movie) }
+                                )
+                            }
+                        }
                     }
                 }
             }
