@@ -1660,8 +1660,10 @@ object QwenAIService : AIGenerationService {
             val words = obj["words"]?.jsonArray ?: return
             for (wordEl in words) {
                 val wordObj = wordEl.jsonObject
-                val word = (wordObj["text"]?.jsonPrimitive?.contentOrNull
-                    ?: wordObj["word"]?.jsonPrimitive?.contentOrNull)?.trim()
+                val word = collapseAsrWordSpacing(
+                    wordObj["text"]?.jsonPrimitive?.contentOrNull
+                        ?: wordObj["word"]?.jsonPrimitive?.contentOrNull,
+                )
                 val begin = parseAsrTimestampSeconds(
                     wordObj["begin_time"]?.jsonPrimitive?.contentOrNull,
                     durationSeconds,
@@ -1670,7 +1672,7 @@ object QwenAIService : AIGenerationService {
                     wordObj["end_time"]?.jsonPrimitive?.contentOrNull,
                     durationSeconds,
                 )
-                if (!word.isNullOrBlank() && begin != null && end != null) {
+                if (word.isNotBlank() && begin != null && end != null) {
                     timings.add(WordTiming(word, begin, end))
                 }
             }
@@ -1718,8 +1720,7 @@ object QwenAIService : AIGenerationService {
         if (text.isBlank()) {
             throw IllegalStateException("Qwen ASR returned no usable transcript")
         }
-        val resolvedTimings = timings.ifEmpty { TranscriptUtil.buildWordTimings(text, durationSeconds) }
-        return text to resolvedTimings
+        return text to alignAsrWordTimings(text, timings, durationSeconds)
     }
 
     /**
@@ -1729,6 +1730,82 @@ object QwenAIService : AIGenerationService {
     internal fun parseAsrTimestampSeconds(raw: String?, durationSeconds: Double): Double? {
         val value = raw?.toDoubleOrNull() ?: return null
         return if (value > durationSeconds + 1.0) value / 1000.0 else value
+    }
+
+    /**
+     * Qwen word tokens often carry the space that belongs *between* words (`"Hello "`,
+     * `" World"`) or letter-spacing inside a Latin/Vietnamese token (`"X i n"`). The
+     * sentence `text` is already correct; this strips those extra spaces from the token.
+     */
+    internal fun collapseAsrWordSpacing(word: String?): String {
+        val trimmed = word?.trim().orEmpty()
+        if (trimmed.isEmpty()) return ""
+        val parts = trimmed.split(Regex("\\s+"))
+        if (parts.size > 1 && parts.all { it.length == 1 }) {
+            return parts.joinToString("")
+        }
+        return trimmed
+    }
+
+    /**
+     * Rebuilds [WordTiming]s from the clean transcript words, using recognizer timestamps.
+     * Space-separated transcripts (English, Vietnamese, ...) are the source of truth for
+     * word text so letter-spaced or character-level ASR tokens get merged. Transcripts
+     * without spaces (typical CJK) keep the recognizer's character tokens.
+     */
+    internal fun alignAsrWordTimings(
+        transcript: String,
+        raw: List<WordTiming>,
+        durationSeconds: Double,
+    ): List<WordTiming> {
+        val words = transcript.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.isEmpty()) return emptyList()
+        val tokens = raw.map { it.copy(word = collapseAsrWordSpacing(it.word)) }
+            .filter { it.word.isNotBlank() }
+        if (tokens.isEmpty()) return TranscriptUtil.buildWordTimings(transcript, durationSeconds)
+
+        fun lettersOf(value: String): String = value.filter { it.isLetterOrDigit() }
+
+        if (tokens.size == words.size &&
+            tokens.zip(words).all { (token, word) ->
+                lettersOf(token.word).equals(lettersOf(word), ignoreCase = true)
+            }
+        ) {
+            return tokens.mapIndexed { index, token -> token.copy(word = words[index]) }
+        }
+
+        if (words.size <= 1) {
+            return if (tokens.size == 1) listOf(tokens[0].copy(word = words[0])) else tokens
+        }
+
+        data class Tick(val start: Double, val end: Double)
+        val ticks = mutableListOf<Tick>()
+        for (token in tokens) {
+            val letterCount = lettersOf(token.word).length
+            val n = if (letterCount > 0) letterCount else token.word.count { !it.isWhitespace() }
+            if (n == 0) continue
+            val span = (token.end - token.start).coerceAtLeast(0.0)
+            val per = span / n
+            repeat(n) { i ->
+                ticks += Tick(token.start + i * per, token.start + (i + 1) * per)
+            }
+        }
+        if (ticks.isEmpty()) return TranscriptUtil.buildWordTimings(transcript, durationSeconds)
+
+        var idx = 0
+        return words.mapIndexed { wordIndex, word ->
+            val needed = lettersOf(word).length.let { if (it == 0) word.length.coerceAtLeast(1) else it }
+            if (idx >= ticks.size) {
+                val last = ticks.last().end
+                WordTiming(word, last, last)
+            } else {
+                val from = idx
+                idx = (idx + needed).coerceAtMost(ticks.size)
+                val to = (idx - 1).coerceAtLeast(from)
+                val end = if (wordIndex == words.lastIndex) ticks.last().end else ticks[to].end
+                WordTiming(word, ticks[from].start, end)
+            }
+        }
     }
 
     // ------------------------------------------------------------------------------------------
