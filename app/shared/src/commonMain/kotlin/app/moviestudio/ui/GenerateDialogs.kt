@@ -12,8 +12,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -36,11 +39,18 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.moviestudio.AiChatMessage
+import app.moviestudio.AiChatRole
 import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
+import app.moviestudio.DEFAULT_VOICE_CLONE_SPEAKING_PROMPT
+import app.moviestudio.DEFAULT_VOICE_ENROLLMENT_LANGUAGE
 import app.moviestudio.DEFAULT_VOICE_ID
 import app.moviestudio.GenerationSetup
+import app.moviestudio.buildVoiceCloneTranslationPrompt
+import app.moviestudio.filterVoiceEnrollmentLanguages
+import app.moviestudio.unwrapTranslatedSpeakingPrompt
 import app.moviestudio.ImageModel
 import app.moviestudio.MAX_VIDEO_DURATION_SECONDS
 import app.moviestudio.MIN_VIDEO_DURATION_SECONDS
@@ -67,6 +77,7 @@ import app.moviestudio.UploadedDeviceFile
 import app.moviestudio.VOICE_INSTRUCTION_PRESETS
 import app.moviestudio.VoiceClone
 import app.moviestudio.VoiceDesign
+import app.moviestudio.VoiceEnrollmentLanguage
 import app.moviestudio.VoiceOptions
 import app.moviestudio.aspectRatioLabelFor
 import app.moviestudio.cancelMicRecording
@@ -2560,7 +2571,39 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
     // and clones it. Both the "Record your voice" and "Upload audio" options fill this same slot.
     var voiceSample by remember { mutableStateOf<UploadedDeviceFile?>(null) }
     var deleteTarget by remember { mutableStateOf<VoiceClone?>(null) }
+    var speakingPrompt by remember { mutableStateOf(DEFAULT_VOICE_CLONE_SPEAKING_PROMPT) }
+    var selectedLanguage by remember { mutableStateOf(DEFAULT_VOICE_ENROLLMENT_LANGUAGE) }
+    var showLanguagePicker by remember { mutableStateOf(false) }
+    var showAiWriter by remember { mutableStateOf(false) }
+    var translating by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    fun applyLanguage(language: VoiceEnrollmentLanguage) {
+        showLanguagePicker = false
+        if (language == selectedLanguage) return
+        selectedLanguage = language
+        if (speakingPrompt.isBlank()) return
+        translating = true
+        scope.launch {
+            try {
+                val translated = NetworkService.generateText(
+                    listOf(
+                        AiChatMessage(
+                            role = AiChatRole.USER,
+                            content = buildVoiceCloneTranslationPrompt(speakingPrompt, language)
+                        )
+                    )
+                )
+                unwrapTranslatedSpeakingPrompt(translated)
+                    .takeIf { it.isNotBlank() }
+                    ?.let { speakingPrompt = it }
+            } catch (e: Exception) {
+                viewModel.errorMessage = e.message ?: "Translation failed"
+            } finally {
+                translating = false
+            }
+        }
+    }
 
     // Elapsed-time ticker while recording.
     LaunchedEffect(recording) {
@@ -2595,10 +2638,61 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
         SectionLabel("Record your voice")
         Text(
             "Speak naturally in a quiet room, about 20–30 cm from the microphone. Read a couple " +
-                "of sentences in your normal voice, for example:\n\n“The morning sun rose over " +
-                "the valley, painting the hills in gold. I took a deep breath, smiled, and " +
-                "started walking toward the river.”\n\nAim for 10–60 seconds — around 20 seconds " +
-                "works best.",
+                "of sentences in your normal voice, for example:",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            GhostPillButton(
+                selectedLanguage.displayLabel(),
+                compact = true,
+                enabled = !translating && !working && !recording
+            ) { showLanguagePicker = true }
+            GhostPillButton(
+                "✨ AI writer",
+                compact = true,
+                enabled = !translating && !working && !recording
+            ) { showAiWriter = true }
+            if (speakingPrompt != DEFAULT_VOICE_CLONE_SPEAKING_PROMPT) {
+                GhostPillButton(
+                    "↺ Reset",
+                    compact = true,
+                    enabled = !translating && !working && !recording
+                ) {
+                    speakingPrompt = DEFAULT_VOICE_CLONE_SPEAKING_PROMPT
+                    selectedLanguage = DEFAULT_VOICE_ENROLLMENT_LANGUAGE
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        // Examine text for recording voice
+        if (translating) {
+            Text(
+                "Translating...",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 12.dp)
+            )
+        } else {
+            StudioTextField(
+                value = speakingPrompt,
+                onValueChange = { speakingPrompt = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = DEFAULT_VOICE_CLONE_SPEAKING_PROMPT,
+                minLines = 4,
+                maxLines = 8,
+                enabled = !working && !recording,
+                aiGenerate = null
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Aim for 10–60 seconds — around 20 seconds works best.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -2744,6 +2838,120 @@ fun CreateVoiceCloneDialog(viewModel: AppViewModel, onClose: (VoiceClone?) -> Un
             onConfirm = { viewModel.deleteVoiceClone(clone.id) },
             onDismiss = { deleteTarget = null }
         )
+    }
+
+    if (showLanguagePicker) {
+        VoiceEnrollmentLanguageDialog(
+            selected = selectedLanguage,
+            onSelect = { applyLanguage(it) },
+            onDismiss = { showLanguagePicker = false }
+        )
+    }
+    if (showAiWriter) {
+        AiPromptDialog(
+            title = "Write speaking sample",
+            description = "Write a short poetic passage to read aloud while recording your " +
+                "voice clone. Aim for about 20 seconds of speech.",
+            initialPrompt = speakingPrompt.ifBlank {
+                "A poetic paragraph to read aloud for voice cloning, about 20 seconds long."
+            },
+            promptLabel = "Prompt",
+            promptPlaceholder = "A quiet morning walk through gold-lit hills...",
+            generateLabel = "✨ Write",
+            acceptLabel = "✅ Use text",
+            generate = { messages -> NetworkService.generateText(messages) },
+            onAccept = { text ->
+                unwrapTranslatedSpeakingPrompt(text)
+                    .takeIf { it.isNotBlank() }
+                    ?.let { speakingPrompt = it }
+                showAiWriter = false
+            },
+            onDismiss = { showAiWriter = false }
+        )
+    }
+}
+
+/**
+ * Searchable picker of languages supported by Qwen Model Studio `voice-enrollment`. Matches the
+ * English name and the name written in the language itself.
+ */
+@Composable
+private fun VoiceEnrollmentLanguageDialog(
+    selected: VoiceEnrollmentLanguage,
+    onSelect: (VoiceEnrollmentLanguage) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var query by remember { mutableStateOf("") }
+    val matches = remember(query) { filterVoiceEnrollmentLanguages(query) }
+    val rowShape = RoundedCornerShape(12.dp)
+
+    StudioDialog(title = "Language", onDismiss = onDismiss, width = 420.dp, scrollable = false) {
+        StudioTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "Search",
+            placeholder = "English or 中文",
+            singleLine = true,
+            aiGenerate = null
+        )
+        Spacer(Modifier.height(8.dp))
+        if (matches.isEmpty()) {
+            Text(
+                "No matching languages",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+                items(matches, key = { it.code }) { language ->
+                    val isSelected = language.code == selected.code
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp)
+                            .clip(rowShape) // clip BEFORE clickable so hover has rounded corners
+                            .background(
+                                if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                            )
+                            .clickable { onSelect(language) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(language.flag, fontSize = 20.sp)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                language.englishName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer
+                                else MaterialTheme.colorScheme.onSurface
+                            )
+                            if (language.nativeName != language.englishName) {
+                                Text(
+                                    language.nativeName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            }
+                        }
+                        if (isSelected) {
+                            Text("✓", fontSize = 14.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        }
+                    }
+                }
+            }
+        }
+        DialogActions {
+            GhostPillButton("Cancel") { onDismiss() }
+        }
     }
 }
 

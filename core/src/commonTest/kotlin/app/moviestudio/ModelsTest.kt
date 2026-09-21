@@ -747,4 +747,54 @@ class ModelsTest {
         val roundTripped = json.decodeFromString(GenerationSetup.serializer(), encoded)
         assertTrue(roundTripped.smartDuration)
     }
+
+    @Test
+    fun voiceCloneSpeakingPromptIsAboutTwiceTheOriginalLength() {
+        val originalWords = 22
+        val words = DEFAULT_VOICE_CLONE_SPEAKING_PROMPT.split(Regex("\\s+")).filter { it.isNotBlank() }
+        assertTrue(words.size >= originalWords * 2 - 4, "expected ~2x original ($originalWords words), got ${words.size}")
+        assertTrue(DEFAULT_VOICE_CLONE_SPEAKING_PROMPT.contains("morning sun"))
+        assertTrue(DEFAULT_VOICE_CLONE_SPEAKING_PROMPT.contains("river"))
+    }
+
+    @Test
+    fun voiceEnrollmentLanguagesCoverModelStudioHintsAndHaveFlags() {
+        val codes = VOICE_ENROLLMENT_LANGUAGES.map { it.code }.toSet()
+        assertEquals(VOICE_ENROLLMENT_LANGUAGES.size, codes.size)
+        assertTrue(
+            codes.containsAll(
+                listOf("zh", "en", "fr", "de", "ja", "ko", "ru", "pt", "th", "id", "vi", "it", "es", "ms", "fil", "ar")
+            )
+        )
+        VOICE_ENROLLMENT_LANGUAGES.forEach { language ->
+            assertTrue(language.englishName.isNotBlank())
+            assertTrue(language.nativeName.isNotBlank())
+            assertTrue(language.flag.isNotBlank())
+        }
+        assertEquals(DEFAULT_VOICE_ENROLLMENT_LANGUAGE, VOICE_ENROLLMENT_LANGUAGES.first())
+    }
+
+    @Test
+    fun voiceEnrollmentLanguageSearchMatchesEnglishAndNativeNames() {
+        assertEquals(VOICE_ENROLLMENT_LANGUAGES, filterVoiceEnrollmentLanguages(""))
+        assertEquals(VOICE_ENROLLMENT_LANGUAGES, filterVoiceEnrollmentLanguages("   "))
+        assertEquals(listOf("ja"), filterVoiceEnrollmentLanguages("japan").map { it.code })
+        assertEquals(listOf("ja"), filterVoiceEnrollmentLanguages("日本語").map { it.code })
+        assertEquals(listOf("zh"), filterVoiceEnrollmentLanguages("中文").map { it.code })
+        assertEquals(listOf("es"), filterVoiceEnrollmentLanguages("español").map { it.code })
+        assertEquals(listOf("de"), filterVoiceEnrollmentLanguages("GERMAN").map { it.code })
+        assertTrue(filterVoiceEnrollmentLanguages("zzzz-nope").isEmpty())
+    }
+
+    @Test
+    fun voiceCloneTranslationPromptAndUnwrap() {
+        val french = VOICE_ENROLLMENT_LANGUAGES.first { it.code == "fr" }
+        val prompt = buildVoiceCloneTranslationPrompt("Hello valley", french)
+        assertTrue(prompt.contains("French"))
+        assertTrue(prompt.contains("Français"))
+        assertTrue(prompt.contains("Hello valley"))
+        assertEquals("Bonjour", unwrapTranslatedSpeakingPrompt("  \"Bonjour\"  "))
+        assertEquals("Bonjour", unwrapTranslatedSpeakingPrompt("“Bonjour”"))
+        assertEquals("Bonjour", unwrapTranslatedSpeakingPrompt("Bonjour"))
+    }
 }
