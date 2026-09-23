@@ -997,6 +997,12 @@ const val TRANSPARENT_COLOR: String = "#00000000"
  * [fontSizeSp] the size relative to a 480px-tall reference canvas (scaled to the preview stage and
  * the render height so the preview matches the export), and [backgroundColor] the fill drawn behind
  * the text — transparent by default, so lower clips / the black stage show through.
+ *
+ * When [scrollEnabled] is set, the text crawls upward across the clip instead of staying put.
+ * [scrollStartPercent] is how far (as a percentage of the frame height) below the bottom edge the
+ * top of the text begins, and [scrollEndPercent] is how far above the top edge the bottom of the
+ * text finishes. Negative values pull that edge onto the frame (−50 is halfway on screen); 0 is
+ * flush with the edge; 100 is one full frame past it. See [textScrollTranslationY].
  */
 @Serializable
 data class TextConfig(
@@ -1008,8 +1014,61 @@ data class TextConfig(
     val fontWeight: Int = 700,
     val fontItalic: Boolean = false,
     val fontSizeSp: Int = 48,
-    val backgroundColor: String = TRANSPARENT_COLOR
+    val backgroundColor: String = TRANSPARENT_COLOR,
+    // Credits-style crawl. Off by default so existing text stays centered (overflowing text still
+    // auto-scrolls so it can be read; an enabled crawl replaces that).
+    val scrollEnabled: Boolean = false,
+    // How far below the bottom edge the text starts, as a percentage of the frame height (−50–100).
+    // Negative values start the text on screen instead of below the bottom edge.
+    val scrollStartPercent: Int = 0,
+    // How far above the top edge the text ends, as a percentage of the frame height (−50–100).
+    // Negative values finish the text on screen instead of above the top edge.
+    val scrollEndPercent: Int = 0
 )
+
+/** Scroll offsets are a percentage of the frame height, clamped to this range. */
+const val TEXT_SCROLL_MIN_PERCENT: Int = -50
+const val TEXT_SCROLL_MAX_PERCENT: Int = 100
+
+/**
+ * Vertical translation in pixels (+down) that moves a *centered* text block of height [textHeightPx]
+ * inside a frame of height [frameHeightPx] from [startPercentOffBottom] (progress 0) to
+ * [endPercentOffTop] (progress 1).
+ *
+ * At the start, the top of the text sits [startPercentOffBottom]% of the frame height below the
+ * bottom edge (0 = flush with the bottom edge, just off-screen; 100 = one full frame below;
+ * −50 = halfway up the frame, so the crawl can begin on screen). At the end, the bottom of the text
+ * sits [endPercentOffTop]% of the frame height above the top edge (0 = flush with the top edge;
+ * 100 = one full frame above; −50 = halfway down the frame). Shared by the live preview and the
+ * FFmpeg export so the crawl can't drift between them.
+ */
+fun textScrollTranslationY(
+    frameHeightPx: Float,
+    textHeightPx: Float,
+    startPercentOffBottom: Int,
+    endPercentOffTop: Int,
+    progress: Float
+): Float {
+    if (frameHeightPx <= 0f) return 0f
+    val p = progress.coerceIn(0f, 1f)
+    val start = textScrollEdgeOffset(frameHeightPx, textHeightPx, startPercentOffBottom, offBottom = true)
+    val end = textScrollEdgeOffset(frameHeightPx, textHeightPx, endPercentOffTop, offBottom = false)
+    return start + (end - start) * p
+}
+
+/** Translation (+down) from the centered position that parks the text block just past one frame edge. */
+private fun textScrollEdgeOffset(
+    frameHeightPx: Float,
+    textHeightPx: Float,
+    percent: Int,
+    offBottom: Boolean
+): Float {
+    val fraction = percent.coerceIn(TEXT_SCROLL_MIN_PERCENT, TEXT_SCROLL_MAX_PERCENT) / 100f
+    val halfFrame = frameHeightPx * 0.5f
+    val halfText = textHeightPx.coerceAtLeast(0f) * 0.5f
+    val pastEdge = fraction * frameHeightPx
+    return if (offBottom) halfFrame + pastEdge + halfText else -halfFrame - pastEdge - halfText
+}
 
 /** The reference canvas height (px) [TextConfig.fontSizeSp] and [CaptionConfig.fontSizeSp] are relative to. */
 const val TEXT_REFERENCE_HEIGHT: Double = 480.0

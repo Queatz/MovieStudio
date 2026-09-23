@@ -370,6 +370,49 @@ class ModelsTest {
         assertNull(parseEffectsConfig("""{"volume":1.0}""").text)
         // A brand-new text config carries sensible, fully-transparent-background defaults.
         assertEquals(TRANSPARENT_COLOR, TextConfig().backgroundColor)
+        assertFalse(TextConfig().scrollEnabled)
+    }
+
+    @Test
+    fun textScrollPercentsRoundTripAndLegacyTextConfigsStayStill() {
+        val scrolling = TextConfig(scrollEnabled = true, scrollStartPercent = 25, scrollEndPercent = 80)
+        assertEquals(scrolling, parseEffectsConfig(encodeEffectsConfig(EffectsConfig(text = scrolling))).text)
+        // Clips saved before scroll existed decode as still text (no crawl, 0% offsets).
+        val legacy = parseEffectsConfig("""{"text":{"color":"#ABCDEF"}}""").text
+        assertNotNull(legacy)
+        assertFalse(legacy.scrollEnabled)
+        assertEquals(0, legacy.scrollStartPercent)
+        assertEquals(0, legacy.scrollEndPercent)
+    }
+
+    @Test
+    fun textScrollStartsOffTheBottomAndEndsOffTheTop() {
+        val frame = 200f
+        val text = 40f
+        val centeredTop = (frame - text) / 2f
+        // 0% off the bottom: the top of the block lands on the bottom edge.
+        val atStart = textScrollTranslationY(frame, text, startPercentOffBottom = 0, endPercentOffTop = 0, progress = 0f)
+        assertEquals(frame, centeredTop + atStart, 0.01f)
+        // 0% off the top: the bottom of the block lands on the top edge.
+        val atEnd = textScrollTranslationY(frame, text, startPercentOffBottom = 0, endPercentOffTop = 0, progress = 1f)
+        assertEquals(0f, centeredTop + atEnd + text, 0.01f)
+        // 100% pushes a full frame further past each edge.
+        val deepStart = textScrollTranslationY(frame, text, startPercentOffBottom = 100, endPercentOffTop = 0, progress = 0f)
+        assertEquals(frame * 2f, centeredTop + deepStart, 0.01f)
+        val deepEnd = textScrollTranslationY(frame, text, startPercentOffBottom = 0, endPercentOffTop = 100, progress = 1f)
+        assertEquals(-frame, centeredTop + deepEnd + text, 0.01f)
+        // Midway is the straight interpolation between those two parked positions.
+        val mid = textScrollTranslationY(frame, text, startPercentOffBottom = 0, endPercentOffTop = 0, progress = 0.5f)
+        assertEquals((atStart + atEnd) / 2f, mid, 0.01f)
+        // Out-of-range percents clamp; a zero-height frame doesn't move the text.
+        assertEquals(deepStart, textScrollTranslationY(frame, text, startPercentOffBottom = 250, endPercentOffTop = 0, progress = 0f), 0.01f)
+        assertEquals(0f, textScrollTranslationY(0f, text, startPercentOffBottom = 50, endPercentOffTop = 50, progress = 0.5f), 0.01f)
+        // −50% pulls the parked edge halfway onto the frame so a crawl can start and end on screen.
+        val onScreenStart = textScrollTranslationY(frame, text, startPercentOffBottom = -50, endPercentOffTop = 0, progress = 0f)
+        assertEquals(frame / 2f, centeredTop + onScreenStart, 0.01f)
+        val onScreenEnd = textScrollTranslationY(frame, text, startPercentOffBottom = 0, endPercentOffTop = -50, progress = 1f)
+        assertEquals(frame / 2f, centeredTop + onScreenEnd + text, 0.01f)
+        assertEquals(onScreenStart, textScrollTranslationY(frame, text, startPercentOffBottom = -80, endPercentOffTop = 0, progress = 0f), 0.01f)
     }
 
     @Test

@@ -1,5 +1,11 @@
 package app.moviestudio.ui
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -7,6 +13,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,6 +38,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -44,6 +53,8 @@ import app.moviestudio.AppViewModel
 import app.moviestudio.AssetType
 import app.moviestudio.CaptionConfig
 import app.moviestudio.Clip
+import app.moviestudio.TEXT_SCROLL_MAX_PERCENT
+import app.moviestudio.TEXT_SCROLL_MIN_PERCENT
 import app.moviestudio.TextConfig
 import app.moviestudio.TRANSPARENT_COLOR
 import app.moviestudio.EffectsConfig
@@ -57,6 +68,7 @@ import app.moviestudio.VolumePoint
 import app.moviestudio.clipCarriesAudio
 import app.moviestudio.displayName
 import app.moviestudio.parseEffectsConfig
+import app.moviestudio.textScrollTranslationY
 import app.moviestudio.volumeAt
 import kotlin.math.roundToInt
 
@@ -340,10 +352,11 @@ private fun formatSeconds(value: Double): String {
 }
 
 /**
- * Text style editor for a first-class TEXT element: font, size, text color and a background color
- * (with transparency). Both colors reuse the preset swatches + [CustomColorPickerDialog] the
- * caption editor uses; the background offers a fully-transparent option so lower clips / the black
- * stage show through.
+ * Text style editor for a first-class TEXT element: font, size, text color, a background color
+ * (with transparency) and an optional credits-style scroll. Both colors reuse the preset swatches
+ * + [CustomColorPickerDialog] the caption editor uses; the background offers a fully-transparent
+ * option so lower clips / the black stage show through. When scroll is on, the preview crawls the
+ * sample from the chosen start (percentage off the bottom) to the chosen end (percentage off the top).
  */
 @Composable
 fun TextEditorDialog(
@@ -358,18 +371,32 @@ fun TextEditorDialog(
 
     StudioDialog(title = "Text style", onDismiss = onDismiss, width = 480.dp) {
         // Live preview strip (always dark, like the movie stage), filled with the chosen background.
-        Box(
+        // When scroll is on, the sample crawls with the same start/end percentages as the stage.
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(120.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF121016)),
-            contentAlignment = Alignment.Center
+                .background(Color(0xFF121016))
         ) {
+            val scrollProgress = if (config.scrollEnabled) rememberTextScrollPreviewProgress() else 0f
+            var previewTextHeight by remember { mutableStateOf(0) }
+            val scrollOffsetY = if (config.scrollEnabled && previewTextHeight > 0) {
+                textScrollTranslationY(
+                    frameHeightPx = constraints.maxHeight.toFloat(),
+                    textHeightPx = previewTextHeight.toFloat(),
+                    startPercentOffBottom = config.scrollStartPercent,
+                    endPercentOffTop = config.scrollEndPercent,
+                    progress = scrollProgress
+                )
+            } else {
+                0f
+            }
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(parseHexColor(config.backgroundColor)),
+                    .background(parseHexColor(config.backgroundColor))
+                    .clipToBounds(),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -380,7 +407,10 @@ fun TextEditorDialog(
                     fontStyle = if (config.fontItalic) FontStyle.Italic else FontStyle.Normal,
                     fontFamily = textFontFamily(config),
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 12.dp)
+                    onTextLayout = { previewTextHeight = it.size.height },
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp)
+                        .graphicsLayer { translationY = scrollOffsetY }
                 )
             }
         }
@@ -421,6 +451,45 @@ fun TextEditorDialog(
             onCustom = { editing = "background" }
         )
 
+        SectionLabel("Scroll text")
+        LabeledSwitch(
+            label = "Scroll",
+            checked = config.scrollEnabled,
+            description = "Crawl the text up across the clip. Negative offsets start or end it on screen.",
+            onCheckedChange = { config = config.copy(scrollEnabled = it) }
+        )
+        if (config.scrollEnabled) {
+            LabeledSlider(
+                label = "Start off bottom",
+                value = config.scrollStartPercent.toFloat(),
+                valueRange = TEXT_SCROLL_MIN_PERCENT.toFloat()..TEXT_SCROLL_MAX_PERCENT.toFloat(),
+                valueText = "${config.scrollStartPercent}%",
+                onValueChange = {
+                    config = config.copy(
+                        scrollStartPercent = it.roundToInt()
+                            .coerceIn(TEXT_SCROLL_MIN_PERCENT, TEXT_SCROLL_MAX_PERCENT)
+                    )
+                }
+            )
+            LabeledSlider(
+                label = "End off top",
+                value = config.scrollEndPercent.toFloat(),
+                valueRange = TEXT_SCROLL_MIN_PERCENT.toFloat()..TEXT_SCROLL_MAX_PERCENT.toFloat(),
+                valueText = "${config.scrollEndPercent}%",
+                onValueChange = {
+                    config = config.copy(
+                        scrollEndPercent = it.roundToInt()
+                            .coerceIn(TEXT_SCROLL_MIN_PERCENT, TEXT_SCROLL_MAX_PERCENT)
+                    )
+                }
+            )
+            Text(
+                "−50% starts or ends halfway on screen. 0% is flush with the frame edge. 100% is one full frame past that edge.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         DialogActions {
             GhostPillButton("Cancel") { onDismiss() }
             ActionSpacer()
@@ -451,6 +520,22 @@ fun TextEditorDialog(
             }
         )
     }
+}
+
+/** Loops 0→1 so the text-style preview can show a credits crawl while the dialog is open. */
+@Composable
+private fun rememberTextScrollPreviewProgress(): Float {
+    val transition = rememberInfiniteTransition(label = "textScrollPreview")
+    val progress by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 4000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "textScrollPreviewProgress"
+    )
+    return progress
 }
 
 /**

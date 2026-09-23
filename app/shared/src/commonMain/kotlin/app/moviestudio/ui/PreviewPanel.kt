@@ -51,6 +51,7 @@ import app.moviestudio.NO_TRANSITION
 import app.moviestudio.TrackType
 import app.moviestudio.TextConfig
 import app.moviestudio.TEXT_REFERENCE_HEIGHT
+import app.moviestudio.textScrollTranslationY
 import app.moviestudio.TransitionVisual
 import app.moviestudio.VideoPlayer
 import app.moviestudio.WEBGL_LAYER_IMAGE
@@ -390,10 +391,12 @@ private fun ClipImage(active: ActiveClip, transitionVisual: TransitionVisual) {
  * stage height so the preview matches the FFmpeg render. The [transitionVisual] fades / slides /
  * circle-reveals it in over whatever plays beneath, exactly like [ClipImage].
  *
- * Text that fits stays vertically centered. Text that overflows the stage height instead scrolls
- * smoothly across the clip's duration (driven by [playhead]) — starting ~2 blank lines above its
- * first line and ending ~2 blank lines below its last line — so the viewer has a moment to start
- * and finish reading and all of it can be read within the timeline item.
+ * When [TextConfig.scrollEnabled] is set, the block crawls from [TextConfig.scrollStartPercent] of
+ * the frame height below the bottom edge to [TextConfig.scrollEndPercent] of the frame height above
+ * the top edge across the clip (see [textScrollTranslationY]). Otherwise text that fits stays
+ * vertically centered, and text that overflows scrolls smoothly across the clip's duration (driven
+ * by [playhead]) — starting ~2 blank lines above its first line and ending ~2 blank lines below its
+ * last line — so the viewer has a moment to start and finish reading.
  */
 @Composable
 private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual, playhead: Float) {
@@ -432,13 +435,23 @@ private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual, pla
         // The text's full (unbounded) height, so we can tell when it overflows the stage height.
         var textHeightPx by remember { mutableStateOf(0) }
         val overflowPx = (textHeightPx - constraints.maxHeight).coerceAtLeast(0).toFloat()
-        // When the text overflows, pad ~2 (blank) line-heights above the first line AND scroll ~2
-        // extra line-heights past the last line, so the viewer has a moment to start reading the
-        // first line and to finish reading the last one. When it fits (overflow = 0) there is no
-        // padding/extra scroll and the text stays centered.
-        val topPadPx = if (overflowPx > 0f) lineHeightPx * 2f else 0f
-        val bottomPadPx = if (overflowPx > 0f) lineHeightPx * 2f else 0f
+        // Automatic read-through (scroll off): overflowing text pads ~2 blank lines above the first
+        // line and ~2 below the last so the viewer can start and finish reading. Text that fits
+        // stays centered. An explicit credits scroll replaces that and is driven by the percentages.
+        val topPadPx = if (!config.scrollEnabled && overflowPx > 0f) lineHeightPx * 2f else 0f
+        val bottomPadPx = if (!config.scrollEnabled && overflowPx > 0f) lineHeightPx * 2f else 0f
         val scrollExtentPx = overflowPx + topPadPx + bottomPadPx
+        val scrollOffsetY = if (config.scrollEnabled && textHeightPx > 0) {
+            textScrollTranslationY(
+                frameHeightPx = constraints.maxHeight.toFloat(),
+                textHeightPx = textHeightPx.toFloat(),
+                startPercentOffBottom = config.scrollStartPercent,
+                endPercentOffTop = config.scrollEndPercent,
+                progress = progress
+            )
+        } else {
+            overflowPx * 0.5f + topPadPx - progress * scrollExtentPx
+        }
         Text(
             text,
             color = parseHexColor(config.color),
@@ -453,11 +466,9 @@ private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual, pla
                 .fillMaxWidth()
                 .wrapContentHeight(unbounded = true)
                 .padding(horizontal = 24.dp)
-                // Centered when it fits (overflow = 0); otherwise scroll from ~2 blank lines above
-                // its top (progress 0) down past its bottom + ~2 blank lines (progress 1) across the
-                // clip. With Center alignment the text starts offset by half its overflow plus the
-                // top pad, then travels the whole overflow PLUS ~2 blank lines top and bottom.
-                .graphicsLayer { translationY = overflowPx * 0.5f + topPadPx - progress * scrollExtentPx }
+                // Centered when it fits and scroll is off; otherwise either the credits crawl or the
+                // overflow read-through computed above. +Y moves the centered block down.
+                .graphicsLayer { translationY = scrollOffsetY }
         )
     }
 }

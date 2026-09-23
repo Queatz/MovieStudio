@@ -1311,16 +1311,8 @@ object FFmpegService {
         val lineSpacing = textLineSpacing(fontSize)
         val xExpr = textSafeAreaXExpr(canvasWidth)
 
-        val blockConstPx = (lines.size - 1) * lineSpacing
-        val blockHeightExpr = "(${blockConstPx.ff()}+text_h)"
-        val overflowExpr = "max(0,$blockHeightExpr-h)"
-        val padPerSideExpr = "2*${lineSpacing.ff()}*gt($blockHeightExpr,h)"
-        val scrollExtentExpr = "($overflowExpr+2*$padPerSideExpr)"
-        val scrollExpr = if (duration > 0.0) {
-            "+($overflowExpr*0.5+$padPerSideExpr-min(t/${duration.ff()},1)*$scrollExtentExpr)"
-        } else {
-            ""
-        }
+        // Credits crawl when enabled; otherwise the automatic overflow read-through. Clip-local `t`.
+        val scrollExpr = textElementYScrollExpr(textCfg, duration, lines.size, lineSpacing)
 
         val layer = mutableListOf<String>()
         lines.forEachIndexed { index, line ->
@@ -1582,7 +1574,9 @@ object FFmpegService {
      *
      * Text that fits stays vertically centered. Text that overflows the canvas height instead
      * scrolls smoothly from its top to its bottom (plus ~2 extra blank lines so the last line can
-     * be read) across the clip's duration — the same behavior as the preview's `TextClip`.
+     * be read) across the clip's duration — unless a credits crawl is enabled, in which case the
+     * block travels from a percentage of the frame below the bottom edge to a percentage above the
+     * top edge. Both match the preview's `TextClip`.
      */
     private fun renderTextElementLayer(
         filters: MutableList<String>,
@@ -1615,27 +1609,11 @@ object FFmpegService {
         val lineSpacing = textLineSpacing(fontSize)
         val xExpr = textSafeAreaXExpr(canvasWidth)
 
-        // Vertical scroll for overflowing text — mirrors TextClip in the preview. The block's full
-        // height is the constant inter-line spacing plus the runtime single-line `text_h`; when it
-        // exceeds the canvas height (`h`) the text overflows and scrolls from its top down past its
-        // bottom across the clip instead of staying centered. `t` here is clip-local (the layer is
-        // PTS-shifted to `start` only afterwards), so progress = min(t/duration,1).
-        val blockConstPx = (lines.size - 1) * lineSpacing
-        val blockHeightExpr = "(${blockConstPx.ff()}+text_h)"
-        val overflowExpr = "max(0,$blockHeightExpr-h)"
-        // When it overflows, pad ~2 (blank) line-heights above the first line AND scroll ~2 extra
-        // past the last, so the viewer has a moment to start and finish reading (the preview's
-        // topPadPx / bottomPadPx). `gt` is 1 only while overflowing, so text that fits gets no
-        // padding/extra scroll and stays centered.
-        val padPerSideExpr = "2*${lineSpacing.ff()}*gt($blockHeightExpr,h)"
-        val scrollExtentExpr = "($overflowExpr+2*$padPerSideExpr)"
-        // translationY: 0 (centered) when it fits; otherwise ramps the block from half its overflow
-        // plus 2 blank lines above (progress 0) down past its bottom + 2 blank lines (progress 1).
-        val scrollExpr = if (duration > 0.0) {
-            "+($overflowExpr*0.5+$padPerSideExpr-min(t/${duration.ff()},1)*$scrollExtentExpr)"
-        } else {
-            ""
-        }
+        // Vertical offset added to every centered line. Credits scroll (when enabled) crawls from
+        // a percentage of the frame below the bottom edge to a percentage above the top edge.
+        // Otherwise overflowing text keeps the automatic read-through scroll. `t` is clip-local
+        // (this layer is PTS-shifted to `start` only afterwards).
+        val scrollExpr = textElementYScrollExpr(textCfg, duration, lines.size, lineSpacing)
 
         val layer = mutableListOf<String>()
         // Draw each wrapped line, centered, stacking symmetrically around the vertical center (plus
@@ -2277,6 +2255,45 @@ object FFmpegService {
      * which pinned the scroll offset to ~0 so overflowing text never moved.
      */
     internal fun textLineSpacing(fontSize: Int): Double = fontSize * 1.25
+
+    /**
+     * The `drawtext` y-offset (added to the centered line position, +down) for a TEXT element.
+     *
+     * When [TextConfig.scrollEnabled] is set, the block crawls from [TextConfig.scrollStartPercent]
+     * of the frame height below the bottom edge to [TextConfig.scrollEndPercent] of the frame height
+     * above the top edge across [duration] — the same motion as [textScrollTranslationY]. Negative
+     * percents park that edge on screen instead of past it. The block height is the constant
+     * inter-line spacing plus the runtime single-line `text_h`.
+     *
+     * Otherwise overflowing text keeps the automatic read-through scroll (two blank lines of lead-in
+     * and lead-out); text that fits stays centered (the offset collapses to ~0). Returns "" when
+     * there is no duration to scroll across.
+     */
+    internal fun textElementYScrollExpr(
+        config: TextConfig,
+        duration: Double,
+        lineCount: Int,
+        lineSpacing: Double
+    ): String {
+        if (duration <= 0.0 || lineCount <= 0) return ""
+        val blockConstPx = (lineCount - 1) * lineSpacing
+        val blockHeightExpr = "(${blockConstPx.ff()}+text_h)"
+        val progress = "min(t/${duration.ff()},1)"
+        return if (config.scrollEnabled) {
+            val startFrac = (config.scrollStartPercent
+                .coerceIn(TEXT_SCROLL_MIN_PERCENT, TEXT_SCROLL_MAX_PERCENT) / 100.0).ff()
+            val endFrac = (config.scrollEndPercent
+                .coerceIn(TEXT_SCROLL_MIN_PERCENT, TEXT_SCROLL_MAX_PERCENT) / 100.0).ff()
+            val startOffset = "(h*0.5+h*$startFrac+($blockHeightExpr)*0.5)"
+            val endOffset = "(-h*0.5-h*$endFrac-($blockHeightExpr)*0.5)"
+            "+($startOffset+($endOffset-$startOffset)*$progress)"
+        } else {
+            val overflowExpr = "max(0,$blockHeightExpr-h)"
+            val padPerSideExpr = "2*${lineSpacing.ff()}*gt($blockHeightExpr,h)"
+            val scrollExtentExpr = "($overflowExpr+2*$padPerSideExpr)"
+            "+($overflowExpr*0.5+$padPerSideExpr-$progress*$scrollExtentExpr)"
+        }
+    }
 
     /**
      * The `drawtext` `x=` expression for a TEXT element line: centered by default, but clamped into

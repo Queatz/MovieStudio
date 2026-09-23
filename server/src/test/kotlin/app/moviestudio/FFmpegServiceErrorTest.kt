@@ -762,6 +762,34 @@ class FFmpegServiceErrorTest {
     }
 
     @Test
+    fun textScrollExprCrawlsFromBelowTheFrameToAboveIt() {
+        val scrolling = TextConfig(scrollEnabled = true, scrollStartPercent = 25, scrollEndPercent = 40)
+        val expr = FFmpegService.textElementYScrollExpr(scrolling, duration = 4.0, lineCount = 3, lineSpacing = 40.0)
+        // Start parks the block 25% of the frame below the bottom; end parks it 40% above the top.
+        assertTrue(expr.contains("h*0.25"), "start offset must be 25% of the frame, got: $expr")
+        assertTrue(expr.contains("-h*0.4"), "end offset must be 40% of the frame past the top, got: $expr")
+        assertTrue(expr.contains("min(t/4,1)"), "crawl must progress across the clip, got: $expr")
+        assertTrue(expr.contains("text_h"), "block height must include the runtime line height, got: $expr")
+        // The automatic overflow read-through must not also be applied.
+        assertFalse(expr.contains("gt("), "credits crawl replaces the overflow scroll, got: $expr")
+
+        // −50% pulls the start and end halfway onto the frame (and values below the floor clamp).
+        val onScreen = TextConfig(scrollEnabled = true, scrollStartPercent = -50, scrollEndPercent = -80)
+        val onScreenExpr = FFmpegService.textElementYScrollExpr(onScreen, duration = 4.0, lineCount = 3, lineSpacing = 40.0)
+        assertTrue(onScreenExpr.contains("h*-0.5"), "start must be halfway on screen, got: $onScreenExpr")
+        assertTrue(onScreenExpr.contains("-h*-0.5"), "end must clamp to halfway on screen, got: $onScreenExpr")
+    }
+
+    @Test
+    fun textScrollExprKeepsOverflowReadThroughWhenScrollIsOff() {
+        val still = TextConfig()
+        val expr = FFmpegService.textElementYScrollExpr(still, duration = 4.0, lineCount = 3, lineSpacing = 40.0)
+        assertTrue(expr.contains("gt("), "overflow scroll must stay when crawl is off, got: $expr")
+        assertTrue(expr.contains("max(0,"), "overflow is clamped at zero so fitting text stays centered, got: $expr")
+        assertEquals("", FFmpegService.textElementYScrollExpr(still, duration = 0.0, lineCount = 3, lineSpacing = 40.0))
+    }
+
+    @Test
     fun textLineSpacingIsTheNaturalIdealSpacing() {
         // The spacing is the natural fontSize*1.25, independent of line count / canvas height.
         assertEquals(48 * 1.25, FFmpegService.textLineSpacing(fontSize = 48))
