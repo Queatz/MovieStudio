@@ -245,10 +245,27 @@ object FFmpegService {
             var chain = 0
 
             // 1) Composite pre-rendered track files in z-order (one overlay each).
+            //
+            // Pre-rendered tracks are opaque yuv420p with solid-black gap frames (concat-demuxer
+            // cannot carry alpha). Overlaying the whole stream would paint those gaps over every
+            // lower track — the first video track goes fully black in multi-track movies. Gate
+            // each overlay to the track's clip windows so gaps pass the layer underneath through.
+            // Fade-style transitions are applied as overlay alpha here (not baked into the
+            // segment files) so a crossfade blends over the track below instead of fading from black.
             for (track in videoTracksSorted) {
                 val tIdx = trackInputMap[track.id] ?: continue
+                val trackClipsForOverlay = (clipsByTrack[track.id] ?: emptyList())
+                    .sortedBy { it.timelineStart }
+                    .filter { (it.trimOut - it.trimIn) > 0f && assetsById.containsKey(it.assetId) }
                 val nextTag = "v_preroll_${track.id}"
-                filters.add("[$currentVideoTag][$tIdx:v]overlay=eof_action=pass:format=auto[$nextTag]")
+                filters.add(
+                    preRenderedTrackOverlayFilter(
+                        currentVideoTag = currentVideoTag,
+                        overlayInputIndex = tIdx,
+                        outputTag = nextTag,
+                        trackClips = trackClipsForOverlay
+                    )
+                )
                 currentVideoTag = nextTag
                 logger.info("Composited pre-rendered track ${track.id} (input $tIdx)")
             }
@@ -703,14 +720,14 @@ object FFmpegService {
 
     /**
      * True when [trackClips] can be built with the memory-safe concat path: no timeline overlaps
-     * (after bridging) and no SLIDE transitions (which need per-clip overlay x/y against the layer
-     * underneath).
+     * (after bridging) and no transitions that need a per-clip overlay against the layer underneath
+     * (SLIDE x/y, CIRCLE / VIGNETTE / VORONOI spatial masks). ALPHA / NOISE / PIXELATE stay here
+     * and are applied as overlay alpha when the opaque track file is composited.
      */
     internal fun canConcatComposeTrack(trackClips: List<Clip>): Boolean {
         if (trackClips.size <= 1) {
-            // A single SLIDE clip still needs the overlay path so x/y can animate over the base.
             val only = trackClips.singleOrNull() ?: return true
-            return parseEffectsConfig(only.effectsConfig).transition?.type != TransitionType.SLIDE
+            return !needsPerClipOverlayTransition(only)
         }
         val sorted = trackClips.sortedBy { it.timelineStart }
         for (i in 0 until sorted.lastIndex) {
@@ -720,9 +737,93 @@ object FFmpegService {
             // Anything past a hair of float noise counts as a real overlap → overlay path.
             if (aEnd > b.timelineStart + 1e-4f) return false
         }
-        return sorted.none {
-            parseEffectsConfig(it.effectsConfig).transition?.type == TransitionType.SLIDE
+        return sorted.none { needsPerClipOverlayTransition(it) }
+    }
+
+    /** Spatial / positional transitions that the opaque concat path cannot express against the base. */
+    private fun needsPerClipOverlayTransition(clip: Clip): Boolean {
+        val type = parseEffectsConfig(clip.effectsConfig).transition?.type ?: return false
+        return type == TransitionType.SLIDE ||
+            type == TransitionType.CIRCLE ||
+            type == TransitionType.VIGNETTE ||
+            type == TransitionType.VORONOI
+    }
+
+    /**
+     * Overlay that composites a pre-rendered (opaque H.264) track onto [currentVideoTag].
+     *
+     * Segment files bake timeline gaps as solid black, so the overlay is `enable=`-gated to the
+     * union of the track's clip windows. Without that gate a higher-z track's black gaps fully
+     * cover whatever was already composited — the first video track renders as solid black.
+     *
+     * Fade-style transitions cannot live in those opaque segments (that was a fade-from-black).
+     * When any clip fades, the overlay is converted to yuva with a time-varying alpha so the
+     * incoming clip alpha-blends over whatever is already composited — matching the live preview.
+     */
+    internal fun preRenderedTrackOverlayFilter(
+        currentVideoTag: String,
+        overlayInputIndex: Int,
+        outputTag: String,
+        trackClips: List<Clip>
+    ): String {
+        val enable = trackClipsEnableExpression(trackClips)
+        val enableArg = if (enable.isEmpty()) "" else ":enable='$enable'"
+        val alpha = trackClipsAlphaExpression(trackClips)
+        if (alpha.isEmpty()) {
+            return "[$currentVideoTag][$overlayInputIndex:v]overlay=eof_action=pass:format=auto$enableArg[$outputTag]"
         }
+        val alphaTag = "${outputTag}_a"
+        return "[$overlayInputIndex:v]format=yuva420p," +
+            "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='$alpha'[$alphaTag];" +
+            "[$currentVideoTag][$alphaTag]overlay=eof_action=pass:format=auto$enableArg[$outputTag]"
+    }
+
+    /**
+     * FFmpeg `enable` expression that is 1 during any of [trackClips]' display windows and 0 in
+     * the gaps between them. `between()` results are summed so overlapping windows still enable.
+     */
+    internal fun trackClipsEnableExpression(trackClips: List<Clip>): String {
+        if (trackClips.isEmpty()) return ""
+        val sorted = trackClips.sortedBy { it.timelineStart }
+        return sorted.joinToString("+") { clip ->
+            val start = clip.timelineStart.toDouble()
+            val end = bridgedClipEnd(clip, sorted).toDouble()
+            "between(t,${start.ff()},${end.ff()})"
+        }
+    }
+
+    /**
+     * FFmpeg `geq` alpha expression for a pre-rendered track overlay. 0 in gaps, a 0→255 ramp
+     * across each clip's fade-in window, then 255 for the rest of the clip. Empty when no clip
+     * has a fade-style transition, so the opaque overlay path can skip the yuva conversion.
+     */
+    internal fun trackClipsAlphaExpression(trackClips: List<Clip>): String {
+        if (trackClips.none { clipTransitionFadeSeconds(it) > 0.0 }) return ""
+        val sorted = trackClips.sortedBy { it.timelineStart }
+        return sorted.joinToString("+") { clip ->
+            val start = clip.timelineStart.toDouble()
+            val end = bridgedClipEnd(clip, sorted).toDouble()
+            val fade = clipTransitionFadeSeconds(clip)
+            val window = "between(T,${start.ff()},${end.ff()})"
+            if (fade <= 0.0) {
+                "$window*255"
+            } else {
+                val fadeEnd = start + fade
+                "$window*if(lt(T,${fadeEnd.ff()}),255*(T-${start.ff()})/${fade.ff()},255)"
+            }
+        }
+    }
+
+    /**
+     * Duration of a fade-style transition on [clip], or 0 when there is none (including SLIDE,
+     * which is positional rather than an alpha ramp). Clamped to the clip's media duration.
+     */
+    internal fun clipTransitionFadeSeconds(clip: Clip): Double {
+        val transition = parseEffectsConfig(clip.effectsConfig).transition ?: return 0.0
+        if (transition.type == TransitionType.NONE || transition.type == TransitionType.SLIDE) return 0.0
+        val clipDur = (clip.trimOut - clip.trimIn).toDouble()
+        if (clipDur <= 0.0) return 0.0
+        return transition.durationSeconds.coerceIn(TRANSITION_MIN_SECONDS, clipDur)
     }
 
     /**
@@ -840,8 +941,9 @@ object FFmpegService {
     }
 
     /**
-     * Encodes one media clip to a canvas-sized H.264 segment. Fade transitions use RGB fade-from-
-     * black (no alpha) so the segment is a plain yuv420p file concat-demuxer can join.
+     * Encodes one media clip to a canvas-sized H.264 segment. Transitions are NOT baked in — the
+     * concat demuxer cannot carry alpha, and an RGB fade-from-black would cover the track below.
+     * Fade-style transitions are applied as overlay alpha in [preRenderedTrackOverlayFilter].
      */
     internal fun renderMediaClipSegmentFile(
         outFile: File,
@@ -872,24 +974,6 @@ object FFmpegService {
         vf.add("crop=$canvasWidth:$canvasHeight:(iw-ow)*${offsetFx.ff()}:(ih-oh)*${offsetFy.ff()}")
         vf.add("fps=30")
         appendColorGrading(vf, rawEffects)
-
-        // Bake fade-style transitions as RGB fade-from-black. SLIDE is excluded from this path
-        // entirely (see canConcatComposeTrack). Alpha-only fades become RGB fades so segments stay
-        // yuv420p-friendly for the concat demuxer.
-        val transition = effects.transition
-        val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
-        if (transition != null && transition.type != TransitionType.NONE &&
-            transition.type != TransitionType.SLIDE && transitionDur > 0.0
-        ) {
-            when (transition.type) {
-                TransitionType.CIRCLE, TransitionType.VIGNETTE, TransitionType.VORONOI -> {
-                    // Complex reveals need alpha; approximate with a short RGB fade so we still
-                    // export something reasonable without a multi-input overlay graph.
-                    vf.add("fade=t=in:st=0:d=${transitionDur.ff()}")
-                }
-                else -> vf.add("fade=t=in:st=0:d=${transitionDur.ff()}")
-            }
-        }
 
         val pad = displayDur - duration
         if (pad > 0.001) {
@@ -926,7 +1010,7 @@ object FFmpegService {
         canvasWidth: Int,
         canvasHeight: Int
     ) {
-        val text = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "Untitled scene" }
+        val text = (asset.description ?: asset.aiPrompt ?: "")
         val lines = wrapText(text, 34, 4)
         val draws = lines.mapIndexed { index, line ->
             val yExpr =
@@ -1181,7 +1265,7 @@ object FFmpegService {
         canvasHeight: Int,
         outputTag: String
     ) {
-        val text = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "Untitled scene" }
+        val text = (asset.description ?: asset.aiPrompt ?: "")
         val lines = wrapText(text, 34, 4)
         val parts = mutableListOf<String>()
         parts.add(
@@ -1298,7 +1382,7 @@ object FFmpegService {
                 )
                 return OverlayStepResult(tag, nextChain)
             }
-            val text = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "Untitled scene" }
+            val text = (asset.description ?: asset.aiPrompt ?: "")
             val nextTag = "v_text_${nextChain++}"
             val lines = wrapText(text, 34, 4)
             var tag = currentVideoTag

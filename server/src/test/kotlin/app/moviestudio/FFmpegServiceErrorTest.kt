@@ -190,6 +190,84 @@ class FFmpegServiceErrorTest {
             )
         )
         assertFalse(FFmpegService.canConcatComposeTrack(slide))
+
+        // Spatial reveals need the per-clip overlay path so their mask composites over the base.
+        for (type in listOf(TransitionType.CIRCLE, TransitionType.VIGNETTE, TransitionType.VORONOI)) {
+            val reveal = listOf(
+                Clip(
+                    id = "r", trackId = "t", assetId = "1", timelineStart = 0f, trimIn = 0f, trimOut = 2f,
+                    effectsConfig = """{"transition":{"type":"$type"}}"""
+                )
+            )
+            assertFalse(FFmpegService.canConcatComposeTrack(reveal), type.name)
+        }
+    }
+
+    @Test
+    fun preRenderedTrackOverlayIsGatedToClipWindowsSoGapsStayTransparent() {
+        // Multi-track bug: pre-rendered tracks are opaque yuv420p with black gap frames. Overlaying
+        // the whole stream paints those gaps over every lower track (first video track goes black).
+        // The overlay must be enable-gated to the clip windows, matching movie oeQWEeUxQLbsxoNc
+        // (V0 clips covered by V1's baked black gaps).
+        val clips = listOf(
+            Clip(id = "a", trackId = "t", assetId = "1", timelineStart = 0f, trimIn = 0f, trimOut = 5f, effectsConfig = "{}"),
+            Clip(id = "b", trackId = "t", assetId = "2", timelineStart = 10f, trimIn = 0f, trimOut = 2f, effectsConfig = "{}")
+        )
+        assertEquals(
+            "between(t,0,5)+between(t,10,12)",
+            FFmpegService.trackClipsEnableExpression(clips)
+        )
+        val filter = FFmpegService.preRenderedTrackOverlayFilter(
+            currentVideoTag = "0:v",
+            overlayInputIndex = 2,
+            outputTag = "v_preroll_t",
+            trackClips = clips
+        )
+        assertEquals(
+            "[0:v][2:v]overlay=eof_action=pass:format=auto:enable='between(t,0,5)+between(t,10,12)'[v_preroll_t]",
+            filter
+        )
+        assertEquals("", FFmpegService.trackClipsEnableExpression(emptyList()))
+        assertEquals(
+            "[0:v][2:v]overlay=eof_action=pass:format=auto[v_empty]",
+            FFmpegService.preRenderedTrackOverlayFilter("0:v", 2, "v_empty", emptyList())
+        )
+    }
+
+    @Test
+    fun preRenderedTrackOverlayAppliesAlphaRampForCrossfades() {
+        // Pre-rendered segments are opaque yuv420p, so ALPHA must be applied at overlay time —
+        // baking fade-from-black into the segment made crossfades start on black instead of the
+        // track underneath (video track 1 on oeQWEeUxQLbsxoNc; tracks 2→3 stayed on the yuva path).
+        val clips = listOf(
+            Clip(id = "a", trackId = "t", assetId = "1", timelineStart = 0f, trimIn = 0f, trimOut = 5f, effectsConfig = "{}"),
+            Clip(
+                id = "b", trackId = "t", assetId = "2", timelineStart = 10f, trimIn = 0f, trimOut = 2f,
+                effectsConfig = """{"transition":{"type":"ALPHA","durationSeconds":1.0}}"""
+            )
+        )
+        assertEquals(0.0, FFmpegService.clipTransitionFadeSeconds(clips[0]))
+        assertEquals(1.0, FFmpegService.clipTransitionFadeSeconds(clips[1]))
+        assertEquals(
+            "between(T,0,5)*255+between(T,10,12)*if(lt(T,11),255*(T-10)/1,255)",
+            FFmpegService.trackClipsAlphaExpression(clips)
+        )
+        val filter = FFmpegService.preRenderedTrackOverlayFilter(
+            currentVideoTag = "0:v",
+            overlayInputIndex = 2,
+            outputTag = "v_preroll_t",
+            trackClips = clips
+        )
+        assertTrue(filter.contains("format=yuva420p"), filter)
+        assertTrue(filter.contains("geq="), filter)
+        assertTrue(filter.contains("[v_preroll_t_a]"), filter)
+        assertTrue(
+            filter.contains("[0:v][v_preroll_t_a]overlay=eof_action=pass:format=auto:enable='between(t,0,5)+between(t,10,12)'[v_preroll_t]"),
+            filter
+        )
+        assertEquals("", FFmpegService.trackClipsAlphaExpression(
+            listOf(Clip(id = "a", trackId = "t", assetId = "1", timelineStart = 0f, trimIn = 0f, trimOut = 5f, effectsConfig = "{}"))
+        ))
     }
 
     @Test
@@ -289,6 +367,174 @@ class FFmpegServiceErrorTest {
         } finally {
             temp.deleteRecursively()
         }
+    }
+
+    @Test
+    fun preRenderedHigherTrackGapsDoNotCoverLowerTrackClips() {
+        // Two sequential-on-their-own-track clips on different z-layers, both pre-rendered (opaque
+        // H.264 with black gaps). At t=0.4 only the lower (red) track has content; without enable-
+        // gating the upper track's black gap would cover it. At t=1.4 the upper (green) clip shows.
+        val temp = java.nio.file.Files.createTempDirectory("ms_multitrack_overlay_").toFile()
+        try {
+            val imgRed = File(temp, "red.png")
+            val imgGreen = File(temp, "green.png")
+            for ((f, color) in listOf(imgRed to "red", imgGreen to "green")) {
+                FFmpegService.runFfmpegChecked(
+                    listOf(
+                        MediaUtil.ffmpegBinary, "-y",
+                        "-f", "lavfi", "-i", "color=c=$color:s=320x180:d=0.1",
+                        "-frames:v", "1", f.absolutePath
+                    ),
+                    label = "test-png"
+                )
+            }
+            val lowerClips = listOf(
+                Clip(id = "low", trackId = "t0", assetId = "red", timelineStart = 0f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}")
+            )
+            val upperClips = listOf(
+                Clip(id = "up", trackId = "t1", assetId = "green", timelineStart = 1f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}")
+            )
+            val assets = mapOf(
+                "red" to Asset(id = "red", type = AssetType.IMAGE, ossUrl = "http://x/red.png", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null),
+                "green" to Asset(id = "green", type = AssetType.IMAGE, ossUrl = "http://x/green.png", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null)
+            )
+            val lower = FFmpegService.renderTrackViaSegmentFiles(
+                tempDir = temp, trackId = "t0", trackClips = lowerClips,
+                assetsById = assets, downloadedAssets = mapOf("red" to imgRed),
+                totalDuration = 2.0, canvasWidth = 320, canvasHeight = 180
+            )
+            val upper = FFmpegService.renderTrackViaSegmentFiles(
+                tempDir = temp, trackId = "t1", trackClips = upperClips,
+                assetsById = assets, downloadedAssets = mapOf("green" to imgGreen),
+                totalDuration = 2.0, canvasWidth = 320, canvasHeight = 180
+            )
+            val out = File(temp, "composited.mp4")
+            val overlay0 = FFmpegService.preRenderedTrackOverlayFilter("0:v", 1, "v0", lowerClips)
+            val overlay1 = FFmpegService.preRenderedTrackOverlayFilter("v0", 2, "v1", upperClips)
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=black:s=320x180:r=30:d=2",
+                    "-i", lower.absolutePath,
+                    "-i", upper.absolutePath,
+                    "-filter_complex", "$overlay0;$overlay1",
+                    "-map", "[v1]", "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-t", "2",
+                    out.absolutePath
+                ),
+                label = "multitrack-composite"
+            )
+            val (rEarly, gEarly, bEarly) = sampleCenterRgb(out, 0.4)
+            // yuv420p round-trips lavfi primaries to ~127 peak, not 255; still clearly not black.
+            assertTrue(
+                rEarly > 80 && rEarly > gEarly + 40 && rEarly > bEarly + 40,
+                "t=0.4 should show the lower (red) track through the upper track's gap, got rgb=$rEarly,$gEarly,$bEarly"
+            )
+            val (rLate, gLate, bLate) = sampleCenterRgb(out, 1.4)
+            assertTrue(
+                gLate > 80 && gLate > rLate + 40 && gLate > bLate + 40,
+                "t=1.4 should show the upper (green) track, got rgb=$rLate,$gLate,$bLate"
+            )
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun preRenderedCrossfadeBlendsOverLowerTrackInsteadOfFadingFromBlack() {
+        // Lower track is solid red for 2s. Upper track is green from t=1 with a 1s ALPHA fade.
+        // Mid-fade must still show the red underneath — a baked RGB fade-from-black would be dark
+        // green with almost no red (the broken crossfade on pre-rendered video track 1).
+        val temp = java.nio.file.Files.createTempDirectory("ms_multitrack_xfade_").toFile()
+        try {
+            val imgRed = File(temp, "red.png")
+            val imgGreen = File(temp, "green.png")
+            for ((f, color) in listOf(imgRed to "red", imgGreen to "green")) {
+                FFmpegService.runFfmpegChecked(
+                    listOf(
+                        MediaUtil.ffmpegBinary, "-y",
+                        "-f", "lavfi", "-i", "color=c=$color:s=320x180:d=0.1",
+                        "-frames:v", "1", f.absolutePath
+                    ),
+                    label = "test-png"
+                )
+            }
+            val lowerClips = listOf(
+                Clip(id = "low", trackId = "t0", assetId = "red", timelineStart = 0f, trimIn = 0f, trimOut = 2f, effectsConfig = "{}")
+            )
+            val upperClips = listOf(
+                Clip(
+                    id = "up", trackId = "t1", assetId = "green", timelineStart = 1f, trimIn = 0f, trimOut = 1f,
+                    effectsConfig = """{"transition":{"type":"ALPHA","durationSeconds":1.0}}"""
+                )
+            )
+            val assets = mapOf(
+                "red" to Asset(id = "red", type = AssetType.IMAGE, ossUrl = "http://x/red.png", durationSeconds = 2.0, movieId = "m", tags = emptyList(), aiPrompt = null),
+                "green" to Asset(id = "green", type = AssetType.IMAGE, ossUrl = "http://x/green.png", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null)
+            )
+            val lower = FFmpegService.renderTrackViaSegmentFiles(
+                tempDir = temp, trackId = "t0", trackClips = lowerClips,
+                assetsById = assets, downloadedAssets = mapOf("red" to imgRed),
+                totalDuration = 2.0, canvasWidth = 320, canvasHeight = 180
+            )
+            val upper = FFmpegService.renderTrackViaSegmentFiles(
+                tempDir = temp, trackId = "t1", trackClips = upperClips,
+                assetsById = assets, downloadedAssets = mapOf("green" to imgGreen),
+                totalDuration = 2.0, canvasWidth = 320, canvasHeight = 180
+            )
+            val out = File(temp, "composited.mp4")
+            val overlay0 = FFmpegService.preRenderedTrackOverlayFilter("0:v", 1, "v0", lowerClips)
+            val overlay1 = FFmpegService.preRenderedTrackOverlayFilter("v0", 2, "v1", upperClips)
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=black:s=320x180:r=30:d=2",
+                    "-i", lower.absolutePath,
+                    "-i", upper.absolutePath,
+                    "-filter_complex", "$overlay0;$overlay1",
+                    "-map", "[v1]", "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-t", "2",
+                    out.absolutePath
+                ),
+                label = "multitrack-crossfade"
+            )
+            val (rEarly, gEarly, bEarly) = sampleCenterRgb(out, 0.4)
+            assertTrue(
+                rEarly > 80 && rEarly > gEarly + 40 && rEarly > bEarly + 40,
+                "t=0.4 should show the lower (red) track, got rgb=$rEarly,$gEarly,$bEarly"
+            )
+            val (rMid, gMid, bMid) = sampleCenterRgb(out, 1.5)
+            assertTrue(
+                rMid > 30 && gMid > 30,
+                "t=1.5 mid-crossfade should keep the lower (red) track visible under green, not fade from black, got rgb=$rMid,$gMid,$bMid"
+            )
+            val (rLate, gLate, bLate) = sampleCenterRgb(out, 1.85)
+            assertTrue(
+                gLate > 80 && gLate > rLate + 30 && gLate > bLate + 30,
+                "t=1.85 should be mostly the upper (green) track, got rgb=$rLate,$gLate,$bLate"
+            )
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
+    private fun sampleCenterRgb(video: File, timeSeconds: Double): Triple<Int, Int, Int> {
+        val pb = ProcessBuilder(
+            MediaUtil.ffmpegBinary,
+            "-ss", timeSeconds.toString(),
+            "-i", video.absolutePath,
+            "-frames:v", "1",
+            "-vf", "scale=1:1:flags=fast_bilinear,format=rgb24",
+            "-f", "rawvideo",
+            "pipe:1"
+        ).redirectError(ProcessBuilder.Redirect.PIPE)
+        val proc = pb.start()
+        val bytes = proc.inputStream.readNBytes(3)
+        proc.waitFor()
+        assertEquals(3, bytes.size, "expected 3 RGB bytes from ${video.name} at t=$timeSeconds")
+        return Triple(bytes[0].toInt() and 0xFF, bytes[1].toInt() and 0xFF, bytes[2].toInt() and 0xFF)
     }
 
     @Test
