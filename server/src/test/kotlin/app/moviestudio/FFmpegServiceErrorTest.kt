@@ -214,7 +214,7 @@ class FFmpegServiceErrorTest {
             Clip(id = "b", trackId = "t", assetId = "2", timelineStart = 10f, trimIn = 0f, trimOut = 2f, effectsConfig = "{}")
         )
         assertEquals(
-            "between(t,0,5)+between(t,10,12)",
+            "gte(n,0)*lt(n,150)+gte(n,300)*lt(n,360)",
             FFmpegService.trackClipsEnableExpression(clips)
         )
         val filter = FFmpegService.preRenderedTrackOverlayFilter(
@@ -224,7 +224,7 @@ class FFmpegServiceErrorTest {
             trackClips = clips
         )
         assertEquals(
-            "[0:v][2:v]overlay=eof_action=pass:format=auto:enable='between(t,0,5)+between(t,10,12)'[v_preroll_t]",
+            "[0:v][2:v]overlay=eof_action=pass:format=auto:enable='gte(n,0)*lt(n,150)+gte(n,300)*lt(n,360)'[v_preroll_t]",
             filter
         )
         assertEquals("", FFmpegService.trackClipsEnableExpression(emptyList()))
@@ -249,7 +249,7 @@ class FFmpegServiceErrorTest {
         assertEquals(0.0, FFmpegService.clipTransitionFadeSeconds(clips[0]))
         assertEquals(1.0, FFmpegService.clipTransitionFadeSeconds(clips[1]))
         assertEquals(
-            "between(T,0,5)*255+between(T,10,12)*if(lt(T,11),255*(T-10)/1,255)",
+            "gte(N,0)*lt(N,150)*255+gte(N,300)*lt(N,360)*if(lt(N,330),255*(N-300)/30,255)",
             FFmpegService.trackClipsAlphaExpression(clips)
         )
         val filter = FFmpegService.preRenderedTrackOverlayFilter(
@@ -258,11 +258,12 @@ class FFmpegServiceErrorTest {
             outputTag = "v_preroll_t",
             trackClips = clips
         )
+        assertTrue(filter.contains("setpts=N/30/TB"), filter)
         assertTrue(filter.contains("format=yuva420p"), filter)
         assertTrue(filter.contains("geq="), filter)
         assertTrue(filter.contains("[v_preroll_t_a]"), filter)
         assertTrue(
-            filter.contains("[0:v][v_preroll_t_a]overlay=eof_action=pass:format=auto:enable='between(t,0,5)+between(t,10,12)'[v_preroll_t]"),
+            filter.contains("[0:v][v_preroll_t_a]overlay=eof_action=pass:format=auto:enable='gte(n,0)*lt(n,150)+gte(n,300)*lt(n,360)'[v_preroll_t]"),
             filter
         )
         assertEquals("", FFmpegService.trackClipsAlphaExpression(
@@ -605,6 +606,162 @@ class FFmpegServiceErrorTest {
         }
     }
 
+    @Test
+    fun abuttingClipFadeStartsOnTheJunctionFrameInsteadOfAfterOneSolidFrame() {
+        // Abutting clips share a timestamp. between() is inclusive, so the outgoing clip's full
+        // opacity used to cover the incoming clip's first frame — one solid frame of that clip,
+        // then the fade. The junction frame must already be the start of the fade (base showing).
+        val temp = java.nio.file.Files.createTempDirectory("ms_junction_fade_").toFile()
+        try {
+            val red = File(temp, "red.png")
+            val green = File(temp, "green.png")
+            for ((f, color) in listOf(red to "red", green to "green")) {
+                FFmpegService.runFfmpegChecked(
+                    listOf(
+                        MediaUtil.ffmpegBinary, "-y",
+                        "-f", "lavfi", "-i", "color=c=$color:s=64x64:d=0.1",
+                        "-frames:v", "1", f.absolutePath
+                    ),
+                    label = "junction-$color"
+                )
+            }
+            val clips = listOf(
+                Clip(id = "a", trackId = "t", assetId = "red", timelineStart = 0f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}"),
+                Clip(
+                    id = "b", trackId = "t", assetId = "green", timelineStart = 1f, trimIn = 0f, trimOut = 1f,
+                    effectsConfig = """{"transition":{"type":"ALPHA","durationSeconds":1.0}}"""
+                )
+            )
+            val assets = mapOf(
+                "red" to Asset(id = "red", type = AssetType.IMAGE, ossUrl = "http://x/red.png", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null),
+                "green" to Asset(id = "green", type = AssetType.IMAGE, ossUrl = "http://x/green.png", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null)
+            )
+            val track = FFmpegService.renderTrackViaSegmentFiles(
+                tempDir = temp, trackId = "t", trackClips = clips,
+                assetsById = assets, downloadedAssets = mapOf("red" to red, "green" to green),
+                totalDuration = 2.0, canvasWidth = 64, canvasHeight = 64
+            )
+            val out = File(temp, "composited.mp4")
+            val overlay = FFmpegService.preRenderedTrackOverlayFilter("0:v", 1, "v0", clips)
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=30:d=2",
+                    "-i", track.absolutePath,
+                    "-filter_complex", overlay,
+                    "-map", "[v0]", "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-t", "2",
+                    out.absolutePath
+                ),
+                label = "junction-fade"
+            )
+            val (rBefore, gBefore, bBefore) = sampleFrameRgb(out, 29)
+            assertTrue(
+                rBefore > 80 && rBefore > gBefore + 40 && rBefore > bBefore + 40,
+                "frame 29 should still be the outgoing clip, got rgb=$rBefore,$gBefore,$bBefore"
+            )
+            val (rJunction, gJunction, bJunction) = sampleFrameRgb(out, 30)
+            assertTrue(
+                bJunction > 80 && gJunction < 40 && rJunction < 40,
+                "frame 30 (clip start) should be the fade opening on the base, not one solid frame of the incoming clip, got rgb=$rJunction,$gJunction,$bJunction"
+            )
+            val (rMid, gMid, bMid) = sampleFrameRgb(out, 45)
+            assertTrue(
+                gMid > 30 && bMid > 30 && rMid < 40,
+                "frame 45 should be mid-fade (green over blue), got rgb=$rMid,$gMid,$bMid"
+            )
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun nonIntegerCutFadeUsesFrameIndexSoTheFirstPackedFrameIsNotOpaque() {
+        // Track 0 on oeQWEeUxQLbsxoNc abuts at 4.04s / 129.38s — not an integer second.
+        // Timestamp T at that cut can still belong to the outgoing clip while pixels have
+        // already switched; N on the packed grid must open the fade on that first frame.
+        val temp = java.nio.file.Files.createTempDirectory("ms_frac_fade_").toFile()
+        try {
+            val red = File(temp, "red.png")
+            val green = File(temp, "green.png")
+            for ((f, color) in listOf(red to "red", green to "green")) {
+                FFmpegService.runFfmpegChecked(
+                    listOf(
+                        MediaUtil.ffmpegBinary, "-y",
+                        "-f", "lavfi", "-i", "color=c=$color:s=64x64:d=0.1",
+                        "-frames:v", "1", f.absolutePath
+                    ),
+                    label = "frac-$color"
+                )
+            }
+            val clips = listOf(
+                Clip(id = "a", trackId = "t", assetId = "red", timelineStart = 0f, trimIn = 0f, trimOut = 4.04f, effectsConfig = "{}"),
+                Clip(
+                    id = "b", trackId = "t", assetId = "green", timelineStart = 4.04f, trimIn = 0f, trimOut = 1f,
+                    effectsConfig = """{"transition":{"type":"ALPHA","durationSeconds":1.0}}"""
+                )
+            )
+            val junction = FFmpegService.timelineFrameIndex(4.04f.toDouble())
+            assertEquals(
+                "gte(N,0)*lt(N,$junction)*255+gte(N,$junction)*lt(N,${junction + 30})*if(lt(N,${junction + 30}),255*(N-$junction)/30,255)",
+                FFmpegService.trackClipsAlphaExpression(clips)
+            )
+            val assets = mapOf(
+                "red" to Asset(id = "red", type = AssetType.IMAGE, ossUrl = "http://x/red.png", durationSeconds = 4.04, movieId = "m", tags = emptyList(), aiPrompt = null),
+                "green" to Asset(id = "green", type = AssetType.IMAGE, ossUrl = "http://x/green.png", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null)
+            )
+            val track = FFmpegService.renderTrackViaSegmentFiles(
+                tempDir = temp, trackId = "t", trackClips = clips,
+                assetsById = assets, downloadedAssets = mapOf("red" to red, "green" to green),
+                totalDuration = 5.04, canvasWidth = 64, canvasHeight = 64
+            )
+            val out = File(temp, "composited.mp4")
+            val overlay = FFmpegService.preRenderedTrackOverlayFilter("0:v", 1, "v0", clips)
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=30:d=5.04",
+                    "-i", track.absolutePath,
+                    "-filter_complex", overlay,
+                    "-map", "[v0]", "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-t", "5.04",
+                    out.absolutePath
+                ),
+                label = "frac-fade"
+            )
+            val (rBefore, gBefore, bBefore) = sampleFrameRgb(out, junction - 1)
+            assertTrue(
+                rBefore > 80 && rBefore > gBefore + 40 && rBefore > bBefore + 40,
+                "frame ${junction - 1} should still be the outgoing clip, got rgb=$rBefore,$gBefore,$bBefore"
+            )
+            val (rJunction, gJunction, bJunction) = sampleFrameRgb(out, junction)
+            assertTrue(
+                bJunction > 80 && gJunction < 40 && rJunction < 40,
+                "frame $junction (non-integer cut) should be the fade opening on the base, not a solid incoming frame, got rgb=$rJunction,$gJunction,$bJunction"
+            )
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
+    private fun sampleFrameRgb(video: File, frameIndex: Int): Triple<Int, Int, Int> {
+        val pb = ProcessBuilder(
+            MediaUtil.ffmpegBinary,
+            "-i", video.absolutePath,
+            "-vf", "select=eq(n\\,$frameIndex),scale=1:1:flags=fast_bilinear,format=rgb24",
+            "-frames:v", "1",
+            "-f", "rawvideo",
+            "pipe:1"
+        ).redirectError(ProcessBuilder.Redirect.PIPE)
+        val proc = pb.start()
+        val bytes = proc.inputStream.readNBytes(3)
+        proc.waitFor()
+        assertEquals(3, bytes.size, "expected 3 RGB bytes from ${video.name} at frame $frameIndex")
+        return Triple(bytes[0].toInt() and 0xFF, bytes[1].toInt() and 0xFF, bytes[2].toInt() and 0xFF)
+    }
+
     private fun sampleCenterRgb(video: File, timeSeconds: Double): Triple<Int, Int, Int> {
         val pb = ProcessBuilder(
             MediaUtil.ffmpegBinary,
@@ -923,6 +1080,33 @@ class FFmpegServiceErrorTest {
                 "$type must not hard-set alpha to opaque (that broke text transparency), got: $geq"
             )
         }
+    }
+
+    @Test
+    fun perClipAlphaFadeUsesStartFrameAndFrameCountNotInvalidNZero() {
+        // fade's `n` is nb_frames (min 1), not start_frame. `fade=t=in:n=0:nb=…` made FFmpeg
+        // exit 222: "Value 0.000000 for parameter 'n' out of range [1 - 2.14748e+09]".
+        val fadeFrames = FFmpegService.timelineFrameIndex(1.0).coerceAtLeast(1)
+        val expected = "fade=t=in:s=0:n=$fadeFrames:alpha=1"
+        for (type in listOf(TransitionType.ALPHA, TransitionType.NOISE, TransitionType.PIXELATE, TransitionType.VORONOI)) {
+            val filters = mutableListOf<String>()
+            FFmpegService.buildTransitionFilters(
+                filters, TransitionSpec(type = type, durationSeconds = 1.0),
+                transitionDur = 1.0, start = 0.0, canvasWidth = 64, canvasHeight = 64
+            )
+            assertTrue(filters.contains(expected), "$type must use $expected, got: $filters")
+            assertTrue(filters.none { it.contains("n=0") }, "$type must not pass n=0 to fade, got: $filters")
+        }
+        FFmpegService.runFfmpegChecked(
+            listOf(
+                MediaUtil.ffmpegBinary, "-y",
+                "-f", "lavfi", "-i", "color=c=green:s=16x16:r=30:d=0.2",
+                "-vf", "format=yuva420p,$expected",
+                "-frames:v", "1",
+                "-f", "null", "-"
+            ),
+            label = "fade-s0-n"
+        )
     }
 
     @Test

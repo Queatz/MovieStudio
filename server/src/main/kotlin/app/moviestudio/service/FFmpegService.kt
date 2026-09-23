@@ -774,22 +774,25 @@ object FFmpegService {
             return "[$currentVideoTag][$overlayInputIndex:v]overlay=eof_action=pass:format=auto$enableArg[$outputTag]"
         }
         val alphaTag = "${outputTag}_a"
-        return "[$overlayInputIndex:v]format=yuva420p," +
+        // Lock overlay PTS to the packed frame grid before geq. Timestamp-based T can sit one
+        // frame behind the pixels at a concat cut, so the previous clip's full opacity would
+        // paint the incoming clip solid for one frame before the fade.
+        return "[$overlayInputIndex:v]setpts=N/$RENDER_FPS/TB,format=yuva420p," +
             "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='$alpha'[$alphaTag];" +
             "[$currentVideoTag][$alphaTag]overlay=eof_action=pass:format=auto$enableArg[$outputTag]"
     }
 
     /**
      * FFmpeg `enable` expression that is 1 during any of [trackClips]' display windows and 0 in
-     * the gaps between them. `between()` results are summed so overlapping windows still enable.
+     * the gaps between them. Windows are half-open frame ranges on the [RENDER_FPS] grid so
+     * abutting clips don't both enable on the shared junction frame.
      */
     internal fun trackClipsEnableExpression(trackClips: List<Clip>): String {
         if (trackClips.isEmpty()) return ""
         val sorted = trackClips.sortedBy { it.timelineStart }
         return sorted.joinToString("+") { clip ->
-            val start = quantizeTimelineSeconds(clip.timelineStart.toDouble())
-            val end = quantizeTimelineSeconds(bridgedClipEnd(clip, sorted).toDouble())
-            "between(t,${start.ff()},${end.ff()})"
+            val (start, end) = clipFrameWindow(clip, sorted)
+            "gte(n,$start)*lt(n,$end)"
         }
     }
 
@@ -797,24 +800,34 @@ object FFmpegService {
      * FFmpeg `geq` alpha expression for a pre-rendered track overlay. 0 in gaps, a 0→255 ramp
      * across each clip's fade-in window, then 255 for the rest of the clip. Empty when no clip
      * has a fade-style transition, so the opaque overlay path can skip the yuva conversion.
+     *
+     * Uses geq `N` (frame index), not `T`. Segment files are packed by frame count; `T` at a
+     * concat cut can still belong to the outgoing clip while the pixels have already switched,
+     * which shows one solid frame of the incoming clip before the fade.
      */
     internal fun trackClipsAlphaExpression(trackClips: List<Clip>): String {
         if (trackClips.none { clipTransitionFadeSeconds(it) > 0.0 }) return ""
         val sorted = trackClips.sortedBy { it.timelineStart }
         return sorted.joinToString("+") { clip ->
-            // Same frame grid as the segment files, so the ramp opens on the frame the clip
-            // pixels actually start — not several frames after they have already appeared.
-            val start = quantizeTimelineSeconds(clip.timelineStart.toDouble())
-            val end = quantizeTimelineSeconds(bridgedClipEnd(clip, sorted).toDouble())
+            val (start, end) = clipFrameWindow(clip, sorted)
             val fade = clipTransitionFadeSeconds(clip)
-            val window = "between(T,${start.ff()},${end.ff()})"
+            val window = "gte(N,$start)*lt(N,$end)"
             if (fade <= 0.0) {
                 "$window*255"
             } else {
-                val fadeEnd = start + fade
-                "$window*if(lt(T,${fadeEnd.ff()}),255*(T-${start.ff()})/${fade.ff()},255)"
+                val fadeFrames = timelineFrameIndex(fade).coerceAtLeast(1)
+                // N==start → 0, matching progressAt(0). Half-open window so the outgoing clip
+                // does not keep opacity 255 on this same frame.
+                "$window*if(lt(N,${start + fadeFrames}),255*(N-$start)/$fadeFrames,255)"
             }
         }
+    }
+
+    /** Half-open [start, end) frame window for [clip] on the packed [RENDER_FPS] grid. */
+    private fun clipFrameWindow(clip: Clip, sorted: List<Clip>): Pair<Int, Int> {
+        val start = timelineFrameIndex(clip.timelineStart.toDouble())
+        val end = timelineFrameIndex(bridgedClipEnd(clip, sorted).toDouble()).coerceAtLeast(start + 1)
+        return start to end
     }
 
     /**
@@ -1523,6 +1536,7 @@ object FFmpegService {
     ): String {
         var overlayExtra = ""
         if (transition == null || transition.type == TransitionType.NONE) return overlayExtra
+        val fadeFrames = timelineFrameIndex(transitionDur).coerceAtLeast(1)
         when (transition.type) {
             TransitionType.SLIDE -> {
                 // Slide the clip in from the chosen edge across the transition window.
@@ -1575,12 +1589,15 @@ object FFmpegService {
                         "enable='between(t,0,$transitionDur)'"
                 )
                 videoFilters.add("format=yuva420p")
-                videoFilters.add("fade=t=in:st=0:d=$transitionDur:alpha=1")
+                // Frame-count fade, not st=0: the first packed frame can have PTS slightly
+                // below 0 after fps/setpts, and st=0 then leaves it fully opaque for one frame.
+                // FFmpeg aliases: s=start_frame, n=nb_frames (n=0 is out of range).
+                videoFilters.add("fade=t=in:s=0:n=$fadeFrames:alpha=1")
             }
             else -> {
                 // ALPHA / NOISE / PIXELATE all cross-fade in.
                 videoFilters.add("format=yuva420p")
-                videoFilters.add("fade=t=in:st=0:d=$transitionDur:alpha=1")
+                videoFilters.add("fade=t=in:s=0:n=$fadeFrames:alpha=1")
             }
         }
         // Grain / mosaic layered on top of the fade for the textured transitions.
