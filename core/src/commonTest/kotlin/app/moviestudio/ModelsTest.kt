@@ -830,6 +830,53 @@ class ModelsTest {
     }
 
     @Test
+    fun transitionEndIsWindowFromClipStartClampedLikeProgressAt() {
+        val plain = Clip("plain", "t", "a", timelineStart = 4f, trimIn = 0f, trimOut = 5f, effectsConfig = "{}")
+        assertNull(plain.transitionWindowSeconds())
+        assertNull(plain.transitionEnd())
+
+        val none = Clip(
+            "none", "t", "a", timelineStart = 4f, trimIn = 0f, trimOut = 5f,
+            effectsConfig = encodeEffectsConfig(EffectsConfig(transition = TransitionSpec(TransitionType.NONE, 1.0)))
+        )
+        assertNull(none.transitionEnd())
+
+        val zeroLength = Clip(
+            "zero", "t", "a", timelineStart = 4f, trimIn = 2f, trimOut = 2f,
+            effectsConfig = encodeEffectsConfig(EffectsConfig(transition = TransitionSpec(TransitionType.ALPHA, 1.0)))
+        )
+        assertNull(zeroLength.transitionEnd())
+
+        // 1.5s window on a clip that starts at 4s settles at 5.5s — the same instant progressAt hits 1.
+        val fade = Clip(
+            "fade", "t", "a", timelineStart = 4f, trimIn = 1f, trimOut = 6f,
+            effectsConfig = encodeEffectsConfig(EffectsConfig(transition = TransitionSpec(TransitionType.ALPHA, 1.5)))
+        )
+        assertEquals(1.5f, fade.transitionWindowSeconds()!!, 0.0001f)
+        assertEquals(5.5f, fade.transitionEnd()!!, 0.0001f)
+        val fadeDuration = (fade.trimOut - fade.trimIn).toDouble()
+        val fadeSpec = parseEffectsConfig(fade.effectsConfig).transition
+        assertEquals(1f, fadeSpec.progressAt((fade.transitionEnd()!! - fade.timelineStart).toDouble(), fadeDuration))
+        assertTrue(fadeSpec.progressAt(1.49, fadeDuration) < 1f)
+
+        // A window longer than the clip is clamped to the clip length, so the end is the clip end.
+        val tooLong = Clip(
+            "long", "t", "a", timelineStart = 2f, trimIn = 0f, trimOut = 1f,
+            effectsConfig = encodeEffectsConfig(EffectsConfig(transition = TransitionSpec(TransitionType.SLIDE, 8.0)))
+        )
+        assertEquals(1f, tooLong.transitionWindowSeconds()!!, 0.0001f)
+        assertEquals(3f, tooLong.transitionEnd()!!, 0.0001f)
+
+        // A near-zero window is raised to the shared minimum, matching progressAt.
+        val tiny = Clip(
+            "tiny", "t", "a", timelineStart = 10f, trimIn = 0f, trimOut = 4f,
+            effectsConfig = encodeEffectsConfig(EffectsConfig(transition = TransitionSpec(TransitionType.CIRCLE, 0.001)))
+        )
+        assertEquals(TRANSITION_MIN_SECONDS.toFloat(), tiny.transitionWindowSeconds()!!, 0.0001f)
+        assertEquals(10f + TRANSITION_MIN_SECONDS.toFloat(), tiny.transitionEnd()!!, 0.0001f)
+    }
+
+    @Test
     fun voiceCloneTranslationPromptAndUnwrap() {
         val french = VOICE_ENROLLMENT_LANGUAGES.first { it.code == "fr" }
         val prompt = buildVoiceCloneTranslationPrompt("Hello valley", french)

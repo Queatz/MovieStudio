@@ -520,6 +520,91 @@ class FFmpegServiceErrorTest {
         }
     }
 
+    @Test
+    fun shortSourceDoesNotShiftTheNextClipsFadeLate() {
+        // Generated videos often have fewer frames than the timeline duration (stream truncated
+        // below the container duration). Concat used to pack the next clip early, so its pixels
+        // showed at full opacity for several frames and only then did the alpha fade-from-black
+        // start. The slot must be padded so the fade opens with the clip.
+        val temp = java.nio.file.Files.createTempDirectory("ms_short_src_fade_").toFile()
+        try {
+            val red = File(temp, "red.mp4")
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=red:s=64x64:r=30:d=2",
+                    "-frames:v", "60",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-an",
+                    red.absolutePath
+                ),
+                label = "short-red"
+            )
+            val green = File(temp, "green.png")
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=green:s=64x64:d=0.1",
+                    "-frames:v", "1", green.absolutePath
+                ),
+                label = "green-png"
+            )
+            // 2.2s slot, but the file only has 2.0s (60 frames) — a 6-frame shortfall, the same
+            // size as the accumulated drift on track 0 of oeQWEeUxQLbsxoNc.
+            val clips = listOf(
+                Clip(id = "a", trackId = "t", assetId = "red", timelineStart = 0f, trimIn = 0f, trimOut = 2.2f, effectsConfig = "{}"),
+                Clip(
+                    id = "b", trackId = "t", assetId = "green", timelineStart = 2.2f, trimIn = 0f, trimOut = 1f,
+                    effectsConfig = """{"transition":{"type":"ALPHA","durationSeconds":1.0}}"""
+                )
+            )
+            val assets = mapOf(
+                "red" to Asset(id = "red", type = AssetType.VIDEO, ossUrl = "http://x/red.mp4", durationSeconds = 2.0, movieId = "m", tags = emptyList(), aiPrompt = null),
+                "green" to Asset(id = "green", type = AssetType.IMAGE, ossUrl = "http://x/green.png", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null)
+            )
+            val track = FFmpegService.renderTrackViaSegmentFiles(
+                tempDir = temp, trackId = "t", trackClips = clips,
+                assetsById = assets, downloadedAssets = mapOf("red" to red, "green" to green),
+                totalDuration = 3.2, canvasWidth = 64, canvasHeight = 64
+            )
+            val out = File(temp, "composited.mp4")
+            val overlay = FFmpegService.preRenderedTrackOverlayFilter("0:v", 1, "v0", clips)
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=black:s=64x64:r=30:d=3.2",
+                    "-i", track.absolutePath,
+                    "-filter_complex", overlay,
+                    "-map", "[v0]", "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-t", "3.2",
+                    out.absolutePath
+                ),
+                label = "short-source-fade"
+            )
+            // 6 frames before the clip (t=2.0) and 3 frames before it (t=2.1) must still be the
+            // previous clip, not an already-opaque incoming clip waiting for its fade.
+            for (t in listOf(2.0, 2.1)) {
+                val (r, g, b) = sampleCenterRgb(out, t)
+                assertTrue(
+                    r > 80 && r > g + 40 && r > b + 40,
+                    "t=$t should still be the previous clip, not the next clip arriving early, got rgb=$r,$g,$b"
+                )
+            }
+            val (rStart, gStart, bStart) = sampleCenterRgb(out, 2.23)
+            assertTrue(
+                gStart < 40,
+                "t=2.23 fade should just be starting (near black), not already opaque green, got rgb=$rStart,$gStart,$bStart"
+            )
+            val (rLate, gLate, bLate) = sampleCenterRgb(out, 3.05)
+            assertTrue(
+                gLate > 80 && gLate > rLate + 30 && gLate > bLate + 30,
+                "t=3.05 should be the faded-in clip, got rgb=$rLate,$gLate,$bLate"
+            )
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
     private fun sampleCenterRgb(video: File, timeSeconds: Double): Triple<Int, Int, Int> {
         val pb = ProcessBuilder(
             MediaUtil.ffmpegBinary,

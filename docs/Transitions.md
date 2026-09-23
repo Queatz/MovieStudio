@@ -72,7 +72,10 @@ tracks** — the tracks that carry images, video and description-only cards:
   (From left / right / top / bottom) — this is the per-transition parameter.
 
 On the timeline, `TimelinePanel` draws a small **`⇄`** badge in front of the clip's label whenever
-the clip has a non-`NONE` transition, so authored transitions are visible at a glance.
+the clip has a non-`NONE` transition, so authored transitions are visible at a glance. The
+transition window itself is highlighted on that video-track item (clipped to the item's rounded
+corners), and its end is a snap point: other clips line up with where the transition settles, and
+a clip being dragged also snaps its own settle point along with its start and end.
 
 ---
 

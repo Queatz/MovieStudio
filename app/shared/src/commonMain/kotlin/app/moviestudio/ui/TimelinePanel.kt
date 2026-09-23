@@ -42,6 +42,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
@@ -73,6 +74,9 @@ import app.moviestudio.movedClipGroup
 import app.moviestudio.parseEffectsConfig
 import app.moviestudio.pickResizeEdge
 import app.moviestudio.rippleShiftedClips
+import app.moviestudio.timelineEnd
+import app.moviestudio.transitionEnd
+import app.moviestudio.transitionWindowSeconds
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -84,8 +88,12 @@ private const val TRACK_GAP = 6f
 private const val EDGE_GRAB = 10f
 
 // Snapping: while dragging/resizing a clip, if its start or end comes within this many seconds of
-// another clip's start or end, it snaps onto that edge.
+// another clip's start or end — or the end of a video clip's transition-in window — it snaps onto
+// that edge. A dragged video clip also snaps its own settle point, not only its start and end.
 private const val SNAP_THRESHOLD_SECONDS = 1f
+
+// Transition-in window on a video clip: a wash over that span of the track item.
+private val TransitionWash = Color(0xFFB9A6FF)
 
 // Note markers: blue pills with the note's text, sitting in the lower band of the ruler.
 private const val NOTE_PILL_TOP = 13f
@@ -111,6 +119,9 @@ private sealed interface DragSession {
         val sourceTrackType: TrackType,
         val duration: Float,
         val snapEdges: FloatArray,
+        // Video anchor only: length of its transition-in window, so the settle point snaps as well
+        // as the clip's start and end. Null when the anchor has no transition.
+        val transitionWindow: Float?,
         val anchorOriginalStart: Float,
         val anchorTrackIndex: Int,
         // Every selected clip captured at drag start (includes the anchor), so the whole group can
@@ -152,18 +163,23 @@ private sealed interface DragSession {
 
 /**
  * All snap-candidate times on the timeline: every other clip's start and end (excluding the clips
- * being dragged). Collected once when a drag starts and reused for every pointer move, so we never
- * re-walk the whole timeline mid-gesture. The returned array is sorted so [nearestSnap] can binary
- * search it.
+ * being dragged), plus the end of each other video clip's transition-in window. Collected once
+ * when a drag starts and reused for every pointer move, so we never re-walk the whole timeline
+ * mid-gesture. The returned array is sorted so [nearestSnap] can binary search it.
  */
-private fun collectSnapEdges(timeline: MovieTimeline?, excludeClipIds: Set<String>): FloatArray {
+internal fun collectSnapEdges(timeline: MovieTimeline?, excludeClipIds: Set<String>): FloatArray {
     if (timeline == null) return FloatArray(0)
     val edges = ArrayList<Float>()
     timeline.tracks.forEach { trackWithClips ->
+        val videoTrack = trackWithClips.track.type == TrackType.VIDEO
         trackWithClips.clips.forEach { clip ->
             if (clip.id !in excludeClipIds) {
                 edges.add(clip.timelineStart)
-                edges.add(clip.timelineStart + (clip.trimOut - clip.trimIn))
+                edges.add(clip.timelineEnd())
+                // Other tracks line up with where a video transition settles, not only with the
+                // clip's own start and end. Excluded clips are omitted: their settle point moves
+                // with the drag and is snapped separately in [snapMovedStart].
+                if (videoTrack) clip.transitionEnd()?.let { edges.add(it) }
             }
         }
     }
@@ -197,19 +213,35 @@ private fun nearestSnap(edges: FloatArray, value: Float): Float? {
 }
 
 /**
- * Snapped start for a clip being moved: snap whichever of its start or end edge is nearest to
- * another clip's edge (within [SNAP_THRESHOLD_SECONDS]); otherwise keep [start] unchanged.
+ * Snapped start for a clip being moved: snap whichever of its start, end, or transition settle
+ * point ([transitionWindow] seconds after the start, when the clip has one) is nearest to another
+ * clip's edge (within [SNAP_THRESHOLD_SECONDS]); otherwise keep [start] unchanged. Equal distances
+ * prefer the start, then the settle point, then the end — so a clip with no window snaps exactly
+ * as before.
  */
-private fun snapMovedStart(edges: FloatArray, start: Float, duration: Float): Float {
-    val startSnap = nearestSnap(edges, start)
-    val endSnap = nearestSnap(edges, start + duration)
-    val startDist = if (startSnap != null) abs(startSnap - start) else Float.MAX_VALUE
-    val endDist = if (endSnap != null) abs(endSnap - (start + duration)) else Float.MAX_VALUE
-    return when {
-        startSnap != null && startDist <= endDist -> max(0f, startSnap)
-        endSnap != null -> max(0f, endSnap - duration)
-        else -> start
+internal fun snapMovedStart(
+    edges: FloatArray,
+    start: Float,
+    duration: Float,
+    transitionWindow: Float? = null,
+): Float {
+    var bestStart = start
+    var bestDist = Float.MAX_VALUE
+    var bestPriority = Int.MAX_VALUE
+    fun consider(edgeTime: Float, snappedStart: Float, priority: Int) {
+        val snap = nearestSnap(edges, edgeTime) ?: return
+        val dist = abs(snap - edgeTime)
+        if (dist < bestDist || (dist == bestDist && priority < bestPriority)) {
+            bestDist = dist
+            bestPriority = priority
+            bestStart = max(0f, snappedStart + (snap - edgeTime))
+        }
     }
+    consider(start, start, priority = 0)
+    val window = transitionWindow?.takeIf { it > 0f }
+    if (window != null) consider(start + window, start, priority = 1)
+    consider(start + duration, start, priority = 2)
+    return bestStart
 }
 
 /** The track row index at the given canvas [y] position (may be out of the tracks' range). */
@@ -840,6 +872,11 @@ private fun TimelineCanvas(
                                             sourceTrackType = trackType ?: TrackType.VIDEO,
                                             duration = clip.trimOut - clip.trimIn,
                                             snapEdges = collectSnapEdges(viewModel.timeline, selectedIds),
+                                            transitionWindow = if (trackType == TrackType.VIDEO) {
+                                                clip.transitionWindowSeconds()
+                                            } else {
+                                                null
+                                            },
                                             anchorOriginalStart = clip.timelineStart,
                                             anchorTrackIndex = trackIndex,
                                             movers = movers,
@@ -862,11 +899,17 @@ private fun TimelineCanvas(
                                 session.newStart = max(0f, session.newStart + dt)
                                 // Holding Ctrl snaps the anchor's start to the nearest whole second;
                                 // holding Alt disables snapping entirely; otherwise snap whichever
-                                // edge (start/end) is nearest a clip edge.
+                                // of the anchor's start, transition settle point, or end is nearest
+                                // a clip edge.
                                 val anchorSnapped = when {
                                     KeyModifierState.ctrlDown -> max(0f, session.newStart.roundToInt().toFloat())
                                     KeyModifierState.altDown -> session.newStart
-                                    else -> snapMovedStart(session.snapEdges, session.newStart, session.duration)
+                                    else -> snapMovedStart(
+                                        session.snapEdges,
+                                        session.newStart,
+                                        session.duration,
+                                        session.transitionWindow
+                                    )
                                 }
                                 // The whole selection shifts by the anchor's (snapped) delta and by
                                 // however many rows the pointer moved; dragging vertically re-homes
@@ -1146,18 +1189,54 @@ private fun drawTracks(
             val descriptionOnly = asset?.isDescriptionOnly ?: false
             val fill = if (descriptionOnly) baseColor.copy(alpha = 0.45f) else baseColor
             val corner = CornerRadius(7f, 7f)
+            val itemTop = top + 4f
+            val itemWidth = max(widthPx, 3f)
+            val itemHeight = TRACK_HEIGHT - 8f
 
             drawRoundRect(
                 fill,
-                topLeft = Offset(startX, top + 4f),
-                size = Size(max(widthPx, 3f), TRACK_HEIGHT - 8f),
+                topLeft = Offset(startX, itemTop),
+                size = Size(itemWidth, itemHeight),
                 cornerRadius = corner
             )
+            // Video-track items only: the inspector authors transitions there. The wash covers the
+            // window from the clip start until the transition settles, clipped to the item so it
+            // follows the same rounded corners instead of a square laid over the lane.
+            val transitionWindow = if (trackWithClips.track.type == TrackType.VIDEO) {
+                clip.transitionWindowSeconds()
+            } else {
+                null
+            }
+            if (transitionWindow != null) {
+                val highlightWidth = min(transitionWindow * zoom, itemWidth)
+                if (highlightWidth > 0.5f) {
+                    val itemPath = androidx.compose.ui.graphics.Path().apply {
+                        addRoundRect(
+                            androidx.compose.ui.geometry.RoundRect(
+                                rect = androidx.compose.ui.geometry.Rect(
+                                    startX,
+                                    itemTop,
+                                    startX + itemWidth,
+                                    itemTop + itemHeight
+                                ),
+                                cornerRadius = corner
+                            )
+                        )
+                    }
+                    clipPath(itemPath) {
+                        drawRect(
+                            TransitionWash.copy(alpha = 0.5f),
+                            topLeft = Offset(startX, itemTop),
+                            size = Size(highlightWidth, itemHeight)
+                        )
+                    }
+                }
+            }
             if (descriptionOnly) {
                 drawRoundRect(
                     baseColor,
-                    topLeft = Offset(startX, top + 4f),
-                    size = Size(max(widthPx, 3f), TRACK_HEIGHT - 8f),
+                    topLeft = Offset(startX, itemTop),
+                    size = Size(itemWidth, itemHeight),
                     cornerRadius = corner,
                     style = Stroke(width = 1.5f)
                 )

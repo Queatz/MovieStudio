@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory
 import java.io.File
 import java.nio.file.Files
 import java.util.UUID
+import kotlin.math.roundToInt
 
 /**
  * Final movie renderer. Compiles the timeline into a single H.264/AAC MP4 with FFmpeg:
@@ -786,8 +787,8 @@ object FFmpegService {
         if (trackClips.isEmpty()) return ""
         val sorted = trackClips.sortedBy { it.timelineStart }
         return sorted.joinToString("+") { clip ->
-            val start = clip.timelineStart.toDouble()
-            val end = bridgedClipEnd(clip, sorted).toDouble()
+            val start = quantizeTimelineSeconds(clip.timelineStart.toDouble())
+            val end = quantizeTimelineSeconds(bridgedClipEnd(clip, sorted).toDouble())
             "between(t,${start.ff()},${end.ff()})"
         }
     }
@@ -801,8 +802,10 @@ object FFmpegService {
         if (trackClips.none { clipTransitionFadeSeconds(it) > 0.0 }) return ""
         val sorted = trackClips.sortedBy { it.timelineStart }
         return sorted.joinToString("+") { clip ->
-            val start = clip.timelineStart.toDouble()
-            val end = bridgedClipEnd(clip, sorted).toDouble()
+            // Same frame grid as the segment files, so the ramp opens on the frame the clip
+            // pixels actually start — not several frames after they have already appeared.
+            val start = quantizeTimelineSeconds(clip.timelineStart.toDouble())
+            val end = quantizeTimelineSeconds(bridgedClipEnd(clip, sorted).toDouble())
             val fade = clipTransitionFadeSeconds(clip)
             val window = "between(T,${start.ff()},${end.ff()})"
             if (fade <= 0.0) {
@@ -826,10 +829,28 @@ object FFmpegService {
         return transition.durationSeconds.coerceIn(TRANSITION_MIN_SECONDS, clipDur)
     }
 
+    /** Export frame rate. Segment files, the canvas, and fade windows all share this grid. */
+    internal const val RENDER_FPS = 30
+
+    /**
+     * Timeline time snapped onto the [RENDER_FPS] grid. Segment files are built from these indices
+     * so a clip's first pixel and its fade window land on the same frame.
+     */
+    internal fun timelineFrameIndex(seconds: Double): Int =
+        (seconds * RENDER_FPS).roundToInt().coerceAtLeast(0)
+
+    internal fun quantizeTimelineSeconds(seconds: Double): Double =
+        timelineFrameIndex(seconds) / RENDER_FPS.toDouble()
+
     /**
      * Pre-renders a sequential track to a single H.264 file: one short FFmpeg invocation per clip
      * (and per gap), then a concat demuxer pass. Peak RSS stays near one still/decode instead of
      * holding every image input open at once.
+     *
+     * Each piece is an exact frame count on the [RENDER_FPS] grid, and a short source is cloned
+     * out to fill its slot. Without that, concat packs later clips early (generated videos often
+     * have fewer frames than the timeline duration) and a fade window — keyed to timeline time —
+     * opens several frames after the new clip is already on screen.
      */
     internal fun renderTrackViaSegmentFiles(
         tempDir: File,
@@ -843,16 +864,16 @@ object FFmpegService {
         onPiece: () -> Unit = {}
     ): File {
         val pieces = mutableListOf<File>()
-        var cursor = 0.0
+        var cursorFrame = 0
         val sorted = trackClips.sortedBy { it.timelineStart }
         var gapIdx = 0
 
-        fun addBlackGap(duration: Double) {
-            if (duration <= 0.001) return
+        fun addBlackGapFrames(frames: Int) {
+            if (frames <= 0) return
             val gapFile = File(tempDir, "gap_${trackId}_${gapIdx++}.mp4")
             renderSolidColorSegmentFile(
                 outFile = gapFile,
-                duration = duration,
+                frameCount = frames,
                 canvasWidth = canvasWidth,
                 canvasHeight = canvasHeight,
                 color = "black"
@@ -867,9 +888,13 @@ object FFmpegService {
             val duration = (clip.trimOut - clip.trimIn).toDouble()
             if (duration <= 0) continue
             val displayEnd = bridgedClipEnd(clip, sorted).toDouble()
-            val displayDur = (displayEnd - start).coerceAtLeast(duration)
-
-            if (start > cursor + 0.001) addBlackGap(start - cursor)
+            val startFrame = timelineFrameIndex(start)
+            val endFrame = timelineFrameIndex(displayEnd).coerceAtLeast(startFrame + 1)
+            // A previous slot that rounded onto this one wins; don't emit an overlapping piece.
+            if (cursorFrame >= endFrame) continue
+            val slotStart = maxOf(startFrame, cursorFrame)
+            if (slotStart > cursorFrame) addBlackGapFrames(slotStart - cursorFrame)
+            val clipFrames = endFrame - slotStart
 
             val segFile = File(tempDir, "seg_${clip.id}.mp4")
             when {
@@ -879,7 +904,7 @@ object FFmpegService {
                         outFile = segFile,
                         asset = asset,
                         effects = parseEffectsConfig(clip.effectsConfig),
-                        duration = displayDur,
+                        frameCount = clipFrames,
                         canvasWidth = canvasWidth,
                         canvasHeight = canvasHeight
                     )
@@ -894,7 +919,7 @@ object FFmpegService {
                         srcFile = src,
                         effects = parseEffectsConfig(clip.effectsConfig),
                         duration = duration,
-                        displayDur = displayDur,
+                        frameCount = clipFrames,
                         canvasWidth = canvasWidth,
                         canvasHeight = canvasHeight
                     )
@@ -902,13 +927,20 @@ object FFmpegService {
             }
             pieces += segFile
             onPiece()
-            cursor = maxOf(cursor, displayEnd)
+            cursorFrame = slotStart + clipFrames
         }
 
-        if (cursor < totalDuration - 0.001) addBlackGap(totalDuration - cursor)
+        val totalFrames = timelineFrameIndex(totalDuration)
+        if (cursorFrame < totalFrames) addBlackGapFrames(totalFrames - cursorFrame)
         if (pieces.isEmpty()) {
             val blank = File(tempDir, "track_${trackId}_blank.mp4")
-            renderSolidColorSegmentFile(blank, totalDuration, canvasWidth, canvasHeight, "black")
+            renderSolidColorSegmentFile(
+                blank,
+                timelineFrameIndex(totalDuration).coerceAtLeast(1),
+                canvasWidth,
+                canvasHeight,
+                "black"
+            )
             return blank
         }
 
@@ -920,18 +952,22 @@ object FFmpegService {
     /** Solid-color H.264 segment used for timeline gaps in pre-rendered tracks. */
     internal fun renderSolidColorSegmentFile(
         outFile: File,
-        duration: Double,
+        frameCount: Int,
         canvasWidth: Int,
         canvasHeight: Int,
         color: String
     ) {
-        val dur = duration.coerceAtLeast(0.05)
+        val frames = frameCount.coerceAtLeast(1)
+        // Generate a hair extra and cut with -frames:v so the piece is exactly [frames] long.
+        // Truncating (duration * fps).toInt() used to drop a fraction of a frame per gap, and
+        // those fractions accumulated into a multi-frame shift by the end of a long track.
+        val dur = frames / RENDER_FPS.toDouble() + 0.1
         runFfmpegChecked(
             listOf(
                 MediaUtil.ffmpegBinary, "-y",
                 "-f", "lavfi",
-                "-i", "color=c=$color:s=${canvasWidth}x${canvasHeight}:r=30:d=${dur.ff()}",
-                "-frames:v", ((dur * 30.0).toInt().coerceAtLeast(1)).toString(),
+                "-i", "color=c=$color:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS:d=${dur.ff()}",
+                "-frames:v", frames.toString(),
                 "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                 "-an",
                 outFile.absolutePath
@@ -952,7 +988,7 @@ object FFmpegService {
         srcFile: File,
         effects: EffectsConfig,
         duration: Double,
-        displayDur: Double,
+        frameCount: Int,
         canvasWidth: Int,
         canvasHeight: Int
     ) {
@@ -972,13 +1008,13 @@ object FFmpegService {
         val offsetFx = (effects.offsetX / 100.0).coerceIn(0.0, 1.0)
         val offsetFy = (effects.offsetY / 100.0).coerceIn(0.0, 1.0)
         vf.add("crop=$canvasWidth:$canvasHeight:(iw-ow)*${offsetFx.ff()}:(ih-oh)*${offsetFy.ff()}")
-        vf.add("fps=30")
+        vf.add("fps=$RENDER_FPS")
         appendColorGrading(vf, rawEffects)
-
-        val pad = displayDur - duration
-        if (pad > 0.001) {
-            vf.add("tpad=stop_mode=clone:stop_duration=${pad.ff()}")
-        }
+        // Clone the last decoded frame out to the slot length. Source files are often shorter
+        // than the timeline duration (stream frame count truncated below the container duration);
+        // without this, concat shifts every following clip early and its fade starts late.
+        val frames = frameCount.coerceAtLeast(1)
+        vf.add("tpad=stop_mode=clone:stop_duration=${(frames / RENDER_FPS.toDouble() + 0.5).ff()}")
         vf.add("setsar=1")
         vf.add("format=yuv420p")
 
@@ -996,7 +1032,7 @@ object FFmpegService {
         args.add("-c:v"); args.add("libx264")
         args.add("-preset"); args.add("ultrafast")
         args.add("-pix_fmt"); args.add("yuv420p")
-        args.add("-t"); args.add(displayDur.ff())
+        args.add("-frames:v"); args.add(frames.toString())
         args.add(outFile.absolutePath)
         runFfmpegChecked(args, label = "clip-segment ${clip.id}")
     }
@@ -1006,7 +1042,7 @@ object FFmpegService {
         outFile: File,
         asset: Asset,
         effects: EffectsConfig,
-        duration: Double,
+        frameCount: Int,
         canvasWidth: Int,
         canvasHeight: Int
     ) {
@@ -1021,14 +1057,16 @@ object FFmpegService {
         // effects reserved for future text-element styling in the pre-render path.
         @Suppress("UNUSED_PARAMETER")
         val _effects = effects
+        val frames = frameCount.coerceAtLeast(1)
+        val dur = frames / RENDER_FPS.toDouble() + 0.1
         runFfmpegChecked(
             listOf(
                 MediaUtil.ffmpegBinary, "-y",
                 "-f", "lavfi",
-                "-i", "color=c=black:s=${canvasWidth}x${canvasHeight}:r=30:d=${duration.ff()}",
+                "-i", "color=c=black:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS:d=${dur.ff()}",
                 "-vf", draws.joinToString(","),
                 "-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-                "-t", duration.ff(),
+                "-frames:v", frames.toString(),
                 outFile.absolutePath
             ),
             label = "placeholder-segment ${asset.id}"

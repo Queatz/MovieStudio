@@ -1775,6 +1775,29 @@ fun MovieTimeline.calculatedDuration(): Double {
 fun Clip.timelineEnd(): Float = timelineStart + (trimOut - trimIn)
 
 /**
+ * Length of this clip's transition-in window, or null when no transition is enabled.
+ *
+ * Same clamp as [progressAt]: [TransitionSpec.durationSeconds] measured from the clip start,
+ * held between [TRANSITION_MIN_SECONDS] and the clip length. [TransitionType.NONE] and a
+ * zero-length clip count as no transition, so the timeline doesn't invent a highlight or snap point.
+ */
+fun Clip.transitionWindowSeconds(): Float? {
+    val transition = parseEffectsConfig(effectsConfig).transition ?: return null
+    if (transition.type == TransitionType.NONE) return null
+    val clipDuration = (trimOut - trimIn).toDouble()
+    if (clipDuration <= 0.0) return null
+    return transition.durationSeconds
+        .coerceIn(TRANSITION_MIN_SECONDS, clipDuration.coerceAtLeast(TRANSITION_MIN_SECONDS))
+        .toFloat()
+}
+
+/**
+ * Timeline time where this clip's transition-in settles (clip start + window), or null when none
+ * is enabled. Other tracks snap to this so they can line up with the end of the window.
+ */
+fun Clip.transitionEnd(): Float? = transitionWindowSeconds()?.let { timelineStart + it }
+
+/**
  * The largest gap (seconds) between two consecutive visual clips on the same track that the
  * renderer and the live preview will "bridge" — holding the earlier clip's LAST frame until the
  * next clip begins — instead of letting the black stage show through.

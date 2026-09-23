@@ -1,10 +1,14 @@
 package app.moviestudio
 
 import app.moviestudio.ui.buildPrintableDocumentHtml
+import app.moviestudio.ui.collectSnapEdges
 import app.moviestudio.ui.markdownToPrintHtml
+import app.moviestudio.ui.snapMovedStart
 import kotlinx.serialization.json.Json
+import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SharedCommonTest {
@@ -398,6 +402,42 @@ class SharedCommonTest {
     }
 
     @Test
+    fun otherTracksSnapToVideoTransitionEnd() {
+        val video = preloadTrack("v", TrackType.VIDEO, 0)
+        val music = preloadTrack("m", TrackType.MUSIC, 1)
+        val transition = encodeEffectsConfig(
+            EffectsConfig(transition = TransitionSpec(TransitionType.ALPHA, 1.25))
+        )
+        val videoClip = Clip("vid", "v", "a", timelineStart = 4f, trimIn = 0f, trimOut = 5f, effectsConfig = transition)
+        // A transition on a non-video track must not become a snap point.
+        val musicClip = Clip("mus", "m", "b", timelineStart = 0f, trimIn = 0f, trimOut = 3f, effectsConfig = transition)
+        val plain = Clip(
+            "plain", "v", "c", timelineStart = 12f, trimIn = 0f, trimOut = 2f,
+            effectsConfig = encodeEffectsConfig(EffectsConfig(transition = TransitionSpec(TransitionType.NONE, 1.0)))
+        )
+        val timeline = timelineOf(video to listOf(videoClip, plain), music to listOf(musicClip))
+
+        // Dragging the music clip: its start near the video transition end (4 + 1.25) snaps onto it.
+        val edges = collectSnapEdges(timeline, excludeClipIds = setOf("mus"))
+        assertTrue(edges.containsTime(5.25f), "video transition end should be a snap edge")
+        assertFalse(edges.containsTime(1.25f), "music-track transition must not add a snap edge")
+        assertFalse(edges.containsTime(13f), "NONE transition must not add an end distinct from the clip end")
+        assertEquals(5.25f, snapMovedStart(edges, start = 5.6f, duration = 2f), 0.0001f)
+
+        // The moving window is not a fixed edge (it travels with the clip). The dragged clip still
+        // snaps its own settle point — start + 1.25 — onto other edges, in addition to start/end.
+        val draggingVideo = collectSnapEdges(timeline, excludeClipIds = setOf("vid"))
+        assertFalse(draggingVideo.containsTime(5.25f))
+        assertEquals(5.6f, snapMovedStart(draggingVideo, start = 5.6f, duration = 5f, transitionWindow = 1.25f), 0.0001f)
+        // Settle at 12.15 is 0.15s from the plain clip's start; the clip start (10.9) and end (15.9)
+        // are both outside the 1s threshold, so the settle point is what snaps.
+        assertEquals(12f - 1.25f, snapMovedStart(draggingVideo, start = 10.9f, duration = 5f, transitionWindow = 1.25f), 0.0001f)
+        assertEquals(10.9f, snapMovedStart(draggingVideo, start = 10.9f, duration = 5f), 0.0001f)
+        // When the start is closer than the settle point, the start still wins.
+        assertEquals(12f, snapMovedStart(draggingVideo, start = 11.5f, duration = 5f, transitionWindow = 1.25f), 0.0001f)
+    }
+
+    @Test
     fun testBuildPrintableDocumentHtmlIsA4AndAutoPrints() {
         val html = buildPrintableDocumentHtml("My & Doc", "# Hi")
         assertTrue(html.contains("size: A4"), "page should be A4")
@@ -433,6 +473,8 @@ class SharedCommonTest {
         trimOut = 5f,
         effectsConfig = ""
     )
+
+    private fun FloatArray.containsTime(time: Float) = any { abs(it - time) < 0.0001f }
 
     private fun timelineOf(vararg tracks: Pair<Track, List<Clip>>) = MovieTimeline(
         movie = Movie(
