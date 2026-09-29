@@ -161,8 +161,8 @@ object QwenAIService : AIGenerationService {
             followRedirects = true
             install(HttpTimeout) {
                 connectTimeoutMillis = 120_000
-                requestTimeoutMillis = 300_000
-                socketTimeoutMillis = 300_000
+                requestTimeoutMillis = QwenConfig.httpTimeoutMs
+                socketTimeoutMillis = QwenConfig.httpTimeoutMs
             }
             install(WebSockets)
         }
@@ -1839,7 +1839,12 @@ object QwenAIService : AIGenerationService {
             logger.info("Resuming interrupted Model Studio task {} for job {}", resumeTaskId, job.id)
             resumeTaskId
         } else {
-            val submitResponse = postJson(submitUrl, requestBody, async = true)
+            val submitResponse = postJson(
+                submitUrl,
+                requestBody,
+                async = true,
+                timeoutSeconds = (QwenConfig.httpTimeoutMs / 1000).coerceAtLeast(240),
+            )
             val output = submitResponse["output"]?.jsonObject
                 ?: throw IllegalStateException("Model Studio submit response missing 'output': $submitResponse")
             val submittedTaskId = output["task_id"]?.jsonPrimitive?.contentOrNull
@@ -2037,7 +2042,10 @@ object QwenAIService : AIGenerationService {
             if (async) header("X-DashScope-Async", "enable")
             if (disableSse) header("X-DashScope-SSE", "disable")
             contentType(ContentType.Application.Json)
-            timeout { requestTimeoutMillis = timeoutSeconds * 1000 }
+            timeout {
+                requestTimeoutMillis = timeoutSeconds * 1000
+                socketTimeoutMillis = timeoutSeconds * 1000
+            }
             setBody(json.encodeToString(JsonObject.serializer(), body))
         }
         return parseJsonResponse(response)

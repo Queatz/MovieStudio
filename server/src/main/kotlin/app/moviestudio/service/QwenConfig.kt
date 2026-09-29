@@ -44,7 +44,9 @@ import org.slf4j.LoggerFactory
  *                              qwen-audio-3.0-asr-flash). The audio file is sent to Qwen; the
  *                              clip description is never used as a stand-in transcript.
  * - QWEN_POLL_INTERVAL_MS      Async task poll interval in ms (default 3000).
- * - QWEN_POLL_TIMEOUT_MS       Async task max wait in ms (default 300000).
+ * - QWEN_POLL_TIMEOUT_MS       Async task max wait in ms (default 3000000).
+ * - QWEN_HTTP_TIMEOUT_MS       HTTP request/socket timeout in ms for long DashScope calls
+ *                              such as video-synthesis submit (default 1800000 = 30 min).
  * - QWEN_IMAGE_USD_PER_CALL    Flat USD price per generated/edited image, since Qwen-Image bills
  *                              per image rather than per token (default 0.05).
  */
@@ -99,6 +101,9 @@ object QwenConfig {
 
     val pollIntervalMs: Long = Env.get("QWEN_POLL_INTERVAL_MS", "3000").toLongOrNull() ?: 3000L
     val pollTimeoutMs: Long = Env.get("QWEN_POLL_TIMEOUT_MS", "3000000").toLongOrNull() ?: 3_000_000L
+    // Single HTTP call timeout (video-synthesis submit can sit silent while Model Studio
+    // ingests reference media before returning a task_id). Chat/TTS pass a shorter override.
+    val httpTimeoutMs: Long = Env.get("QWEN_HTTP_TIMEOUT_MS", "1800000").toLongOrNull() ?: 1_800_000L
 
     // --- AI-cost ledger pricing ---------------------------------------------------------------
     // USD price per one million tokens for each billed model family, overridable via env. The

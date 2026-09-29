@@ -90,7 +90,8 @@ Recognized variables:
 | `QWEN_VOICE_CLONE_TARGET` | TTS model cloned voices target (default `cosyvoice-v3.5-plus`).                       |
 | `QWEN_TRANSCRIPTION_MODEL` | Speech-to-text model for transcripts (default `qwen-audio-3.0-asr-flash`).            |
 | `QWEN_POLL_INTERVAL_MS` | Async task poll interval in ms (default `3000`).                                      |
-| `QWEN_POLL_TIMEOUT_MS` | Async task max wait in ms (default `300000`).                                         |
+| `QWEN_POLL_TIMEOUT_MS` | Async task max wait in ms (default `3000000`).                                        |
+| `QWEN_HTTP_TIMEOUT_MS` | HTTP request/socket timeout in ms for long DashScope calls such as video-synthesis submit (default `1800000` = 30 min). |
 
 The server always uses `QwenAIService`, which calls the real Alibaba Model Studio (Qwen / DashScope) APIs to generate media, re-hosts the results on OSS, and persists them as `Asset`s. Set `QWEN_API_KEY` (and the other `QWEN_*` variables) in `.env` before running the server.
 
