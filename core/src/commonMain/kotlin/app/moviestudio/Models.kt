@@ -1138,6 +1138,13 @@ data class FramingWindow(
 )
 
 /**
+ * CSS-pixel rect of the cover-fitted source × zoom inside the wrap.
+ * Clipping this sprite to the frame yields [FramingWindow]'s dest; the overlapping UVs match
+ * the window UVs. JS Default `<video>` layout mirrors [framingSprite].
+ */
+data class FramingSprite(val x: Double, val y: Double, val w: Double, val h: Double)
+
+/**
  * Extra linear gain applied on top of a voice-track clip's [EffectsConfig.volume] / envelope in
  * live preview and FFmpeg export, so dialogue sits above beds at default faders.
  */
@@ -1270,6 +1277,30 @@ fun framingWindow(pose: FramingPose, sourceAspect: Double, frameAspect: Double):
         dy = dy,
         dw = dw,
         dh = dh
+    )
+}
+
+/**
+ * Spec for the Default `<video>` / ClipImage sprite, equivalent to [framingWindow] dest.
+ * Cover-fits the source into [frameW]×[frameH], multiplies by zoom, then pans.
+ * Zoom 1 + pan 50/50 is today's cover-crop; zoom-out reveals cropped pixels then letterboxes.
+ * JS `setPreviewObjectPosition` mirrors this using `videoWidth`/`videoHeight`.
+ */
+fun framingSprite(pose: FramingPose, sourceAspect: Double, frameW: Double, frameH: Double): FramingSprite {
+    val zoom = pose.zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM)
+    val panX = pose.panX.coerceIn(0.0, 100.0) / 100.0
+    val panY = pose.panY.coerceIn(0.0, 100.0) / 100.0
+    val src = if (sourceAspect > 0.0) sourceAspect else 1.0
+    if (frameW <= 0.0 || frameH <= 0.0) return FramingSprite(0.0, 0.0, 0.0, 0.0)
+    // Treat the source as (src × 1) so cover = max(frameW / srcW, frameH / srcH).
+    val cover = maxOf(frameW / src, frameH)
+    val w = src * cover * zoom
+    val h = cover * zoom
+    return FramingSprite(
+        x = (frameW - w) * panX,
+        y = (frameH - h) * panY,
+        w = w,
+        h = h
     )
 }
 

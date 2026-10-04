@@ -960,6 +960,68 @@ class FFmpegServiceErrorTest {
     }
 
     @Test
+    fun framingZoomExpressionLerpsSmoothKeyframes() {
+        val expr = FFmpegService.framingZoomExpression(
+            EffectsConfig(
+                framingKeyframes = listOf(
+                    FramingPoint(0.0, 1.0, 50.0, 50.0, FramingInterpolation.SMOOTH),
+                    FramingPoint(2.0, 2.0, 50.0, 50.0, FramingInterpolation.SMOOTH)
+                )
+            )
+        )
+        assertFalse(expr.contains("E-", ignoreCase = true), "must be FFmpeg-parseable, got: $expr")
+        assertTrue(expr.contains("if(lt(t\\,"), "Smooth envelope is nested if(lt(t)), got: $expr")
+        assertTrue(expr.contains("*(t-"), "Smooth segment must lerp with t, got: $expr")
+        assertTrue(expr.contains("min(max("), "zoom must be clamped, got: $expr")
+    }
+
+    @Test
+    fun framingZoomExpressionHoldsInstantUntilNextKeyframe() {
+        val expr = FFmpegService.framingZoomExpression(
+            EffectsConfig(
+                framingKeyframes = listOf(
+                    FramingPoint(0.0, 1.0, 50.0, 50.0, FramingInterpolation.INSTANT),
+                    FramingPoint(2.0, 2.0, 10.0, 90.0, FramingInterpolation.SMOOTH)
+                )
+            )
+        )
+        assertFalse(expr.contains("E-", ignoreCase = true), "must be FFmpeg-parseable, got: $expr")
+        assertTrue(expr.contains("if(lt(t\\,2"), "Instant holds until the next keyframe time, got: $expr")
+        assertFalse(expr.contains("*(t-0"), "Instant must not lerp the outgoing segment, got: $expr")
+    }
+
+    @Test
+    fun appendFramingFiltersMatchesLegacyCoverCropWhenZoomIsOne() {
+        val filters = mutableListOf<String>()
+        FFmpegService.appendFramingFilters(
+            filters,
+            EffectsConfig(offsetX = 20.0, offsetY = 80.0),
+            canvasWidth = 1920,
+            canvasHeight = 1080
+        )
+        assertEquals("scale=1920:1080:force_original_aspect_ratio=increase", filters.first())
+        assertTrue(
+            filters.any { it.startsWith("crop=1920:1080:(iw-ow)*") && it.contains("(ih-oh)*") },
+            "zoom 1 must keep today's cover crop, got: $filters"
+        )
+        assertFalse(filters.any { it.startsWith("pad=") }, "zoom 1 must not letterbox, got: $filters")
+    }
+
+    @Test
+    fun appendFramingFiltersPadsOnStaticZoomOut() {
+        val filters = mutableListOf<String>()
+        FFmpegService.appendFramingFilters(
+            filters,
+            EffectsConfig(zoom = 0.5, offsetX = 50.0, offsetY = 50.0),
+            canvasWidth = 1920,
+            canvasHeight = 1080
+        )
+        assertTrue(filters.any { it.startsWith("scale=iw*") }, "zoom-out must scale the cover sprite, got: $filters")
+        assertTrue(filters.any { it.startsWith("pad=1920:1080") }, "zoom-out must pad to the canvas, got: $filters")
+        assertFalse(filters.any { it.contains("eval=frame") }, "static zoom must not use eval=frame, got: $filters")
+    }
+
+    @Test
     fun volumeEnvelopeExpressionAvoidsScientificNotation() {
         // A keyframe time with float drift must not leak scientific notation into the volume filter.
         val expr = FFmpegService.volumeEnvelopeExpression(

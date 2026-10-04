@@ -345,6 +345,43 @@ class ModelsTest {
     }
 
     @Test
+    fun framingSpriteMatchesWindowDestForZoomOneTwoAndHalf() {
+        val frame16x9W = 1920.0
+        val frame16x9H = 1080.0
+        val frame9x16W = 1080.0
+        val frame9x16H = 1920.0
+        val aspect16x9 = 16.0 / 9.0
+        val aspect9x16 = 9.0 / 16.0
+        val zooms = listOf(1.0, 2.0, 0.5)
+        val pans = listOf(50.0 to 50.0, 0.0 to 100.0, 20.0 to 80.0)
+
+        for (sourceAspect in listOf(aspect16x9, aspect9x16)) {
+            for (zoom in zooms) {
+                for ((panX, panY) in pans) {
+                    val pose = FramingPose(zoom, panX, panY)
+                    assertSpriteMatchesWindow(pose, sourceAspect, frame16x9W, frame16x9H)
+                    assertSpriteMatchesWindow(pose, sourceAspect, frame9x16W, frame9x16H)
+                }
+            }
+        }
+
+        // Equal-aspect zoom 1 / 2 / 0.5: sprite pixels are exact cover × zoom.
+        val center = FramingPose(zoom = 1.0, panX = 50.0, panY = 50.0)
+        assertSprite(
+            framingSprite(center, aspect16x9, frame16x9W, frame16x9H),
+            x = 0.0, y = 0.0, w = 1920.0, h = 1080.0
+        )
+        assertSprite(
+            framingSprite(center.copy(zoom = 2.0), aspect16x9, frame16x9W, frame16x9H),
+            x = -960.0, y = -540.0, w = 3840.0, h = 2160.0
+        )
+        assertSprite(
+            framingSprite(center.copy(zoom = 0.5), aspect16x9, frame16x9W, frame16x9H),
+            x = 480.0, y = 270.0, w = 960.0, h = 540.0
+        )
+    }
+
+    @Test
     fun clipCarriesAudioForAudioTracksAndVideoAssetsOnly() {
         // Every clip on an audio track carries audio, whatever the asset type (or even none yet).
         for (trackType in listOf(TrackType.MUSIC, TrackType.VOICE, TrackType.EFFECTS)) {
@@ -1103,6 +1140,47 @@ class ModelsTest {
         assertEquals(dy, actual.dy, abs)
         assertEquals(dw, actual.dw, abs)
         assertEquals(dh, actual.dh, abs)
+    }
+
+    private fun assertSprite(
+        actual: FramingSprite,
+        x: Double,
+        y: Double,
+        w: Double,
+        h: Double,
+        abs: Double = 0.0001
+    ) {
+        assertEquals(x, actual.x, abs)
+        assertEquals(y, actual.y, abs)
+        assertEquals(w, actual.w, abs)
+        assertEquals(h, actual.h, abs)
+    }
+
+    /**
+     * Visible overlap of the sprite with the frame equals [framingWindow] dest × frame size,
+     * and the UVs of that overlap match the window UVs.
+     */
+    private fun assertSpriteMatchesWindow(
+        pose: FramingPose,
+        sourceAspect: Double,
+        frameW: Double,
+        frameH: Double,
+        abs: Double = 0.0001
+    ) {
+        val window = framingWindow(pose, sourceAspect, frameW / frameH)
+        val sprite = framingSprite(pose, sourceAspect, frameW, frameH)
+        val visX = maxOf(0.0, sprite.x)
+        val visY = maxOf(0.0, sprite.y)
+        val visR = minOf(frameW, sprite.x + sprite.w)
+        val visB = minOf(frameH, sprite.y + sprite.h)
+        assertEquals(window.dx * frameW, visX, abs)
+        assertEquals(window.dy * frameH, visY, abs)
+        assertEquals(window.dw * frameW, visR - visX, abs)
+        assertEquals(window.dh * frameH, visB - visY, abs)
+        assertEquals(window.u0, (visX - sprite.x) / sprite.w, abs)
+        assertEquals(window.v0, (visY - sprite.y) / sprite.h, abs)
+        assertEquals(window.u1, (visR - sprite.x) / sprite.w, abs)
+        assertEquals(window.v1, (visB - sprite.y) / sprite.h, abs)
     }
 
     /** Today's WebGL/FFmpeg cover-crop UV origin: `(1 - scale) * pan/100` on the overflowing axis. */

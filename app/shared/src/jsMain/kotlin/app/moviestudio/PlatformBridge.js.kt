@@ -385,12 +385,72 @@ actual fun requestVideoFullscreen() {
 
 private fun jsSetPreviewObjectPosition(x: Double, y: Double, zoom: Double): Unit = js("""
     (function(x, y, zoom) {
-        var video = document.getElementById('compose-video-preview');
-        if (!video) { return; }
-        video.style.objectPosition = x + '% ' + y + '%';
-        var z = (zoom > 0) ? zoom : 1;
-        video.style.transformOrigin = 'center center';
-        video.style.transform = 'scale(' + z + ')';
+        // Mirror Kotlin framingSprite: cover-fit × zoom, panned, clipped by the wrap.
+        window.__msFramingPose = { x: x, y: y, zoom: zoom };
+        function layout() {
+            var v = document.getElementById('compose-video-preview');
+            var wrap = document.getElementById('compose-video-preview-wrap');
+            if (!v) { return; }
+            var pose = window.__msFramingPose || { x: 50, y: 50, zoom: 1 };
+            var px = pose.x;
+            var py = pose.y;
+            var z = pose.zoom;
+            if (!(z > 0)) z = 1;
+            if (z < 0.25) z = 0.25;
+            if (z > 4) z = 4;
+            if (px < 0) px = 0;
+            if (px > 100) px = 100;
+            if (py < 0) py = 0;
+            if (py > 100) py = 100;
+            v.style.transform = 'none';
+            var vw = v.videoWidth || 0;
+            var vh = v.videoHeight || 0;
+            var frameW = wrap ? wrap.clientWidth : 0;
+            var frameH = wrap ? wrap.clientHeight : 0;
+            if (!vw || !vh || !frameW || !frameH) {
+                v.style.left = '0px';
+                v.style.top = '0px';
+                v.style.width = '100%';
+                v.style.height = '100%';
+                v.style.objectFit = 'cover';
+                return;
+            }
+            var cover = Math.max(frameW / vw, frameH / vh);
+            var dispW = vw * cover * z;
+            var dispH = vh * cover * z;
+            var left = (frameW - dispW) * (px / 100);
+            var top = (frameH - dispH) * (py / 100);
+            v.style.objectFit = 'fill';
+            v.style.left = left + 'px';
+            v.style.top = top + 'px';
+            v.style.width = dispW + 'px';
+            v.style.height = dispH + 'px';
+            if (wrap) {
+                wrap.style.overflow = 'hidden';
+                wrap.style.backgroundColor = 'black';
+            }
+        }
+        function install() {
+            var video = document.getElementById('compose-video-preview');
+            var wrap = document.getElementById('compose-video-preview-wrap');
+            if (video && !video.__msFramingSprite) {
+                video.__msFramingSprite = true;
+                video.addEventListener('loadedmetadata', layout);
+            }
+            if (wrap && !wrap.__msFramingSprite) {
+                wrap.__msFramingSprite = true;
+                wrap.style.overflow = 'hidden';
+                wrap.style.backgroundColor = 'black';
+                if (typeof ResizeObserver !== 'undefined') {
+                    new ResizeObserver(function() { layout(); }).observe(wrap);
+                }
+            }
+        }
+        window.__msLayoutPreviewVideo = function() {
+            install();
+            layout();
+        };
+        window.__msLayoutPreviewVideo();
     })(x, y, zoom)
 """)
 

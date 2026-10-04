@@ -273,7 +273,7 @@ class AppViewModel : ViewModel() {
 
     /**
      * Draft zoom/pan for the selected clip while it has framing keyframes. Preview gestures and
-     * inspector sliders share this; Save in the inspector upserts it as a keyframe.
+     * the preview chrome share this; Save on the chrome upserts it as a keyframe.
      */
     var framingDraft: FramingDraft? by mutableStateOf(null)
         private set

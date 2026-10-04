@@ -5,7 +5,9 @@ import app.moviestudio.ui.clipLocalPlayheadSeconds
 import app.moviestudio.ui.clipSupportsFraming
 import app.moviestudio.ui.collectSnapEdges
 import app.moviestudio.ui.deleteNearestFramingKeyframe
+import app.moviestudio.ui.framingPoseFromNumberFields
 import app.moviestudio.ui.markdownToPrintHtml
+import app.moviestudio.ui.parseFramingNumber
 import app.moviestudio.ui.nearestFramingKeyframe
 import app.moviestudio.ui.setFramingKeyframeInterpolation
 import app.moviestudio.ui.snapMovedStart
@@ -502,6 +504,22 @@ class SharedCommonTest {
         assertEquals(4.0, clipLocalPlayheadSeconds(playhead = 6.0, timelineStart = 2.0, clipLength = 4.0))
         assertNull(clipLocalPlayheadSeconds(playhead = 1.9, timelineStart = 2.0, clipLength = 4.0))
         assertNull(clipLocalPlayheadSeconds(playhead = 6.1, timelineStart = 2.0, clipLength = 4.0))
+    }
+
+    @Test
+    fun parseFramingNumberAcceptsPercentAndClampsPose() {
+        assertEquals(150.0, parseFramingNumber(" 150% "))
+        assertEquals(50.0, parseFramingNumber("50"))
+        assertNull(parseFramingNumber("abc"))
+        val pose = framingPoseFromNumberFields("150%", "10", "90")
+        assertEquals(1.5, pose!!.zoom, 0.0001)
+        assertEquals(10.0, pose.panX, 0.0001)
+        assertEquals(90.0, pose.panY, 0.0001)
+        val clamped = framingPoseFromNumberFields("10", "-5", "140")!!
+        assertEquals(0.25, clamped.zoom, 0.0001)
+        assertEquals(0.0, clamped.panX, 0.0001)
+        assertEquals(100.0, clamped.panY, 0.0001)
+        assertNull(framingPoseFromNumberFields("", "50", "50"))
     }
 
     @Test

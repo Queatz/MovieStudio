@@ -49,9 +49,10 @@ Column
 
 - The innermost black `Box` is sized with `aspectRatio(aspectRatioToFloat(Film.aspectRatio))`, so
   the stage always has the movie's shape (`16:9`, `9:16`, `1:1`, … from `SUPPORTED_ASPECT_RATIOS`).
-- Media is fit with **center-crop ("cover")**: it fills the whole stage and the overflow is
-  cropped. This is deliberately identical to the FFmpeg render, which does
-  `scale=…:force_original_aspect_ratio=increase` followed by a `crop`.
+- Media is fit with **cover × zoom** framing (`framingAt` / `framingWindow` / `framingSprite`):
+  zoom 1 + pan 50/50 is today's center-crop; zoom-out reveals cropped pixels then letterboxes.
+  Default `<video>`, Compose stills, WebGL, and FFmpeg share that window (FFmpeg cover-scales,
+  `crop`s with `eval=frame` from `framingAt`, and `pad`s on zoom-out).
 - The stage is **always dark** regardless of the app theme, and in `fullscreen` mode it drops the
   rounded corners, padding and transport row so only the movie is visible (ESC exits).
 
@@ -127,10 +128,10 @@ Rendered with a **plain Compose component**, Coil's `AsyncImage`:
 ```kotlin
 AsyncImage(
     model = asset.ossUrl,
-    contentScale = ContentScale.Crop,               // center-crop "cover"
-    alignment = BiasAlignment(                       // 0-100 offsets → -1..+1 bias
-        horizontalBias = ((offsetX - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f),
-        verticalBias   = ((offsetY - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f),
+    contentScale = CoverZoomContentScale(zoom),      // cover × zoom
+    alignment = BiasAlignment(                       // 0-100 pan → -1..+1 bias
+        horizontalBias = ((panX - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f),
+        verticalBias   = ((panY - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f),
     ),
     modifier = Modifier.fillMaxSize(),
 )
@@ -139,16 +140,16 @@ AsyncImage(
 Because `AsyncImage` is a normal Compose node laid out inside the aspect-ratio `Box`:
 
 - it is **contained** within the stage (Compose clips drawing to the node's bounds),
-- it is **centered** when both offsets are `50`, and
-- `ContentScale.Crop` gives the same center-crop scaling as video and as the FFmpeg render.
+- it is **centered** when pan is `50`/`50`, and
+- cover × zoom matches Default video, WebGL `framingWindow`, and the FFmpeg crop/pad chain.
 
 Coil is configured once at the app root (`App.kt`) via `setSingletonImageLoaderFactory { … add(KtorNetworkFetcherFactory()) … }`; a per-platform Ktor engine (browser fetch on web, CIO on
 desktop, OkHttp on Android) lets it load the OSS URL on every target.
 
-**Crop-offset parity.** The `offsetX`/`offsetY` (0-100, 50 = center) come from the clip's
-`EffectsConfig`. FFmpeg crops at `(iw-ow) * offsetX/100`, i.e. `offsetX = 0` shows the left edge,
-`100` the right edge, `50` the center. `BiasAlignment` bias `= (offset - 50) / 50` maps to exactly
-the same window (`-1` = left/top edge, `0` = center, `+1` = right/bottom edge).
+**Framing parity.** `EffectsConfig.framingAt(clipSeconds)` is the pose (`zoom`, `panX`/`panY`;
+pan 0–100, 50 = center). `framingWindow` turns that into source UVs + a dest rect; `framingSprite`
+is the equivalent cover-fitted sprite in CSS pixels. Zoom 1 + pan 50/50 matches today's
+`(iw-ow)*offset/100` cover-crop. Zoom-out letterboxes once the whole source is visible.
 
 ### 5.2 Video — `AssetType.VIDEO`
 
@@ -160,8 +161,9 @@ it never decodes frames into Compose). Its playback time is driven from the mast
 val mediaTime = asset.sourceOffsetSeconds + clip.trimIn + (playhead - clip.timelineStart)
 ```
 
-Crop offset for video is applied to the `<video>` element's CSS `object-position` through
-`setPreviewObjectPosition(offsetX, offsetY)` (the `object-fit: cover` element already center-crops).
+Framing for Default video sizes and positions the `<video>` as a `framingSprite` (cover-fit × zoom,
+panned, `object-fit: fill`) inside `#compose-video-preview-wrap` (`overflow: hidden`). Zoom-out
+reveals previously cropped pixels, then letterboxes. Fade/slide/circle stay on the wrap.
 
 **DPI-correct positioning.** The overlay is placed over the Compose stage from
 `onGloballyPositioned` (offset + size). Compose Web lays out in *physical* pixels
@@ -314,8 +316,9 @@ dialogs, cards and captions layer over it automatically
   `WebGLPreviewSurface`.
 - The platform actual keeps a **detached** `<canvas>` (never added to the DOM, so it can never
   cover Compose UI) and composites the layers with a WebGL shader: cover-fit crop window
-  (FFmpeg's `(iw-ow) * offset/100`), cross-fade alpha, slide translate and the pixel-space
-  circular reveal — all matching the default method and the FFmpeg export.
+  (`framingWindow` UVs + dest, FFmpeg's cover-scale / crop / pad), cross-fade alpha, slide
+  translate and the pixel-space circular reveal — all matching the default method and the FFmpeg
+  export.
 - **Rendered into Compose (Option 1).** Each Compose frame (`withFrameNanos`) the surface sizes
   the canvas to the stage (device pixels, capped), renders, `gl.readPixels(...)` the frame back
   and wraps the bytes in a Skia `Image` (`Image.makeRaster(...).toComposeImageBitmap()`). That

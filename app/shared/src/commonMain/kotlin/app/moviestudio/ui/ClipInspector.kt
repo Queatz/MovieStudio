@@ -61,7 +61,6 @@ import app.moviestudio.EffectsConfig
 import app.moviestudio.FramingInterpolation
 import app.moviestudio.FramingPoint
 import app.moviestudio.FramingPose
-import app.moviestudio.previewFramingPose
 import app.moviestudio.MAX_CLIP_VOLUME
 import app.moviestudio.MAX_FRAMING_ZOOM
 import app.moviestudio.MIN_FRAMING_ZOOM
@@ -73,7 +72,6 @@ import app.moviestudio.TransitionType
 import app.moviestudio.VolumePoint
 import app.moviestudio.clipCarriesAudio
 import app.moviestudio.displayName
-import app.moviestudio.framingAt
 import app.moviestudio.parseEffectsConfig
 import app.moviestudio.textScrollTranslationY
 import app.moviestudio.volumeAt
@@ -82,9 +80,9 @@ import kotlin.math.roundToInt
 
 /**
  * Inspector for the selected timeline clip: transition-in over overlapping media (with a live
- * percentage-of-clip control), framing (zoom/pan keyframes for image and video clips), captions
- * (voice clips), volume (any audio-carrying clip — the audio tracks plus video clips whose media
- * has sound), extracting a voiceover from a video clip, and clip actions.
+ * percentage-of-clip control), captions (voice clips), volume (any audio-carrying clip — the
+ * audio tracks plus video clips whose media has sound), extracting a voiceover from a video clip,
+ * and clip actions. Framing Save/Delete live on the preview chrome, not here.
  */
 @Composable
 fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
@@ -205,19 +203,6 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
                     }
                 }
             }
-            Spacer(Modifier.width(16.dp))
-        }
-
-        // Framing (image/video on the video track): zoom/pan the cover-crop window. Save/Delete
-        // and Smooth/Instant live here; preview gestures (later) only pose. Text and description
-        // cards never show this block.
-        if (clipSupportsFraming(track.type, asset?.type, asset == null || asset.isDescriptionOnly)) {
-            FramingControls(
-                viewModel = viewModel,
-                clip = clip,
-                effects = effects,
-                clipLengthSeconds = clipLength.toDouble()
-            )
             Spacer(Modifier.width(16.dp))
         }
 
@@ -350,7 +335,7 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
     }
 }
 
-private fun formatSeconds(value: Double): String {
+internal fun formatSeconds(value: Double): String {
     val rounded = (value * 10).roundToInt() / 10.0
     return rounded.toString()
 }
@@ -470,149 +455,8 @@ internal fun staticFramingEffects(effects: EffectsConfig, pose: FramingPose): Ef
     offsetY = pose.panY.coerceIn(0.0, 100.0)
 )
 
-/**
- * Framing block: zoom/pan sliders, Save/Delete at the playhead, Smooth/Instant on the nearby
- * keyframe, and compact chips. No keyframes → sliders persist the static pose; with keyframes
- * sliders edit a draft until Save upserts.
- */
 @Composable
-private fun FramingControls(
-    viewModel: AppViewModel,
-    clip: Clip,
-    effects: EffectsConfig,
-    clipLengthSeconds: Double,
-) {
-    val playheadInClip = clipLocalPlayheadSeconds(
-        playhead = viewModel.playhead.toDouble(),
-        timelineStart = clip.timelineStart.toDouble(),
-        clipLength = clipLengthSeconds
-    )
-    val keyframes = effects.framingKeyframes
-    val hasKeyframes = keyframes.isNotEmpty()
-    val clipSeconds = (viewModel.playhead - clip.timelineStart).toDouble()
-    val pose = previewFramingPose(
-        effects = effects,
-        clipId = clip.id,
-        clipSeconds = clipSeconds,
-        draft = viewModel.framingDraft,
-        isPlaying = viewModel.isPlaying
-    )
-    val nearby = playheadInClip?.let { nearestFramingKeyframe(keyframes, it) }
-    val canSave = playheadInClip != null
-    val canDelete = nearby != null
-    val canSetInterpolation = nearby != null
-
-    fun commit(next: EffectsConfig) {
-        viewModel.clearFramingDraft()
-        viewModel.updateClipEffects(clip, next)
-    }
-
-    fun applyPose(next: FramingPose) {
-        viewModel.applyFramingPose(clip, next, commit = true)
-    }
-
-    Column(Modifier.width(280.dp)) {
-        Text(
-            "Framing",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        LabeledSlider(
-            label = "Zoom",
-            value = (pose.zoom * 100.0).toFloat().coerceIn(
-                (MIN_FRAMING_ZOOM * 100.0).toFloat(),
-                (MAX_FRAMING_ZOOM * 100.0).toFloat()
-            ),
-            valueRange = (MIN_FRAMING_ZOOM * 100.0).toFloat()..(MAX_FRAMING_ZOOM * 100.0).toFloat(),
-            valueText = "${(pose.zoom * 100.0).roundToInt()}%",
-            onValueChange = { percent ->
-                applyPose(pose.copy(zoom = (percent.roundToInt() / 100.0).coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM)))
-            }
-        )
-        LabeledSlider(
-            label = "Pan X",
-            value = pose.panX.toFloat().coerceIn(0f, 100f),
-            valueRange = 0f..100f,
-            valueText = "${pose.panX.roundToInt()}",
-            onValueChange = { applyPose(pose.copy(panX = it.roundToInt().toDouble().coerceIn(0.0, 100.0))) }
-        )
-        LabeledSlider(
-            label = "Pan Y",
-            value = pose.panY.toFloat().coerceIn(0f, 100f),
-            valueRange = 0f..100f,
-            valueText = "${pose.panY.roundToInt()}",
-            onValueChange = { applyPose(pose.copy(panY = it.roundToInt().toDouble().coerceIn(0.0, 100.0))) }
-        )
-        Spacer(Modifier.height(4.dp))
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            GhostPillButton("Save keyframe", compact = true, enabled = canSave) {
-                val time = playheadInClip ?: return@GhostPillButton
-                val savePose = viewModel.framingDraft?.takeIf { it.clipId == clip.id }?.pose ?: pose
-                commit(upsertFramingKeyframe(effects, time, savePose))
-            }
-            GhostPillButton("Delete", compact = true, enabled = canDelete) {
-                val time = playheadInClip ?: return@GhostPillButton
-                commit(deleteNearestFramingKeyframe(effects, time))
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            FramingToggleChip(
-                label = "Smooth",
-                selected = nearby?.interpolation == FramingInterpolation.SMOOTH,
-                enabled = canSetInterpolation
-            ) {
-                val time = playheadInClip ?: return@FramingToggleChip
-                viewModel.updateClipEffects(
-                    clip,
-                    setFramingKeyframeInterpolation(effects, time, FramingInterpolation.SMOOTH)
-                )
-            }
-            FramingToggleChip(
-                label = "Instant",
-                selected = nearby?.interpolation == FramingInterpolation.INSTANT,
-                enabled = canSetInterpolation
-            ) {
-                val time = playheadInClip ?: return@FramingToggleChip
-                viewModel.updateClipEffects(
-                    clip,
-                    setFramingKeyframeInterpolation(effects, time, FramingInterpolation.INSTANT)
-                )
-            }
-        }
-        if (hasKeyframes) {
-            Spacer(Modifier.height(6.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                keyframes.sortedBy { it.time }.forEach { point ->
-                    val selected = nearby == point
-                    FramingToggleChip(
-                        label = "${formatSeconds(point.time)}s",
-                        selected = selected,
-                        enabled = true
-                    ) {
-                        viewModel.clearFramingDraft()
-                        viewModel.seek((clip.timelineStart + point.time).toFloat())
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun FramingToggleChip(
+internal fun FramingToggleChip(
     label: String,
     selected: Boolean,
     enabled: Boolean,

@@ -36,10 +36,10 @@ import androidx.compose.ui.platform.LocalDensity
         video.style.height = '100%';
         video.style.backgroundColor = 'black';
         video.style.display = 'block';
-        // Center-crop fit: fill the (aspect-constrained) viewport and crop the overflow.
+        // Fallback until framingSprite layout has videoWidth and wrap size.
         video.style.objectFit = 'cover';
         video.style.objectPosition = 'center';
-        video.style.transformOrigin = 'center center';
+        video.style.transform = 'none';
         video.controls = false;
         // Purely a decorative overlay (all interaction happens via the Compose transport
         // controls) — let pointer events pass through so clicking the stage doesn't steal
@@ -90,6 +90,7 @@ import androidx.compose.ui.platform.LocalDensity
     video.onloadeddata = () => {
         onReady();
     };
+    if (window.__msLayoutPreviewVideo) { window.__msLayoutPreviewVideo(); }
 }
 """)
 private external fun jsSetupVideoCallback(onTimeUpdate: (Double) -> Unit, onEnded: () -> Unit, onReady: () -> Unit)
@@ -142,6 +143,7 @@ private external fun jsUpdateVideoState(url: String, isPlaying: Boolean, playhea
         host.style.clipPath = cp;
         host.style.webkitClipPath = cp;
         host.style.display = 'block';
+        if (window.__msLayoutPreviewVideo) { window.__msLayoutPreviewVideo(); }
     }
 }
 """)

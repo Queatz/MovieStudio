@@ -56,10 +56,10 @@ actual fun VideoPlayer(
                     video.style.height = '100%';
                     video.style.backgroundColor = 'black';
                     video.style.display = 'block';
-                    // Center-crop fit: fill the (aspect-constrained) viewport and crop the overflow.
+                    // Fallback until framingSprite layout has videoWidth and wrap size.
                     video.style.objectFit = 'cover';
                     video.style.objectPosition = 'center';
-                    video.style.transformOrigin = 'center center';
+                    video.style.transform = 'none';
                     video.controls = false;
                     // Purely a decorative overlay (all interaction happens via the Compose transport
                     // controls) — let pointer events pass through so clicking the stage doesn't steal
@@ -110,6 +110,7 @@ actual fun VideoPlayer(
                 video.onloadeddata = function() {
                     onReady();
                 };
+                if (window.__msLayoutPreviewVideo) { window.__msLayoutPreviewVideo(); }
             }
         """)
         setupCallback(onTimeUpdate, onEnded, onReady)
@@ -246,6 +247,7 @@ actual fun VideoPlayer(
                     host.style.clipPath = cp;
                     host.style.webkitClipPath = cp;
                     host.style.display = 'block';
+                    if (window.__msLayoutPreviewVideo) { window.__msLayoutPreviewVideo(); }
                 }
             }
         """)

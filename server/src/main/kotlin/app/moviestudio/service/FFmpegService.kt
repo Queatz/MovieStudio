@@ -1017,10 +1017,7 @@ object FFmpegService {
             vf.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
             vf.add("setpts=PTS-STARTPTS")
         }
-        vf.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
-        val offsetFx = (effects.offsetX / 100.0).coerceIn(0.0, 1.0)
-        val offsetFy = (effects.offsetY / 100.0).coerceIn(0.0, 1.0)
-        vf.add("crop=$canvasWidth:$canvasHeight:(iw-ow)*${offsetFx.ff()}:(ih-oh)*${offsetFy.ff()}")
+        appendFramingFilters(vf, effects, canvasWidth, canvasHeight)
         vf.add("fps=$RENDER_FPS")
         appendColorGrading(vf, rawEffects)
         // Clone the last decoded frame out to the slot length. Source files are often shorter
@@ -1282,12 +1279,7 @@ object FFmpegService {
         val videoFilters = mutableListOf<String>()
         videoFilters.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
         videoFilters.add("setpts=PTS-STARTPTS")
-        videoFilters.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
-        val offsetFx = (effects.offsetX / 100.0).coerceIn(0.0, 1.0)
-        val offsetFy = (effects.offsetY / 100.0).coerceIn(0.0, 1.0)
-        videoFilters.add(
-            "crop=$canvasWidth:$canvasHeight:(iw-ow)*${offsetFx.ff()}:(ih-oh)*${offsetFy.ff()}"
-        )
+        appendFramingFilters(videoFilters, effects, canvasWidth, canvasHeight)
         videoFilters.add("fps=30")
         appendColorGrading(videoFilters, rawEffects)
 
@@ -1454,12 +1446,7 @@ object FFmpegService {
         val videoFilters = mutableListOf<String>()
         videoFilters.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
         videoFilters.add("setpts=PTS-STARTPTS")
-        videoFilters.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
-        val offsetFx = (effects.offsetX / 100.0).coerceIn(0.0, 1.0)
-        val offsetFy = (effects.offsetY / 100.0).coerceIn(0.0, 1.0)
-        videoFilters.add(
-            "crop=$canvasWidth:$canvasHeight:(iw-ow)*${offsetFx.ff()}:(ih-oh)*${offsetFy.ff()}"
-        )
+        appendFramingFilters(videoFilters, effects, canvasWidth, canvasHeight)
         videoFilters.add("fps=30")
         appendColorGrading(videoFilters, rawEffects)
 
@@ -2235,6 +2222,97 @@ object FFmpegService {
             expression = "if(lt(t\\,${b.time.ff()})\\,$segment\\,$expression)"
         }
         return "if(lt(t\\,${points.first().time.ff()})\\,${points.first().volume.ff()}\\,$expression)"
+    }
+
+    /**
+     * Cover-scale, then crop (and pad on zoom-out) using [EffectsConfig.framingAt]. Zoom 1 + pan
+     * 50/50 is today's `crop=W:H:(iw-ow)*ox:(ih-oh)*oy`. Animated keyframes use `eval=frame`
+     * expressions (Smooth = piecewise linear, Instant = hold until the next time).
+     */
+    internal fun appendFramingFilters(
+        filters: MutableList<String>,
+        effects: EffectsConfig,
+        canvasWidth: Int,
+        canvasHeight: Int
+    ) {
+        filters.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
+        if (effects.framingKeyframes.isEmpty()) {
+            val pose = effects.framingAt(0.0)
+            val z = pose.zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM)
+            val px = (pose.panX / 100.0).coerceIn(0.0, 1.0)
+            val py = (pose.panY / 100.0).coerceIn(0.0, 1.0)
+            if (kotlin.math.abs(z - 1.0) <= 1e-9) {
+                filters.add("crop=$canvasWidth:$canvasHeight:(iw-ow)*${px.ff()}:(ih-oh)*${py.ff()}")
+                return
+            }
+            filters.add("scale=iw*${z.ff()}:ih*${z.ff()}")
+            filters.add(
+                "crop=w='min(iw\\,$canvasWidth)':h='min(ih\\,$canvasHeight)':" +
+                    "x='(iw-ow)*${px.ff()}':y='(ih-oh)*${py.ff()}'"
+            )
+            if (z < 1.0) {
+                filters.add(
+                    "pad=$canvasWidth:$canvasHeight:(ow-iw)*${px.ff()}:(oh-ih)*${py.ff()}:black"
+                )
+            }
+            return
+        }
+        val zoomExpr = framingZoomExpression(effects)
+        val panXExpr = framingPanUnitExpression(effects, x = true)
+        val panYExpr = framingPanUnitExpression(effects, x = false)
+        filters.add("scale=iw*($zoomExpr):ih*($zoomExpr):eval=frame")
+        filters.add(
+            "crop=w='min(iw\\,$canvasWidth)':h='min(ih\\,$canvasHeight)':" +
+                "x='(iw-ow)*($panXExpr)':y='(ih-oh)*($panYExpr)':eval=frame"
+        )
+        filters.add(
+            "pad=$canvasWidth:$canvasHeight:(ow-iw)*($panXExpr):(oh-ih)*($panYExpr):black"
+        )
+    }
+
+    /**
+     * Per-frame zoom expression for a keyframed envelope, clamped to
+     * [MIN_FRAMING_ZOOM]–[MAX_FRAMING_ZOOM]. Mirrors [framingAt] (Smooth lerps, Instant holds).
+     */
+    internal fun framingZoomExpression(effects: EffectsConfig): String {
+        val raw = framingComponentExpression(effects, { it.zoom }, effects.zoom)
+        return "min(max($raw\\,${MIN_FRAMING_ZOOM.ff()})\\,${MAX_FRAMING_ZOOM.ff()})"
+    }
+
+    /**
+     * Per-frame pan expression in 0–1 units (FFmpeg `(iw-ow)*pan`). [x] true → panX / offsetX.
+     */
+    internal fun framingPanUnitExpression(effects: EffectsConfig, x: Boolean): String {
+        val raw = if (x) {
+            framingComponentExpression(effects, { it.panX }, effects.offsetX)
+        } else {
+            framingComponentExpression(effects, { it.panY }, effects.offsetY)
+        }
+        return "min(max($raw\\,0)\\,100)/100"
+    }
+
+    private fun framingComponentExpression(
+        effects: EffectsConfig,
+        component: (FramingPoint) -> Double,
+        staticValue: Double
+    ): String {
+        val points = effects.framingKeyframes.sortedBy { it.time }
+        if (points.isEmpty()) return staticValue.ff()
+        var expression = component(points.last()).ff()
+        for (i in points.size - 2 downTo 0) {
+            val a = points[i]
+            val b = points[i + 1]
+            val av = component(a).ff()
+            val segment = if (a.interpolation == FramingInterpolation.INSTANT || b.time <= a.time) {
+                av
+            } else {
+                val bv = component(b).ff()
+                val span = (b.time - a.time).takeIf { it > 0.0 } ?: 1.0
+                "$av+($bv-$av)*(t-${a.time.ff()})/${span.ff()}"
+            }
+            expression = "if(lt(t\\,${b.time.ff()})\\,$segment\\,$expression)"
+        }
+        return "if(lt(t\\,${points.first().time.ff()})\\,${component(points.first()).ff()}\\,$expression)"
     }
 
     /**

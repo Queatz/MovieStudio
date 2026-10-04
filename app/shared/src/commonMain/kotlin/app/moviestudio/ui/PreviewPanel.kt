@@ -1,8 +1,10 @@
 package app.moviestudio.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -50,6 +53,8 @@ import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
+import app.moviestudio.EffectsConfig
+import app.moviestudio.FramingInterpolation
 import app.moviestudio.FramingPose
 import app.moviestudio.MAX_FRAMING_ZOOM
 import app.moviestudio.MIN_FRAMING_ZOOM
@@ -93,6 +98,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.Font
 import kotlin.math.exp
+import kotlin.math.roundToInt
 
 /** A clip together with its resolved asset and track type, active under the playhead. */
 private data class ActiveClip(val clip: Clip, val asset: Asset, val trackType: TrackType, val zIndex: Int)
@@ -188,8 +194,8 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
         updateAudioPlayback(audioItems, viewModel.isPlaying)
     }
 
-    // Keep the shared <video> element's pan + zoom in sync with the active video clip's live
-    // framing pose. Still images position themselves via Compose scale/alignment (below).
+    // Keep the shared <video> sprite (cover × zoom, panned) in sync with the active clip's
+    // live framing pose. Still images position themselves via Compose scale/alignment (below).
     val videoPose = activeVideo?.framingPose(playhead, viewModel)
     LaunchedEffect(activeVideo?.clip?.id, videoPose, viewModel.framingDraft, viewModel.isPlaying) {
         setPreviewObjectPosition(
@@ -213,8 +219,19 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
         }
     }
 
+    val selectedPair = viewModel.findClip(viewModel.selectedClipId)
+    val selectedAsset = selectedPair?.let { viewModel.assetById(it.first.assetId) }
+    val framableSelected = selectedPair != null && clipSupportsFraming(
+        selectedPair.second.type,
+        selectedAsset?.type,
+        selectedAsset == null || selectedAsset.isDescriptionOnly
+    )
+    val showFramingChrome = !fullscreen && !viewModel.isPlaying && framableSelected
+
     Column(modifier = modifier) {
         // Stage: aspect-constrained, always dark. Fullscreen drops the rounded chrome entirely.
+        // Framing chrome docks below the inner stage (inside this rounded box) so Default <video>
+        // overlay bounds stay aligned and the bar stays clickable.
         Box(
             modifier = if (fullscreen) {
                 Modifier.weight(1f).fillMaxWidth().background(Color.Black)
@@ -224,9 +241,13 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color(0xFF121016))
-            },
-            contentAlignment = Alignment.Center
+            }
         ) {
+            Column(Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
             val ratio = aspectRatioToFloat(movie?.aspectRatio ?: "16:9")
             Box(
                 modifier = Modifier
@@ -314,6 +335,11 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                     }
                 }
             }
+                }
+                if (showFramingChrome) {
+                    selectedPair?.let { FramingChrome(viewModel, it.first) }
+                }
+            }
         }
 
         if (!fullscreen) {
@@ -321,6 +347,213 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
             TransportControls(viewModel)
         }
     }
+}
+
+@Composable
+private fun FramingChrome(viewModel: AppViewModel, clip: Clip) {
+    val effects = parseEffectsConfig(clip.effectsConfig)
+    val clipLength = (clip.trimOut - clip.trimIn).coerceAtLeast(0.25f).toDouble()
+    val playheadInClip = clipLocalPlayheadSeconds(
+        playhead = viewModel.playhead.toDouble(),
+        timelineStart = clip.timelineStart.toDouble(),
+        clipLength = clipLength
+    )
+    val keyframes = effects.framingKeyframes
+    val clipSeconds = (viewModel.playhead - clip.timelineStart).toDouble()
+    val pose = previewFramingPose(
+        effects = effects,
+        clipId = clip.id,
+        clipSeconds = clipSeconds,
+        draft = viewModel.framingDraft,
+        isPlaying = viewModel.isPlaying
+    )
+    val nearby = playheadInClip?.let { nearestFramingKeyframe(keyframes, it) }
+    val canSave = playheadInClip != null
+    val canDelete = nearby != null
+    val canSetInterpolation = nearby != null
+
+    fun commit(next: EffectsConfig) {
+        viewModel.clearFramingDraft()
+        viewModel.updateClipEffects(clip, next)
+    }
+
+    var showNumbersDialog by remember { mutableStateOf(false) }
+    if (showNumbersDialog) {
+        FramingNumbersDialog(
+            pose = pose,
+            onDismiss = { showNumbersDialog = false },
+            onApply = { next ->
+                viewModel.applyFramingPose(clip, next, commit = true)
+                showNumbersDialog = false
+            }
+        )
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(36.dp)
+            .background(Color(0xFF1A1620))
+            .padding(horizontal = 8.dp)
+            .horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        FramingNumberChip("${(pose.zoom * 100.0).roundToInt()}%") { showNumbersDialog = true }
+        FramingNumberChip("X ${pose.panX.roundToInt()}") { showNumbersDialog = true }
+        FramingNumberChip("Y ${pose.panY.roundToInt()}") { showNumbersDialog = true }
+        FramingChromeDivider()
+        GhostPillButton("Save", compact = true, enabled = canSave) {
+            val time = playheadInClip ?: return@GhostPillButton
+            val savePose = viewModel.framingDraft?.takeIf { it.clipId == clip.id }?.pose ?: pose
+            commit(upsertFramingKeyframe(effects, time, savePose))
+        }
+        GhostPillButton("Delete", compact = true, enabled = canDelete) {
+            val time = playheadInClip ?: return@GhostPillButton
+            commit(deleteNearestFramingKeyframe(effects, time))
+        }
+        FramingChromeDivider()
+        FramingToggleChip(
+            label = "Smooth",
+            selected = nearby?.interpolation == FramingInterpolation.SMOOTH,
+            enabled = canSetInterpolation
+        ) {
+            val time = playheadInClip ?: return@FramingToggleChip
+            viewModel.updateClipEffects(
+                clip,
+                setFramingKeyframeInterpolation(effects, time, FramingInterpolation.SMOOTH)
+            )
+        }
+        FramingToggleChip(
+            label = "Instant",
+            selected = nearby?.interpolation == FramingInterpolation.INSTANT,
+            enabled = canSetInterpolation
+        ) {
+            val time = playheadInClip ?: return@FramingToggleChip
+            viewModel.updateClipEffects(
+                clip,
+                setFramingKeyframeInterpolation(effects, time, FramingInterpolation.INSTANT)
+            )
+        }
+        if (keyframes.isNotEmpty()) {
+            FramingChromeDivider()
+            keyframes.sortedBy { it.time }.forEach { point ->
+                FramingToggleChip(
+                    label = "${formatSeconds(point.time)}s",
+                    selected = nearby == point,
+                    enabled = true
+                ) {
+                    viewModel.clearFramingDraft()
+                    viewModel.seek((clip.timelineStart + point.time).toFloat())
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FramingNumberChip(label: String, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(50)
+    Box(
+        modifier = Modifier
+            .clip(shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 4.dp)
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFFB8B0C8),
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun FramingChromeDivider() {
+    Box(
+        modifier = Modifier
+            .padding(horizontal = 2.dp)
+            .width(1.dp)
+            .height(16.dp)
+            .background(Color(0xFF4A4458))
+    )
+}
+
+@Composable
+private fun FramingNumbersDialog(
+    pose: FramingPose,
+    onDismiss: () -> Unit,
+    onApply: (FramingPose) -> Unit,
+) {
+    var zoomPct by remember { mutableStateOf((pose.zoom * 100.0).roundToInt().toString()) }
+    var panX by remember { mutableStateOf(pose.panX.roundToInt().toString()) }
+    var panY by remember { mutableStateOf(pose.panY.roundToInt().toString()) }
+
+    fun apply() {
+        val next = framingPoseFromNumberFields(zoomPct, panX, panY) ?: return
+        onApply(next)
+    }
+
+    StudioDialog(title = "Framing", onDismiss = onDismiss, width = 360.dp, scrollable = false) {
+        StudioTextField(
+            value = zoomPct,
+            onValueChange = { zoomPct = it },
+            label = "Zoom %",
+            placeholder = "25–400",
+            singleLine = true,
+            autoFocus = true,
+            aiGenerate = null,
+            onSubmit = { apply() }
+        )
+        Spacer(Modifier.height(8.dp))
+        StudioTextField(
+            value = panX,
+            onValueChange = { panX = it },
+            label = "Pan X",
+            placeholder = "0–100",
+            singleLine = true,
+            aiGenerate = null,
+            onSubmit = { apply() }
+        )
+        Spacer(Modifier.height(8.dp))
+        StudioTextField(
+            value = panY,
+            onValueChange = { panY = it },
+            label = "Pan Y",
+            placeholder = "0–100",
+            singleLine = true,
+            aiGenerate = null,
+            onSubmit = { apply() }
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Zoom 25–400%. Pan 0–100 (50 is center).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        DialogActions {
+            GhostPillButton("Cancel") { onDismiss() }
+            ActionSpacer()
+            PillButton("Apply", enabled = framingPoseFromNumberFields(zoomPct, panX, panY) != null) {
+                apply()
+            }
+        }
+    }
+}
+
+internal fun parseFramingNumber(raw: String): Double? =
+    raw.trim().removeSuffix("%").trim().toDoubleOrNull()
+
+internal fun framingPoseFromNumberFields(zoomPercent: String, panX: String, panY: String): FramingPose? {
+    val zoom = parseFramingNumber(zoomPercent) ?: return null
+    val x = parseFramingNumber(panX) ?: return null
+    val y = parseFramingNumber(panY) ?: return null
+    return FramingPose(
+        zoom = (zoom / 100.0).coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM),
+        panX = x.coerceIn(0.0, 100.0),
+        panY = y.coerceIn(0.0, 100.0)
+    )
 }
 
 /**
