@@ -49,6 +49,10 @@ actual fun playSequencerTone(
     // No-op on desktop: sequencer note playback is a browser (WebAudio) feature.
 }
 
+actual fun notifyBackgroundGenerationFinished() {
+    // No-op on desktop: completion ding + favicon badge are browser features.
+}
+
 // Realtime speech dictation is a browser (Web Speech API) feature.
 actual fun startRealtimeSpeechInput(onResult: (String) -> Unit): Boolean = false
 

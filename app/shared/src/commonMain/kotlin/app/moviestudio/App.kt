@@ -45,7 +45,8 @@ import kotlinx.coroutines.delay
  * - the space-bar play/pause shortcut (active only while no text input is focused),
  * - arrow-key playhead stepping (1s, or 1min with Ctrl) and ESC leaving fullscreen playback,
  * - Delete/Backspace removing the selected timeline clip,
- * - Ctrl-state tracking for snap-dragging, and
+ * - Ctrl-state tracking for snap-dragging,
+ * - a ding + red-dot favicon when a background generation finishes, and
  * - the transient error toast.
  */
 @Composable
@@ -97,6 +98,18 @@ fun App() {
             if (!TextInputFocusTracker.anyFocused && !rootHasFocus) {
                 runCatching { rootFocus.requestFocus() }
             }
+        }
+
+        // Same count the jobs panel / "Generating (N)" pill uses (PENDING+RUNNING). A drop
+        // means a generation finished (or failed); skip the first sample so the initial
+        // jobs fetch doesn't ding as if work had just completed.
+        val runningGenerationCount = viewModel.runningJobs.size
+        var previousGenerationCount by remember { mutableStateOf<Int?>(null) }
+        LaunchedEffect(runningGenerationCount) {
+            if (shouldNotifyGenerationsFinished(previousGenerationCount, runningGenerationCount)) {
+                notifyBackgroundGenerationFinished()
+            }
+            previousGenerationCount = runningGenerationCount
         }
 
         Box(

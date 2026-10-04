@@ -19,6 +19,22 @@ class SharedCommonTest {
     }
 
     @Test
+    fun testShouldNotifyGenerationsFinished() {
+        // First observation never dings — that's the initial jobs fetch, not a completion.
+        assertFalse(shouldNotifyGenerationsFinished(null, 0))
+        assertFalse(shouldNotifyGenerationsFinished(null, 3))
+        // Count going up (a generation started) is silent.
+        assertFalse(shouldNotifyGenerationsFinished(0, 1))
+        assertFalse(shouldNotifyGenerationsFinished(1, 3))
+        // Unchanged count is silent.
+        assertFalse(shouldNotifyGenerationsFinished(2, 2))
+        // A drop means a generation finished (or failed) — ping.
+        assertTrue(shouldNotifyGenerationsFinished(1, 0))
+        assertTrue(shouldNotifyGenerationsFinished(3, 2))
+        assertTrue(shouldNotifyGenerationsFinished(3, 0))
+    }
+
+    @Test
     fun testBaseUrlAndConfig() {
         assertEquals(BuildConfig.BASE_URL, getBaseUrl())
         // Ensure default URL is localhost:8080 when not overridden or matched

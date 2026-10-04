@@ -191,6 +191,21 @@ expect fun playSequencerTone(
 )
 
 /**
+ * True when the live running-generation count dropped since the last observation.
+ * [previous] is null on the first sample so the initial jobs fetch never looks like
+ * completions arriving.
+ */
+fun shouldNotifyGenerationsFinished(previous: Int?, current: Int): Boolean =
+    previous != null && current < previous
+
+/**
+ * Browser-only completion ping: plays a short ding and, when the tab is in the background,
+ * paints a red-dot favicon until the user returns to it. No-op on platforms without a
+ * document/favicon/WebAudio.
+ */
+expect fun notifyBackgroundGenerationFinished()
+
+/**
  * Starts realtime speech-to-text dictation. On web targets this prefers the browser Web Speech
  * API and, when that is unavailable (e.g. Firefox has no `SpeechRecognition`), falls back to
  * streaming microphone audio to the server's `/api/speech/ws` relay (Qwen realtime ASR).

@@ -472,6 +472,121 @@ actual fun playSequencerTone(
     jsPlaySequencerTone(waveform, frequencyHz, durationSeconds, volume, sampleUrl)
 }
 
+// Completion ping: a two-note ding, plus a red-dot favicon while the tab is in the background.
+// The badge is cleared on the next visibilitychange/focus so it only lingers until the user
+// comes back to the tab. The first-sample skip lives in shouldNotifyGenerationsFinished.
+private fun jsNotifyBackgroundGenerationFinished(): Unit = js("""
+    (function() {
+        function ensureFaviconLink() {
+            var link = document.querySelector("link[rel='icon']");
+            if (!link) {
+                link = document.createElement('link');
+                link.rel = 'icon';
+                document.head.appendChild(link);
+            }
+            return link;
+        }
+        function drawFavicon(badged) {
+            var size = 32;
+            var canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            var c = canvas.getContext('2d');
+            if (!c) return;
+            c.beginPath();
+            c.arc(16, 16, 14, 0, Math.PI * 2);
+            c.fillStyle = '#1a1a1a';
+            c.fill();
+            c.fillStyle = '#f2f2f2';
+            c.beginPath();
+            c.moveTo(12, 9);
+            c.lineTo(12, 23);
+            c.lineTo(24, 16);
+            c.closePath();
+            c.fill();
+            if (badged) {
+                c.beginPath();
+                c.arc(24, 8, 6, 0, Math.PI * 2);
+                c.fillStyle = '#e53935';
+                c.fill();
+                c.strokeStyle = '#1a1a1a';
+                c.lineWidth = 1.5;
+                c.stroke();
+            }
+            var link = ensureFaviconLink();
+            link.type = 'image/png';
+            link.href = canvas.toDataURL('image/png');
+        }
+        function clearFaviconBadge() {
+            if (!window.__msFaviconBadged) return;
+            window.__msFaviconBadged = false;
+            var original = window.__msFaviconOriginal;
+            var link = document.querySelector("link[rel='icon']");
+            if (original && link) {
+                link.type = 'image/svg+xml';
+                link.href = original;
+            } else {
+                drawFavicon(false);
+            }
+        }
+        function installVisibilityClear() {
+            if (window.__msFaviconVisBound) return;
+            window.__msFaviconVisBound = true;
+            document.addEventListener('visibilitychange', function() {
+                if (!document.hidden) clearFaviconBadge();
+            });
+            window.addEventListener('focus', function() {
+                if (!document.hidden) clearFaviconBadge();
+            });
+        }
+        function playDing() {
+            try {
+                var AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (!AudioCtx) return;
+                if (window.__msAudioCtx === undefined) {
+                    try { window.__msAudioCtx = new AudioCtx(); }
+                    catch (e) { window.__msAudioCtx = null; }
+                }
+                var ctx = window.__msAudioCtx;
+                if (!ctx) {
+                    try { ctx = new AudioCtx(); window.__msAudioCtx = ctx; }
+                    catch (e) { return; }
+                }
+                if (ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} }
+                function tone(freq, start, dur) {
+                    var osc = ctx.createOscillator();
+                    var gain = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.value = freq;
+                    gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
+                    gain.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + start + 0.02);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + dur);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(ctx.currentTime + start);
+                    osc.stop(ctx.currentTime + start + dur + 0.02);
+                }
+                tone(880, 0, 0.12);
+                tone(1174.66, 0.12, 0.18);
+            } catch (e) {}
+        }
+        playDing();
+        installVisibilityClear();
+        if (document.hidden) {
+            var link = document.querySelector("link[rel='icon']");
+            if (link && window.__msFaviconOriginal === undefined) {
+                window.__msFaviconOriginal = link.href;
+            }
+            window.__msFaviconBadged = true;
+            drawFavicon(true);
+        }
+    })()
+""")
+
+actual fun notifyBackgroundGenerationFinished() {
+    jsNotifyBackgroundGenerationFinished()
+}
+
 // ---------------------------------------------------------------------- realtime dictation
 
 // Web Speech API dictation: a single recognition session accumulates final + interim results and
