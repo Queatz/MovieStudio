@@ -109,6 +109,8 @@ private fun jsWebGLSyncStructure(structJson: String, playing: Boolean): Unit = j
                 'uniform sampler2D uTex;' +
                 'uniform vec2 uUvScale;' +
                 'uniform vec2 uUvOffset;' +
+                'uniform vec2 uDestOrigin;' +
+                'uniform vec2 uDestSize;' +
                 'uniform vec2 uSize;' +
                 'uniform float uAlpha;' +
                 'uniform float uReveal;' +
@@ -149,7 +151,10 @@ private fun jsWebGLSyncStructure(structJson: String, playing: Boolean): Unit = j
                 '    }' +
                 '    pos = nearest * cellPx / uSize;' +
                 '  }' +
-                '  vec4 c = texture2D(uTex, pos * uUvScale + uUvOffset);' +
+                '  vec2 dest = max(uDestSize, vec2(0.0001));' +
+                '  vec2 local = (pos - uDestOrigin) / dest;' +
+                '  if (local.x < 0.0 || local.x > 1.0 || local.y < 0.0 || local.y > 1.0) discard;' +
+                '  vec4 c = texture2D(uTex, local * uUvScale + uUvOffset);' +
                 '  float a = uAlpha;' +
                 '  if (uNoise > 0.001) {' +
                 '    float r = hash12(floor(vPos * uSize) + vec2(uSeed));' +
@@ -193,6 +198,8 @@ private fun jsWebGLSyncStructure(structJson: String, playing: Boolean): Unit = j
                 uTranslate: gl.getUniformLocation(prog, 'uTranslate'),
                 uUvScale: gl.getUniformLocation(prog, 'uUvScale'),
                 uUvOffset: gl.getUniformLocation(prog, 'uUvOffset'),
+                uDestOrigin: gl.getUniformLocation(prog, 'uDestOrigin'),
+                uDestSize: gl.getUniformLocation(prog, 'uDestSize'),
                 uSize: gl.getUniformLocation(prog, 'uSize'),
                 uAlpha: gl.getUniformLocation(prog, 'uAlpha'),
                 uReveal: gl.getUniformLocation(prog, 'uReveal'),
@@ -283,23 +290,35 @@ private fun jsWebGLSyncStructure(structJson: String, playing: Boolean): Unit = j
                         srcH = rec.el.naturalHeight;
                     }
                     if (!srcW || !srcH) { continue; }
-                    // Cover-fit: crop the overflowing axis; the 0-100 offset slides the visible
-                    // window across the overflow ((iw-ow) * offset/100 — FFmpeg's crop window).
+                    // Cover-crop UV + dest rect from the shared framingWindow formula (Kotlin
+                    // framingWindow): zoom-in shrinks UVs; zoom-out letterboxes (full-source UV,
+                    // dest smaller than the frame). Transitions still run on the frame via
+                    // uTranslate / uReveal after this crop.
                     var texAspect = srcW / srcH;
-                    var uScale = 1;
-                    var vScale = 1;
-                    var uOff = 0;
-                    var vOff = 0;
-                    if (texAspect > stageAspect) {
-                        uScale = stageAspect / texAspect;
-                        uOff = (1 - uScale) * (layer.offsetX / 100);
-                    } else {
-                        vScale = texAspect / stageAspect;
-                        vOff = (1 - vScale) * (layer.offsetY / 100);
-                    }
+                    var z = layer.zoom > 0 ? layer.zoom : 1;
+                    if (z < 0.25) z = 0.25;
+                    if (z > 4) z = 4;
+                    var panX = Math.max(0, Math.min(100, layer.offsetX)) / 100;
+                    var panY = Math.max(0, Math.min(100, layer.offsetY)) / 100;
+                    var src = texAspect > 0 ? texAspect : 1;
+                    var frame = stageAspect > 0 ? stageAspect : 1;
+                    var coverU = Math.min(1, frame / src);
+                    var coverV = Math.min(1, src / frame);
+                    var desiredU = coverU / z;
+                    var desiredV = coverV / z;
+                    var uScale = Math.min(1, desiredU);
+                    var vScale = Math.min(1, desiredV);
+                    var dw = Math.min(1, 1 / desiredU);
+                    var dh = Math.min(1, 1 / desiredV);
+                    var uOff = (1 - uScale) * panX;
+                    var vOff = (1 - vScale) * panY;
+                    var dx = (1 - dw) * panX;
+                    var dy = (1 - dh) * panY;
                     gl.uniform2f(S.uTranslate, layer.dx, layer.dy);
                     gl.uniform2f(S.uUvScale, uScale, vScale);
                     gl.uniform2f(S.uUvOffset, uOff, vOff);
+                    gl.uniform2f(S.uDestOrigin, dx, dy);
+                    gl.uniform2f(S.uDestSize, dw, dh);
                     gl.uniform2f(S.uSize, canvas.width, canvas.height);
                     gl.uniform1f(S.uAlpha, layer.alpha);
                     gl.uniform1f(S.uReveal, layer.reveal);
@@ -406,22 +425,22 @@ private fun jsWebGLSyncStructure(structJson: String, playing: Boolean): Unit = j
     })(structJson, playing)
 """)
 
-// Pushes the fast-changing per-frame values (12 numbers per layer, in stack order: position, alpha,
-// dx, dy, reveal, offsetX, offsetY, volume, pixelate, noise, voronoi, vignette) as a flat CSV — parsed with a
-// cheap split, no JSON.parse and no per-tick object allocation. The structure must already be in
-// place (jsWebGLSyncStructure); if the count does not match yet, the tick is skipped and the next
-// one applies. Video layers re-seek here when they drift more than 0.5s from their target position,
-// and apply their (clamped) volume so a keyframed envelope is honored in the preview (the top video
-// is the only audible one).
+// Pushes the fast-changing per-frame values (13 numbers per layer, in stack order: position, alpha,
+// dx, dy, reveal, offsetX, offsetY, zoom, volume, pixelate, noise, voronoi, vignette) as a flat CSV —
+// parsed with a cheap split, no JSON.parse and no per-tick object allocation. The structure must
+// already be in place (jsWebGLSyncStructure); if the count does not match yet, the tick is skipped
+// and the next one applies. Video layers re-seek here when they drift more than 0.5s from their
+// target position, and apply their (clamped) volume so a keyframed envelope is honored in the
+// preview (the top video is the only audible one).
 private fun jsWebGLSyncFrame(csv: String): Unit = js("""
     (function(csv) {
         var S = window.__msWebGLPreview;
         if (!S || !S.layers || S.layers.length === 0) { return; }
         var parts = csv.length ? csv.split(',') : [];
         var n = S.layers.length;
-        if (parts.length !== n * 12) { return; }
+        if (parts.length !== n * 13) { return; }
         for (var i = 0; i < n; i++) {
-            var b = i * 12;
+            var b = i * 13;
             var layer = S.layers[i];
             layer.position = parseFloat(parts[b]);
             layer.alpha = parseFloat(parts[b + 1]);
@@ -430,11 +449,12 @@ private fun jsWebGLSyncFrame(csv: String): Unit = js("""
             layer.reveal = parseFloat(parts[b + 4]);
             layer.offsetX = parseFloat(parts[b + 5]);
             layer.offsetY = parseFloat(parts[b + 6]);
-            layer.volume = parseFloat(parts[b + 7]);
-            layer.pixelate = parseFloat(parts[b + 8]);
-            layer.noise = parseFloat(parts[b + 9]);
-            layer.voronoi = parseFloat(parts[b + 10]);
-            layer.vignette = parseFloat(parts[b + 11]);
+            layer.zoom = parseFloat(parts[b + 7]);
+            layer.volume = parseFloat(parts[b + 8]);
+            layer.pixelate = parseFloat(parts[b + 9]);
+            layer.noise = parseFloat(parts[b + 10]);
+            layer.voronoi = parseFloat(parts[b + 11]);
+            layer.vignette = parseFloat(parts[b + 12]);
             if (layer.kind === 'video') {
                 var entry = S.videos[layer.key];
                 if (entry && entry.el) {
@@ -526,28 +546,6 @@ private fun structuralJson(layers: List<WebGLPreviewLayer>): String = buildStrin
     append(']')
 }
 
-/**
- * Serializes the fast-changing per-frame values as a flat CSV (12 numbers per layer, in stack order:
- * position, alpha, dx, dy, reveal, offsetX, offsetY, volume, pixelate, noise, voronoi, vignette) —
- * cheaper to build and parse than JSON and allocation-free on the JS side.
- */
-private fun frameCsv(layers: List<WebGLPreviewLayer>): String = buildString {
-    layers.forEachIndexed { index, layer ->
-        if (index > 0) append(',')
-        append(layer.positionSeconds).append(',')
-        append(layer.alpha).append(',')
-        append(layer.translateXFraction).append(',')
-        append(layer.translateYFraction).append(',')
-        append(layer.revealRadiusFraction).append(',')
-        append(layer.offsetXPercent).append(',')
-        append(layer.offsetYPercent).append(',')
-        append(layer.volume).append(',')
-        append(layer.pixelateFraction).append(',')
-        append(layer.noiseFraction).append(',')
-        append(layer.voronoiFraction).append(',')
-        append(layer.vignetteRevealFraction)
-    }
-}
 
 @Composable
 actual fun WebGLPreviewSurface(
@@ -581,7 +579,7 @@ actual fun WebGLPreviewSurface(
     // bump the render generation, so the loop also refreshes the paused preview after a scrub,
     // transition, resize or play/pause.
     LaunchedEffect(layers, sizePx, isPlaying) {
-        jsWebGLSyncFrame(frameCsv(layers))
+        jsWebGLSyncFrame(webglLayerFrameCsv(layers))
         generation++
     }
 

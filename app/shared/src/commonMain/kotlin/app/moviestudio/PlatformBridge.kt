@@ -158,11 +158,13 @@ expect fun printDocument(html: String)
 expect fun requestVideoFullscreen()
 
 /**
- * Positions the media inside the movie preview's center-crop window (CSS `object-position`).
- * [xPercent]/[yPercent] are 0-100 where 50/50 is centered — mirroring the clip's
- * [app.moviestudio.EffectsConfig.offsetX]/[app.moviestudio.EffectsConfig.offsetY].
+ * Positions the media inside the movie preview's center-crop window (CSS `object-position`)
+ * and applies [zoom] via CSS `transform: scale`. [xPercent]/[yPercent] are 0-100 where 50/50
+ * is centered — mirroring the clip's [EffectsConfig.offsetX]/[EffectsConfig.offsetY].
+ * Zoom 1.0 is today's cover-crop. Zoom-out on this Default `<video>` path letterboxes the
+ * element and does **not** reveal cover-cropped pixels (WebGL / Compose stills / export do).
  */
-expect fun setPreviewObjectPosition(xPercent: Double, yPercent: Double)
+expect fun setPreviewObjectPosition(xPercent: Double, yPercent: Double, zoom: Double = 1.0)
 
 /**
  * Shows or hides the movie preview's Default-renderer `<video>` overlay (the shared, absolutely

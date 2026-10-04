@@ -1,6 +1,8 @@
 package app.moviestudio.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -30,9 +32,14 @@ import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.ScaleFactor
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -43,6 +50,10 @@ import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
 import app.moviestudio.Asset
 import app.moviestudio.AssetType
+import app.moviestudio.FramingPose
+import app.moviestudio.MAX_FRAMING_ZOOM
+import app.moviestudio.MIN_FRAMING_ZOOM
+import app.moviestudio.previewFramingPose
 import app.moviestudio.AudioPlayItem
 import app.moviestudio.CaptionConfig
 import app.moviestudio.CircleRevealShape
@@ -78,7 +89,10 @@ import app.moviestudio.trackVolumeBoost
 import app.moviestudio.updateAudioPlayback
 import app.moviestudio.volumeAt
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.Font
+import kotlin.math.exp
 
 /** A clip together with its resolved asset and track type, active under the playhead. */
 private data class ActiveClip(val clip: Clip, val asset: Asset, val trackType: TrackType, val zIndex: Int)
@@ -174,11 +188,15 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
         updateAudioPlayback(audioItems, viewModel.isPlaying)
     }
 
-    // Keep the shared <video> element's center-crop position in sync with the active video clip's
-    // 0-100 offsets (50 = center). Still images position themselves via Compose alignment (below).
-    val activeVideoEffects = activeVideo?.let { parseEffectsConfig(it.clip.effectsConfig) }
-    LaunchedEffect(activeVideo?.clip?.id, activeVideoEffects?.offsetX, activeVideoEffects?.offsetY) {
-        setPreviewObjectPosition(activeVideoEffects?.offsetX ?: 50.0, activeVideoEffects?.offsetY ?: 50.0)
+    // Keep the shared <video> element's pan + zoom in sync with the active video clip's live
+    // framing pose. Still images position themselves via Compose scale/alignment (below).
+    val videoPose = activeVideo?.framingPose(playhead, viewModel)
+    LaunchedEffect(activeVideo?.clip?.id, videoPose, viewModel.framingDraft, viewModel.isPlaying) {
+        setPreviewObjectPosition(
+            videoPose?.panX ?: 50.0,
+            videoPose?.panY ?: 50.0,
+            videoPose?.zoom ?: 1.0
+        )
     }
 
     // The Default renderer draws its <video> element as a native overlay ABOVE the entire UI (see
@@ -220,7 +238,8 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                     modifier = Modifier
                         .aspectRatio(ratio)
                         .clipToBounds() // keep sliding-in clips inside the movie frame (like FFmpeg)
-                        .background(Color.Black),
+                        .background(Color.Black)
+                        .framingStageGestures(viewModel, visualClips),
                     contentAlignment = Alignment.Center
                 ) {
                     // Render EVERY visual clip under the playhead, lowest zIndex first so overlay
@@ -231,7 +250,7 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                         // INTO the Compose scene graph (bottom of the stage). Description cards are
                         // text and stay Compose-rendered on top of it, so — unlike the old floating
                         // overlay — dialogs, cards and captions all layer over the preview correctly.
-                        WebGLStage(visualClips, playhead, viewModel.isPlaying)
+                        WebGLStage(visualClips, playhead, viewModel)
                         visualClips.forEach { active ->
                             when {
                                 // Styled text elements render (with transitions) on top of the GPU
@@ -253,7 +272,11 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                                 // A clip with no media yet is a description card: large centered text.
                                 active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
                                 // Still images: plain Compose AsyncImage, center-cropped + offset.
-                                active.asset.type == AssetType.IMAGE -> ClipImage(active, transitionVisual)
+                                active.asset.type == AssetType.IMAGE -> ClipImage(
+                                    active,
+                                    transitionVisual,
+                                    active.framingPose(playhead, viewModel)
+                                )
                                 // The single video that owns the shared <video> element.
                                 active === activeVideo -> {
                                     val clipLocal = (playhead - active.clip.timelineStart).toDouble()
@@ -308,12 +331,13 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
  * strictly by zIndex.
  */
 @Composable
-private fun WebGLStage(visualClips: List<ActiveClip>, playhead: Float, isPlaying: Boolean) {
+private fun WebGLStage(visualClips: List<ActiveClip>, playhead: Float, viewModel: AppViewModel) {
     val layers = visualClips
         .filter { !it.asset.isDescriptionOnly && it.asset.ossUrl.isNotBlank() }
         .map { active ->
             val transitionVisual = active.transitionVisual(playhead)
             val effects = parseEffectsConfig(active.clip.effectsConfig)
+            val pose = active.framingPose(playhead, viewModel)
             WebGLPreviewLayer(
                 key = active.clip.id,
                 kind = if (active.asset.type == AssetType.IMAGE) WEBGL_LAYER_IMAGE else WEBGL_LAYER_VIDEO,
@@ -325,8 +349,9 @@ private fun WebGLStage(visualClips: List<ActiveClip>, playhead: Float, isPlaying
                 translateYFraction = transitionVisual.translateYFraction,
                 revealRadiusFraction = transitionVisual.revealRadiusFraction,
                 vignetteRevealFraction = transitionVisual.vignetteRevealFraction,
-                offsetXPercent = effects.offsetX,
-                offsetYPercent = effects.offsetY,
+                offsetXPercent = pose.panX,
+                offsetYPercent = pose.panY,
+                zoom = pose.zoom,
                 // The volume-over-time envelope (when present) evaluated at the playhead.
                 volume = effects.volumeAt((playhead - active.clip.timelineStart).toDouble()),
                 // Textured transition amounts the WebGL shader animates (mosaic / grain / cells).
@@ -335,7 +360,7 @@ private fun WebGLStage(visualClips: List<ActiveClip>, playhead: Float, isPlaying
                 voronoiFraction = transitionVisual.voronoiFraction
             )
         }
-    WebGLPreviewSurface(layers, isPlaying, Modifier.fillMaxSize())
+    WebGLPreviewSurface(layers, viewModel.isPlaying, Modifier.fillMaxSize())
 }
 
 /**
@@ -352,14 +377,14 @@ private fun ActiveClip.transitionVisual(playhead: Float): TransitionVisual {
 }
 
 /**
- * A still-image clip, drawn with a plain Compose [AsyncImage]. [ContentScale.Crop] fills the
- * (aspect-constrained) stage and crops the overflow; the clip's 0-100 crop offsets (50 = center)
- * map to a [BiasAlignment] so the visible window can be nudged, matching the FFmpeg render. The
- * [transitionVisual] fades / slides the image in over whatever plays beneath it.
+ * A still-image clip, drawn with a plain Compose [AsyncImage]. Cover × [FramingPose.zoom] fills
+ * (or letterboxes) the stage; [FramingPose.panX]/[panY] (50 = center) map to a [BiasAlignment]
+ * so the visible window can be nudged, matching [framingWindow]. The [transitionVisual] fades /
+ * slides the image in over whatever plays beneath it (on the frame, after the crop).
  */
 @Composable
-private fun ClipImage(active: ActiveClip, transitionVisual: TransitionVisual) {
-    val effects = parseEffectsConfig(active.clip.effectsConfig)
+private fun ClipImage(active: ActiveClip, transitionVisual: TransitionVisual, pose: FramingPose) {
+    val zoom = pose.zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM).toFloat()
     AsyncImage(
         model = active.asset.ossUrl,
         contentDescription = active.asset.description ?: active.asset.aiPrompt,
@@ -376,12 +401,109 @@ private fun ClipImage(active: ActiveClip, transitionVisual: TransitionVisual) {
                     Modifier.clip(CircleRevealShape(transitionVisual.revealRadiusFraction))
                 else Modifier
             ),
-        contentScale = ContentScale.Crop,
+        contentScale = CoverZoomContentScale(zoom),
         alignment = BiasAlignment(
-            horizontalBias = ((effects.offsetX - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f),
-            verticalBias = ((effects.offsetY - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f)
+            horizontalBias = ((pose.panX - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f),
+            verticalBias = ((pose.panY - 50.0) / 50.0).toFloat().coerceIn(-1f, 1f)
         )
     )
+}
+
+/** Cover-crop scaled by [zoom] (1 = today's Crop). Zoom-out can be smaller than the dest (letterbox). */
+private class CoverZoomContentScale(private val zoom: Float) : ContentScale {
+    override fun computeScaleFactor(srcSize: Size, dstSize: Size): ScaleFactor {
+        val sx = if (srcSize.width > 0f) dstSize.width / srcSize.width else 1f
+        val sy = if (srcSize.height > 0f) dstSize.height / srcSize.height else 1f
+        val cover = maxOf(sx, sy) * zoom
+        return ScaleFactor(cover, cover)
+    }
+}
+
+private fun ActiveClip.framingPose(playhead: Float, viewModel: AppViewModel): FramingPose {
+    val effects = parseEffectsConfig(clip.effectsConfig)
+    return previewFramingPose(
+        effects = effects,
+        clipId = clip.id,
+        clipSeconds = (playhead - clip.timelineStart).toDouble(),
+        draft = viewModel.framingDraft,
+        isPlaying = viewModel.isPlaying
+    )
+}
+
+/**
+ * Stage-only wheel/pinch zoom and drag-pan for the selected framable clip. Disabled during
+ * playback (the draft is pause-only) and never attached to the page, so timeline drags stay free.
+ */
+private fun Modifier.framingStageGestures(
+    viewModel: AppViewModel,
+    visualClips: List<ActiveClip>,
+): Modifier {
+    val selectedId = viewModel.selectedClipId
+    val target = visualClips.firstOrNull { active ->
+        active.clip.id == selectedId &&
+            clipSupportsFraming(active.trackType, active.asset.type, active.asset.isDescriptionOnly)
+    }
+    val enabled = target != null && !viewModel.isPlaying
+    val clipId = target?.clip?.id
+    return pointerInput(enabled, clipId) {
+        if (!enabled || clipId == null) return@pointerInput
+        coroutineScope {
+            launch {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.type == PointerEventType.Scroll) {
+                            val dy = event.changes.fold(0f) { acc, c -> acc + c.scrollDelta.y }
+                            event.changes.forEach { it.consume() }
+                            if (dy != 0f) {
+                                viewModel.multiplyFramingZoom(clipId, exp(-dy.toDouble() / 240.0))
+                                viewModel.scheduleFramingWheelCommit(clipId)
+                            }
+                        }
+                    }
+                }
+            }
+            launch {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var lastCentroid: Offset? = null
+                    var lastSpan = 0f
+                    do {
+                        val event = awaitPointerEvent()
+                        val pressed = event.changes.filter { it.pressed }
+                        if (pressed.size >= 2) {
+                            val centroid = Offset(
+                                pressed.map { it.position.x }.average().toFloat(),
+                                pressed.map { it.position.y }.average().toFloat()
+                            )
+                            val span = (pressed[0].position - pressed[1].position).getDistance()
+                            if (lastSpan > 1f && span > 1f) {
+                                viewModel.multiplyFramingZoom(clipId, (span / lastSpan).toDouble())
+                            }
+                            lastCentroid = centroid
+                            lastSpan = span
+                            pressed.forEach { it.consume() }
+                        } else if (pressed.size == 1) {
+                            val p = pressed[0]
+                            val last = lastCentroid
+                            if (last != null) {
+                                viewModel.nudgeFramingPan(
+                                    clipId,
+                                    p.position.x - last.x,
+                                    p.position.y - last.y,
+                                    size.width,
+                                    size.height
+                                )
+                            }
+                            lastCentroid = p.position
+                            p.consume()
+                        }
+                    } while (event.changes.any { it.pressed })
+                    viewModel.commitFramingGesture(clipId)
+                }
+            }
+        }
+    }
 }
 
 /**

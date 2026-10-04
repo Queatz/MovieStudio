@@ -58,7 +58,13 @@ import app.moviestudio.TEXT_SCROLL_MIN_PERCENT
 import app.moviestudio.TextConfig
 import app.moviestudio.TRANSPARENT_COLOR
 import app.moviestudio.EffectsConfig
+import app.moviestudio.FramingInterpolation
+import app.moviestudio.FramingPoint
+import app.moviestudio.FramingPose
+import app.moviestudio.previewFramingPose
 import app.moviestudio.MAX_CLIP_VOLUME
+import app.moviestudio.MAX_FRAMING_ZOOM
+import app.moviestudio.MIN_FRAMING_ZOOM
 import app.moviestudio.SlideDirection
 import app.moviestudio.Track
 import app.moviestudio.TrackType
@@ -67,16 +73,18 @@ import app.moviestudio.TransitionType
 import app.moviestudio.VolumePoint
 import app.moviestudio.clipCarriesAudio
 import app.moviestudio.displayName
+import app.moviestudio.framingAt
 import app.moviestudio.parseEffectsConfig
 import app.moviestudio.textScrollTranslationY
 import app.moviestudio.volumeAt
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
  * Inspector for the selected timeline clip: transition-in over overlapping media (with a live
- * percentage-of-clip control), captions (voice clips), volume (any audio-carrying clip — the audio
- * tracks plus video clips whose media has sound), extracting a voiceover from a video clip, and
- * clip actions.
+ * percentage-of-clip control), framing (zoom/pan keyframes for image and video clips), captions
+ * (voice clips), volume (any audio-carrying clip — the audio tracks plus video clips whose media
+ * has sound), extracting a voiceover from a video clip, and clip actions.
  */
 @Composable
 fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
@@ -107,7 +115,9 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                "${track.type.name.lowercase().replaceFirstChar { it.uppercase() }} clip • ${formatDuration(clipLength.toDouble())}",
+                "${
+                    track.type.name.lowercase().replaceFirstChar { it.uppercase() }
+                } clip • ${formatDuration(clipLength.toDouble())}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -117,8 +127,8 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
                 Spacer(Modifier.height(6.dp))
                 GhostPillButton("🗑 Remove", compact = true) { viewModel.deleteClip(clip.id) }
                 val canExtractVoice = track.type == TrackType.VIDEO &&
-                    asset?.type == AssetType.VIDEO &&
-                    asset.let { !it.isDescriptionOnly && it.ossUrl.isNotBlank() } == true
+                        asset?.type == AssetType.VIDEO &&
+                        asset.let { !it.isDescriptionOnly && it.ossUrl.isNotBlank() } == true
                 if (canExtractVoice) {
                     Spacer(Modifier.height(6.dp))
                     GhostPillButton("🎙 Extract voice", compact = true) {
@@ -150,7 +160,10 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
                         val spec = if (type == TransitionType.NONE) {
                             null
                         } else {
-                            TransitionSpec(type, (effects.transition?.durationSeconds ?: 1.0).coerceAtMost(clipLength.toDouble()))
+                            TransitionSpec(
+                                type,
+                                (effects.transition?.durationSeconds ?: 1.0).coerceAtMost(clipLength.toDouble())
+                            )
                         }
                         viewModel.updateClipEffects(clip, effects.copy(transition = spec))
                     }
@@ -195,25 +208,16 @@ fun ClipInspector(viewModel: AppViewModel, clip: Clip, track: Track) {
             Spacer(Modifier.width(16.dp))
         }
 
-        // Crop position (visual tracks): where the media sits inside the center-crop window.
-        // 0-100 on each axis, 50/50 = centered; applied in the preview and the final render.
-        if (track.type == TrackType.VIDEO) {
-            Column(Modifier.width(170.dp)) {
-                LabeledSlider(
-                    label = "Offset X",
-                    value = effects.offsetX.toFloat(),
-                    valueRange = 0f..100f,
-                    valueText = "${effects.offsetX.roundToInt()}",
-                    onValueChange = { viewModel.updateClipEffects(clip, effects.copy(offsetX = it.roundToInt().toDouble())) }
-                )
-                LabeledSlider(
-                    label = "Offset Y",
-                    value = effects.offsetY.toFloat(),
-                    valueRange = 0f..100f,
-                    valueText = "${effects.offsetY.roundToInt()}",
-                    onValueChange = { viewModel.updateClipEffects(clip, effects.copy(offsetY = it.roundToInt().toDouble())) }
-                )
-            }
+        // Framing (image/video on the video track): zoom/pan the cover-crop window. Save/Delete
+        // and Smooth/Instant live here; preview gestures (later) only pose. Text and description
+        // cards never show this block.
+        if (clipSupportsFraming(track.type, asset?.type, asset == null || asset.isDescriptionOnly)) {
+            FramingControls(
+                viewModel = viewModel,
+                clip = clip,
+                effects = effects,
+                clipLengthSeconds = clipLength.toDouble()
+            )
             Spacer(Modifier.width(16.dp))
         }
 
@@ -351,6 +355,296 @@ private fun formatSeconds(value: Double): String {
     return rounded.toString()
 }
 
+/** Seconds: a framing keyframe this close to the playhead is treated as "at" it. */
+internal const val FRAMING_KEYFRAME_HIT_SECONDS = 0.08
+
+/** Image/video clips on the video track that have media (not text or description cards). */
+internal fun clipSupportsFraming(
+    trackType: TrackType,
+    assetType: AssetType?,
+    descriptionOnly: Boolean,
+): Boolean = trackType == TrackType.VIDEO &&
+        (assetType == AssetType.IMAGE || assetType == AssetType.VIDEO) &&
+        !descriptionOnly
+
+/** Playhead in clip-local seconds, or null when it sits outside `[0, clipLength]`. */
+internal fun clipLocalPlayheadSeconds(
+    playhead: Double,
+    timelineStart: Double,
+    clipLength: Double,
+): Double? {
+    val t = playhead - timelineStart
+    return t.takeIf { it in 0.0..clipLength }
+}
+
+/** The keyframe within [hitSeconds] of [clipSeconds], if any (nearest wins). */
+internal fun nearestFramingKeyframe(
+    keyframes: List<FramingPoint>,
+    clipSeconds: Double,
+    hitSeconds: Double = FRAMING_KEYFRAME_HIT_SECONDS,
+): FramingPoint? {
+    val idx = nearestFramingKeyframeIndex(keyframes, clipSeconds, hitSeconds)
+    return if (idx >= 0) keyframes[idx] else null
+}
+
+internal fun nearestFramingKeyframeIndex(
+    keyframes: List<FramingPoint>,
+    clipSeconds: Double,
+    hitSeconds: Double = FRAMING_KEYFRAME_HIT_SECONDS,
+): Int {
+    if (keyframes.isEmpty()) return -1
+    val idx = keyframes.indices.minByOrNull { abs(keyframes[it].time - clipSeconds) } ?: return -1
+    return if (abs(keyframes[idx].time - clipSeconds) <= hitSeconds) idx else -1
+}
+
+/**
+ * Inserts or replaces a framing keyframe at [clipSeconds]. A second save within [hitSeconds] of
+ * an existing point updates that point's pose (and optional interpolation) instead of duplicating.
+ */
+internal fun upsertFramingKeyframe(
+    effects: EffectsConfig,
+    clipSeconds: Double,
+    pose: FramingPose,
+    interpolation: FramingInterpolation? = null,
+    hitSeconds: Double = FRAMING_KEYFRAME_HIT_SECONDS,
+): EffectsConfig {
+    val existingIndex = nearestFramingKeyframeIndex(effects.framingKeyframes, clipSeconds, hitSeconds)
+    val existing = existingIndex.takeIf { it >= 0 }?.let { effects.framingKeyframes[it] }
+    val point = FramingPoint(
+        time = existing?.time ?: clipSeconds,
+        zoom = pose.zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM),
+        panX = pose.panX.coerceIn(0.0, 100.0),
+        panY = pose.panY.coerceIn(0.0, 100.0),
+        interpolation = interpolation ?: existing?.interpolation ?: FramingInterpolation.SMOOTH
+    )
+    val next = if (existingIndex >= 0) {
+        effects.framingKeyframes.mapIndexed { i, p -> if (i == existingIndex) point else p }
+    } else {
+        effects.framingKeyframes + point
+    }.sortedBy { it.time }
+    return effects.copy(framingKeyframes = next)
+}
+
+/**
+ * Removes the keyframe nearest [clipSeconds] (within [hitSeconds]). Deleting the last keyframe
+ * writes that pose back into the static zoom/offset fields so the picture does not jump.
+ */
+internal fun deleteNearestFramingKeyframe(
+    effects: EffectsConfig,
+    clipSeconds: Double,
+    hitSeconds: Double = FRAMING_KEYFRAME_HIT_SECONDS,
+): EffectsConfig {
+    val idx = nearestFramingKeyframeIndex(effects.framingKeyframes, clipSeconds, hitSeconds)
+    if (idx < 0) return effects
+    val removed = effects.framingKeyframes[idx]
+    val remaining = effects.framingKeyframes.filterIndexed { i, _ -> i != idx }
+    return if (remaining.isEmpty()) {
+        effects.copy(
+            zoom = removed.zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM),
+            offsetX = removed.panX.coerceIn(0.0, 100.0),
+            offsetY = removed.panY.coerceIn(0.0, 100.0),
+            framingKeyframes = emptyList()
+        )
+    } else {
+        effects.copy(framingKeyframes = remaining)
+    }
+}
+
+internal fun setFramingKeyframeInterpolation(
+    effects: EffectsConfig,
+    clipSeconds: Double,
+    interpolation: FramingInterpolation,
+    hitSeconds: Double = FRAMING_KEYFRAME_HIT_SECONDS,
+): EffectsConfig {
+    val idx = nearestFramingKeyframeIndex(effects.framingKeyframes, clipSeconds, hitSeconds)
+    if (idx < 0) return effects
+    val next = effects.framingKeyframes.mapIndexed { i, point ->
+        if (i == idx) point.copy(interpolation = interpolation) else point
+    }
+    return effects.copy(framingKeyframes = next)
+}
+
+internal fun staticFramingEffects(effects: EffectsConfig, pose: FramingPose): EffectsConfig = effects.copy(
+    zoom = pose.zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM),
+    offsetX = pose.panX.coerceIn(0.0, 100.0),
+    offsetY = pose.panY.coerceIn(0.0, 100.0)
+)
+
+/**
+ * Framing block: zoom/pan sliders, Save/Delete at the playhead, Smooth/Instant on the nearby
+ * keyframe, and compact chips. No keyframes → sliders persist the static pose; with keyframes
+ * sliders edit a draft until Save upserts.
+ */
+@Composable
+private fun FramingControls(
+    viewModel: AppViewModel,
+    clip: Clip,
+    effects: EffectsConfig,
+    clipLengthSeconds: Double,
+) {
+    val playheadInClip = clipLocalPlayheadSeconds(
+        playhead = viewModel.playhead.toDouble(),
+        timelineStart = clip.timelineStart.toDouble(),
+        clipLength = clipLengthSeconds
+    )
+    val keyframes = effects.framingKeyframes
+    val hasKeyframes = keyframes.isNotEmpty()
+    val clipSeconds = (viewModel.playhead - clip.timelineStart).toDouble()
+    val pose = previewFramingPose(
+        effects = effects,
+        clipId = clip.id,
+        clipSeconds = clipSeconds,
+        draft = viewModel.framingDraft,
+        isPlaying = viewModel.isPlaying
+    )
+    val nearby = playheadInClip?.let { nearestFramingKeyframe(keyframes, it) }
+    val canSave = playheadInClip != null
+    val canDelete = nearby != null
+    val canSetInterpolation = nearby != null
+
+    fun commit(next: EffectsConfig) {
+        viewModel.clearFramingDraft()
+        viewModel.updateClipEffects(clip, next)
+    }
+
+    fun applyPose(next: FramingPose) {
+        viewModel.applyFramingPose(clip, next, commit = true)
+    }
+
+    Column(Modifier.width(280.dp)) {
+        Text(
+            "Framing",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        LabeledSlider(
+            label = "Zoom",
+            value = (pose.zoom * 100.0).toFloat().coerceIn(
+                (MIN_FRAMING_ZOOM * 100.0).toFloat(),
+                (MAX_FRAMING_ZOOM * 100.0).toFloat()
+            ),
+            valueRange = (MIN_FRAMING_ZOOM * 100.0).toFloat()..(MAX_FRAMING_ZOOM * 100.0).toFloat(),
+            valueText = "${(pose.zoom * 100.0).roundToInt()}%",
+            onValueChange = { percent ->
+                applyPose(pose.copy(zoom = (percent.roundToInt() / 100.0).coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM)))
+            }
+        )
+        LabeledSlider(
+            label = "Pan X",
+            value = pose.panX.toFloat().coerceIn(0f, 100f),
+            valueRange = 0f..100f,
+            valueText = "${pose.panX.roundToInt()}",
+            onValueChange = { applyPose(pose.copy(panX = it.roundToInt().toDouble().coerceIn(0.0, 100.0))) }
+        )
+        LabeledSlider(
+            label = "Pan Y",
+            value = pose.panY.toFloat().coerceIn(0f, 100f),
+            valueRange = 0f..100f,
+            valueText = "${pose.panY.roundToInt()}",
+            onValueChange = { applyPose(pose.copy(panY = it.roundToInt().toDouble().coerceIn(0.0, 100.0))) }
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            GhostPillButton("Save keyframe", compact = true, enabled = canSave) {
+                val time = playheadInClip ?: return@GhostPillButton
+                val savePose = viewModel.framingDraft?.takeIf { it.clipId == clip.id }?.pose ?: pose
+                commit(upsertFramingKeyframe(effects, time, savePose))
+            }
+            GhostPillButton("Delete", compact = true, enabled = canDelete) {
+                val time = playheadInClip ?: return@GhostPillButton
+                commit(deleteNearestFramingKeyframe(effects, time))
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            FramingToggleChip(
+                label = "Smooth",
+                selected = nearby?.interpolation == FramingInterpolation.SMOOTH,
+                enabled = canSetInterpolation
+            ) {
+                val time = playheadInClip ?: return@FramingToggleChip
+                viewModel.updateClipEffects(
+                    clip,
+                    setFramingKeyframeInterpolation(effects, time, FramingInterpolation.SMOOTH)
+                )
+            }
+            FramingToggleChip(
+                label = "Instant",
+                selected = nearby?.interpolation == FramingInterpolation.INSTANT,
+                enabled = canSetInterpolation
+            ) {
+                val time = playheadInClip ?: return@FramingToggleChip
+                viewModel.updateClipEffects(
+                    clip,
+                    setFramingKeyframeInterpolation(effects, time, FramingInterpolation.INSTANT)
+                )
+            }
+        }
+        if (hasKeyframes) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                keyframes.sortedBy { it.time }.forEach { point ->
+                    val selected = nearby == point
+                    FramingToggleChip(
+                        label = "${formatSeconds(point.time)}s",
+                        selected = selected,
+                        enabled = true
+                    ) {
+                        viewModel.clearFramingDraft()
+                        viewModel.seek((clip.timelineStart + point.time).toFloat())
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FramingToggleChip(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(50)
+    val background = when {
+        !enabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        selected -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val content = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+        selected -> MaterialTheme.colorScheme.onPrimary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Box(
+        modifier = Modifier
+            .clip(shape)
+            .background(background)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+    ) {
+        Text(
+            label,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = content
+        )
+    }
+}
+
 /**
  * Text style editor for a first-class TEXT element: font, size, text color, a background color
  * (with transparency) and an optional credits-style scroll. Both colors reuse the preset swatches
@@ -362,7 +656,7 @@ private fun formatSeconds(value: Double): String {
 fun TextEditorDialog(
     initial: TextConfig,
     onDismiss: () -> Unit,
-    onSave: (TextConfig) -> Unit
+    onSave: (TextConfig) -> Unit,
 ) {
     var config by remember { mutableStateOf(initial) }
     // Which color the custom picker is currently editing: "text", "background" or null (closed).
@@ -548,7 +842,7 @@ private fun FontSummaryRow(
     fontUrl: String,
     weight: Int,
     italic: Boolean,
-    onChange: () -> Unit
+    onChange: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
@@ -585,7 +879,7 @@ private fun ColorSwatchRow(
     presets: List<String>,
     includeTransparent: Boolean,
     onSelect: (String) -> Unit,
-    onCustom: () -> Unit
+    onCustom: () -> Unit,
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (includeTransparent) {
@@ -620,7 +914,7 @@ private fun ColorSwatchRow(
         }
         // Custom color: opens the hex/HSVA picker; shows the active color once it's non-preset.
         val isCustom = parseHexColor(selectedHex).alpha != 0f &&
-            presets.none { it.equals(selectedHex, ignoreCase = true) }
+                presets.none { it.equals(selectedHex, ignoreCase = true) }
         Box(
             modifier = Modifier
                 .size(30.dp)
@@ -643,7 +937,7 @@ private fun ColorSwatchRow(
 fun CaptionEditorDialog(
     initial: CaptionConfig,
     onDismiss: () -> Unit,
-    onSave: (CaptionConfig) -> Unit
+    onSave: (CaptionConfig) -> Unit,
 ) {
     var config by remember { mutableStateOf(initial.copy(enabled = true)) }
     var showCustomColorPicker by remember { mutableStateOf(false) }
@@ -817,7 +1111,7 @@ private fun hsvaToHex(hue: Float, saturation: Float, value: Float, alpha: Float)
 private fun CustomColorPickerDialog(
     initialHex: String,
     onDismiss: () -> Unit,
-    onPick: (String) -> Unit
+    onPick: (String) -> Unit,
 ) {
     val initialColor = if (isValidHexColor(initialHex)) parseHexColor(initialHex) else Color.White
     val initialHsv = rgbToHsv(initialColor.red, initialColor.green, initialColor.blue)
@@ -925,7 +1219,7 @@ private fun offsetToVolumePoint(
     offset: Offset,
     widthPx: Int,
     heightPx: Int,
-    clipLength: Double
+    clipLength: Double,
 ): VolumePoint {
     val time = (offset.x / widthPx * clipLength).coerceIn(0.0, clipLength)
     val volume = ((1f - offset.y / heightPx) * MAX_CLIP_VOLUME).coerceIn(0.0, MAX_CLIP_VOLUME)
@@ -937,7 +1231,7 @@ private fun volumePointOffset(
     point: VolumePoint,
     widthPx: Int,
     heightPx: Int,
-    clipLength: Double
+    clipLength: Double,
 ): Offset = Offset(
     (point.time / clipLength * widthPx).toFloat(),
     ((1.0 - point.volume / MAX_CLIP_VOLUME) * heightPx).toFloat()
@@ -950,7 +1244,7 @@ private fun volumePointNear(
     widthPx: Int,
     heightPx: Int,
     clipLength: Double,
-    thresholdPx: Float
+    thresholdPx: Float,
 ): VolumePoint? = points
     .minByOrNull { (volumePointOffset(it, widthPx, heightPx, clipLength) - offset).getDistance() }
     ?.takeIf { (volumePointOffset(it, widthPx, heightPx, clipLength) - offset).getDistance() <= thresholdPx }
@@ -973,7 +1267,7 @@ fun VolumeEnvelopeDialog(
     audioAvailable: Boolean,
     playheadInClipSeconds: Float,
     onDismiss: () -> Unit,
-    onSave: (List<VolumePoint>) -> Unit
+    onSave: (List<VolumePoint>) -> Unit,
 ) {
     val clipLength = clipLengthSeconds.toDouble().coerceAtLeast(0.1)
     var points by remember { mutableStateOf(initial.volumeKeyframes.sortedBy { it.time }) }
@@ -988,8 +1282,8 @@ fun VolumeEnvelopeDialog(
     StudioDialog(title = "Volume editor", onDismiss = onDismiss, width = 620.dp) {
         Text(
             "Shape the clip's loudness over time. Tap the curve area to add a keyframe, drag a " +
-                "keyframe to move it and double-tap one to remove it. 100% plays the sound at " +
-                "its natural loudness.",
+                    "keyframe to move it and double-tap one to remove it. 100% plays the sound at " +
+                    "its natural loudness.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1004,7 +1298,8 @@ fun VolumeEnvelopeDialog(
                 .pointerInput(clipLength) {
                     detectTapGestures(
                         onTap = { offset ->
-                            val existing = volumePointNear(points, offset, size.width, size.height, clipLength, 22.dp.toPx())
+                            val existing =
+                                volumePointNear(points, offset, size.width, size.height, clipLength, 22.dp.toPx())
                             if (existing == null) {
                                 points = (points + offsetToVolumePoint(offset, size.width, size.height, clipLength))
                                     .sortedBy { it.time }
@@ -1021,10 +1316,11 @@ fun VolumeEnvelopeDialog(
                 .pointerInput(clipLength) {
                     detectDragGestures(
                         onDragStart = { offset ->
-                            val anchor = volumePointNear(points, offset, size.width, size.height, clipLength, 26.dp.toPx())
-                                ?: offsetToVolumePoint(offset, size.width, size.height, clipLength).also {
-                                    points = (points + it).sortedBy { point -> point.time }
-                                }
+                            val anchor =
+                                volumePointNear(points, offset, size.width, size.height, clipLength, 26.dp.toPx())
+                                    ?: offsetToVolumePoint(offset, size.width, size.height, clipLength).also {
+                                        points = (points + it).sortedBy { point -> point.time }
+                                    }
                             dragging = anchor
                         },
                         onDrag = { change, _ ->
@@ -1053,7 +1349,8 @@ fun VolumeEnvelopeDialog(
                 val steps = 120
                 var previous = Offset(
                     0f,
-                    ((1.0 - preview.volumeAt(0.0).coerceIn(0.0, MAX_CLIP_VOLUME) / MAX_CLIP_VOLUME) * size.height).toFloat()
+                    ((1.0 - preview.volumeAt(0.0)
+                        .coerceIn(0.0, MAX_CLIP_VOLUME) / MAX_CLIP_VOLUME) * size.height).toFloat()
                 )
                 for (i in 1..steps) {
                     val time = clipLength * i / steps

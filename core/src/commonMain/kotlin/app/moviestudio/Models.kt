@@ -1087,6 +1087,56 @@ data class VolumePoint(
 /** The maximum gain a clip's volume (flat or keyframed) can be raised to (200%). */
 const val MAX_CLIP_VOLUME: Double = 2.0
 
+/** Smallest framing zoom (25%): the cover window is enlarged until the source letterboxes. */
+const val MIN_FRAMING_ZOOM: Double = 0.25
+
+/** Largest framing zoom (400%): the cover window shrinks to a quarter of the source. */
+const val MAX_FRAMING_ZOOM: Double = 4.0
+
+/**
+ * How the pose at a [FramingPoint] interpolates toward the next keyframe.
+ * [SMOOTH] lerps zoom and pan; [INSTANT] holds this pose until the next keyframe's time, then jumps.
+ */
+@Serializable
+enum class FramingInterpolation { SMOOTH, INSTANT }
+
+/**
+ * One keyframe of a clip's zoom/pan-over-time envelope.
+ * [time] is in seconds from the start of the clip (0 = clip start).
+ * [zoom] is 1.0 for today's cover-crop; [panX]/[panY] are 0–100 (50 = center), matching [EffectsConfig.offsetX]/[offsetY].
+ */
+@Serializable
+data class FramingPoint(
+    val time: Double,
+    val zoom: Double,
+    val panX: Double,
+    val panY: Double,
+    val interpolation: FramingInterpolation = FramingInterpolation.SMOOTH
+)
+
+/** Evaluated zoom/pan at one instant. [zoom] 1.0 = cover-crop; [panX]/[panY] 50 = center. */
+data class FramingPose(
+    val zoom: Double,
+    val panX: Double,
+    val panY: Double
+)
+
+/**
+ * Cover-crop sample window plus destination rect for one [FramingPose].
+ * [u0]–[u1] / [v0]–[v1] are source UVs; [dx],[dy],[dw],[dh] are the dest rect in frame fractions
+ * (0,0,1,1 fills the frame; smaller [dw]/[dh] letterboxes on zoom-out).
+ */
+data class FramingWindow(
+    val u0: Double,
+    val v0: Double,
+    val u1: Double,
+    val v1: Double,
+    val dx: Double,
+    val dy: Double,
+    val dw: Double,
+    val dh: Double
+)
+
 /**
  * Extra linear gain applied on top of a voice-track clip's [EffectsConfig.volume] / envelope in
  * live preview and FFmpeg export, so dialogue sits above beds at default faders.
@@ -1104,10 +1154,18 @@ private val effectsJson = Json { ignoreUnknownKeys = true }
  * Unknown keys written by other tools are preserved-ignored on parse.
  *
  * [offsetX]/[offsetY] position the media inside the center-crop window (0-100, 50 = centered):
- * 0 shows the left/top edge of the media, 100 the right/bottom edge.
+ * 0 shows the left/top edge of the media, 100 the right/bottom edge. They remain the static pan
+ * when [framingKeyframes] is empty (see [framingAt]).
+ *
+ * [zoom] is 1.0 for today's cover-crop. Values below 1 reveal more of the source (then letterbox);
+ * values above 1 shrink the sampled window. Clamped to [MIN_FRAMING_ZOOM]–[MAX_FRAMING_ZOOM] when
+ * evaluated.
  *
  * [volumeKeyframes] is the optional volume-over-time envelope: when present it overrides the
  * flat [volume], interpolating linearly between keyframes (see [volumeAt]).
+ *
+ * [framingKeyframes] is the optional zoom/pan envelope: when present it overrides the static
+ * [zoom]/[offsetX]/[offsetY] (see [framingAt]).
  */
 @Serializable
 data class EffectsConfig(
@@ -1118,7 +1176,9 @@ data class EffectsConfig(
     val volume: Double = 1.0,
     val volumeKeyframes: List<VolumePoint> = emptyList(),
     val offsetX: Double = 50.0,
-    val offsetY: Double = 50.0
+    val offsetY: Double = 50.0,
+    val zoom: Double = 1.0,
+    val framingKeyframes: List<FramingPoint> = emptyList()
 )
 
 /**
@@ -1142,6 +1202,88 @@ fun EffectsConfig.volumeAt(clipSeconds: Double): Double {
     }
     return points.last().volume
 }
+
+/**
+ * The clip's zoom/pan at [clipSeconds] (seconds from the clip's start). With no keyframes this is
+ * the static [EffectsConfig.zoom] + [offsetX]/[offsetY]; with keyframes the envelope interpolates
+ * between them ([FramingInterpolation.SMOOTH] lerps, [FramingInterpolation.INSTANT] holds then
+ * jumps) and holds the first/last keyframe's pose before/after the envelope.
+ *
+ * Zoom is clamped to [MIN_FRAMING_ZOOM]–[MAX_FRAMING_ZOOM]; pan is clamped to 0–100.
+ */
+fun EffectsConfig.framingAt(clipSeconds: Double): FramingPose {
+    if (framingKeyframes.isEmpty()) return staticFramingPose()
+    val points = framingKeyframes.sortedBy { it.time }
+    if (clipSeconds < points.first().time) return points.first().toPose()
+    if (clipSeconds >= points.last().time) return points.last().toPose()
+    for (i in 0 until points.size - 1) {
+        val a = points[i]
+        val b = points[i + 1]
+        if (clipSeconds >= a.time && clipSeconds < b.time) {
+            if (a.interpolation == FramingInterpolation.INSTANT) return a.toPose()
+            val fraction = (clipSeconds - a.time) / (b.time - a.time)
+            val from = a.toPose()
+            val to = b.toPose()
+            return FramingPose(
+                zoom = from.zoom + (to.zoom - from.zoom) * fraction,
+                panX = from.panX + (to.panX - from.panX) * fraction,
+                panY = from.panY + (to.panY - from.panY) * fraction
+            )
+        }
+    }
+    return points.last().toPose()
+}
+
+/**
+ * Cover-crop UV window and destination rect for [pose]. Zoom 1 + pan 50/50 matches today's
+ * WebGL/FFmpeg cover-crop (full-frame dest, UV window = `uScale = min(1, frame/source)`,
+ * `vScale = min(1, source/frame)`, offset `(1-scale) * pan/100`). Zoom-in shrinks UVs; zoom-out
+ * past contain letterboxes (full-source UVs, dest smaller than the frame, pan-able).
+ */
+fun framingWindow(pose: FramingPose, sourceAspect: Double, frameAspect: Double): FramingWindow {
+    val zoom = pose.zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM)
+    val panX = pose.panX.coerceIn(0.0, 100.0) / 100.0
+    val panY = pose.panY.coerceIn(0.0, 100.0) / 100.0
+    val src = if (sourceAspect > 0.0) sourceAspect else 1.0
+    val frame = if (frameAspect > 0.0) frameAspect else 1.0
+
+    val coverU = minOf(1.0, frame / src)
+    val coverV = minOf(1.0, src / frame)
+    val desiredU = coverU / zoom
+    val desiredV = coverV / zoom
+
+    val uScale = minOf(1.0, desiredU)
+    val vScale = minOf(1.0, desiredV)
+    val dw = minOf(1.0, 1.0 / desiredU)
+    val dh = minOf(1.0, 1.0 / desiredV)
+
+    val u0 = (1.0 - uScale) * panX
+    val v0 = (1.0 - vScale) * panY
+    val dx = (1.0 - dw) * panX
+    val dy = (1.0 - dh) * panY
+    return FramingWindow(
+        u0 = u0,
+        v0 = v0,
+        u1 = u0 + uScale,
+        v1 = v0 + vScale,
+        dx = dx,
+        dy = dy,
+        dw = dw,
+        dh = dh
+    )
+}
+
+private fun EffectsConfig.staticFramingPose(): FramingPose = FramingPose(
+    zoom = zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM),
+    panX = offsetX.coerceIn(0.0, 100.0),
+    panY = offsetY.coerceIn(0.0, 100.0)
+)
+
+private fun FramingPoint.toPose(): FramingPose = FramingPose(
+    zoom = zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM),
+    panX = panX.coerceIn(0.0, 100.0),
+    panY = panY.coerceIn(0.0, 100.0)
+)
 
 /**
  * True when a clip on a track of [trackType] backed by an asset of [assetType] carries an audio

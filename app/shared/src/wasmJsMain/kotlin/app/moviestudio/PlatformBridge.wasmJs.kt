@@ -382,15 +382,19 @@ actual fun requestVideoFullscreen() {
 // ------------------------------------------------------------------ preview object-position
 
 @JsFun("""
-(x, y) => {
+(x, y, zoom) => {
     const video = document.getElementById('compose-video-preview');
-    if (video) { video.style.objectPosition = x + '% ' + y + '%'; }
+    if (!video) { return; }
+    video.style.objectPosition = x + '% ' + y + '%';
+    const z = (zoom > 0) ? zoom : 1;
+    video.style.transformOrigin = 'center center';
+    video.style.transform = 'scale(' + z + ')';
 }
 """)
-private external fun jsSetPreviewObjectPosition(x: Double, y: Double)
+private external fun jsSetPreviewObjectPosition(x: Double, y: Double, zoom: Double)
 
-actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double) {
-    jsSetPreviewObjectPosition(xPercent, yPercent)
+actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double, zoom: Double) {
+    jsSetPreviewObjectPosition(xPercent, yPercent, zoom)
 }
 
 // -------------------------------------------------------------------- preview overlay visibility
@@ -400,8 +404,9 @@ actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double) {
 // and the overlay is restored to exactly the state it was in once the dialog closes.
 @JsFun("""
 (visible) => {
-    const video = document.getElementById('compose-video-preview');
-    if (video) { video.style.visibility = visible ? 'visible' : 'hidden'; }
+    const host = document.getElementById('compose-video-preview-wrap') ||
+        document.getElementById('compose-video-preview');
+    if (host) { host.style.visibility = visible ? 'visible' : 'hidden'; }
 }
 """)
 private external fun jsSetPreviewOverlayVisible(visible: Boolean)

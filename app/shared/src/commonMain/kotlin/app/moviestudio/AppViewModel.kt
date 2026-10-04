@@ -43,6 +43,37 @@ data class GeneratedAssetSignal(
 )
 
 /**
+ * In-progress framing pose for a clip that already has keyframes. Preview gestures and inspector
+ * sliders write this; playback ignores it and uses [EffectsConfig.framingAt]. [Save keyframe]
+ * commits it. Empty-keyframe clips never use a draft — they write the static pose directly.
+ */
+data class FramingDraft(
+    val clipId: String,
+    val pose: FramingPose
+)
+
+/**
+ * Pose shown in the preview / inspector. With keyframes, a matching [draft] is used only while
+ * paused so playback always follows [EffectsConfig.framingAt].
+ */
+fun previewFramingPose(
+    effects: EffectsConfig,
+    clipId: String,
+    clipSeconds: Double,
+    draft: FramingDraft?,
+    isPlaying: Boolean,
+): FramingPose {
+    if (!isPlaying &&
+        draft != null &&
+        draft.clipId == clipId &&
+        effects.framingKeyframes.isNotEmpty()
+    ) {
+        return draft.pose
+    }
+    return effects.framingAt(clipSeconds)
+}
+
+/**
  * Central state holder for the studio: movie list, the open movie's timeline, the global asset
  * library, saved characters/scenes/voices, render history and live background-job tracking
  * (WebSocket push with polling fallback).
@@ -232,11 +263,20 @@ class AppViewModel : ViewModel() {
     var selectedClipIds: Set<String>
         get() = _selectedClipIds.value
         private set(value) {
+            val previous = _selectedClipIds.value.singleOrNull()
             _selectedClipIds.value = value
             // Notes and timeline clips are mutually exclusive selections: selecting a clip clears
             // any selected note so a following Delete/Backspace acts on the clip, not the note.
             if (value.isNotEmpty()) selectedNoteId = null
+            if (previous != value.singleOrNull()) framingDraft = null
         }
+
+    /**
+     * Draft zoom/pan for the selected clip while it has framing keyframes. Preview gestures and
+     * inspector sliders share this; Save in the inspector upserts it as a keyframe.
+     */
+    var framingDraft: FramingDraft? by mutableStateOf(null)
+        private set
 
     /**
      * The single selected clip, or null when zero or several clips are selected. Reading it keys
@@ -296,6 +336,11 @@ class AppViewModel : ViewModel() {
     private var wsConnection: JobEventsConnection? = null
     private var playbackTicker: CoroutineJob? = null
     private var jobPoller: CoroutineJob? = null
+    private var framingWheelCommitJob: CoroutineJob? = null
+
+    private companion object {
+        const val FRAMING_WHEEL_IDLE_MILLIS = 300L
+    }
 
     init {
         loadMovies()
@@ -916,6 +961,91 @@ class AppViewModel : ViewModel() {
     /** Updates a clip's parsed effects configuration (transition, captions, volume). */
     fun updateClipEffects(clip: Clip, effects: EffectsConfig) {
         updateClip(clip.copy(effectsConfig = encodeEffectsConfig(effects)))
+    }
+
+    fun clearFramingDraft() {
+        framingDraft = null
+    }
+
+    /**
+     * Applies a live framing pose. With no keyframes this writes the static zoom/pan ([updateClipLocal]
+     * during a gesture, [updateClip] on end). With keyframes it only updates [framingDraft] —
+     * playback still uses [framingAt] until the inspector saves a keyframe.
+     */
+    fun applyFramingPose(clip: Clip, pose: FramingPose, commit: Boolean) {
+        val clamped = FramingPose(
+            zoom = pose.zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM),
+            panX = pose.panX.coerceIn(0.0, 100.0),
+            panY = pose.panY.coerceIn(0.0, 100.0)
+        )
+        val effects = parseEffectsConfig(clip.effectsConfig)
+        if (effects.framingKeyframes.isEmpty()) {
+            framingDraft = null
+            val next = clip.copy(
+                effectsConfig = encodeEffectsConfig(
+                    effects.copy(zoom = clamped.zoom, offsetX = clamped.panX, offsetY = clamped.panY)
+                )
+            )
+            if (commit) updateClip(next) else updateClipLocal(next)
+        } else {
+            framingDraft = FramingDraft(clip.id, clamped)
+        }
+    }
+
+    fun nudgeFramingPan(clipId: String, dxPx: Float, dyPx: Float, widthPx: Int, heightPx: Int) {
+        if (widthPx <= 0 || heightPx <= 0) return
+        val clip = findClip(clipId)?.first ?: return
+        val effects = parseEffectsConfig(clip.effectsConfig)
+        val pose = previewFramingPose(
+            effects,
+            clip.id,
+            (playhead - clip.timelineStart).toDouble(),
+            framingDraft,
+            isPlaying
+        )
+        applyFramingPose(
+            clip,
+            pose.copy(
+                panX = pose.panX - dxPx / widthPx * 100.0,
+                panY = pose.panY - dyPx / heightPx * 100.0
+            ),
+            commit = false
+        )
+    }
+
+    fun multiplyFramingZoom(clipId: String, factor: Double) {
+        if (factor == 1.0 || factor <= 0.0) return
+        val clip = findClip(clipId)?.first ?: return
+        val effects = parseEffectsConfig(clip.effectsConfig)
+        val pose = previewFramingPose(
+            effects,
+            clip.id,
+            (playhead - clip.timelineStart).toDouble(),
+            framingDraft,
+            isPlaying
+        )
+        applyFramingPose(clip, pose.copy(zoom = pose.zoom * factor), commit = false)
+    }
+
+    /**
+     * Schedules the static framing pose changed by a wheel gesture for persistence after scrolling
+     * has gone idle. Each new wheel tick restarts the timer, keeping the preview local and avoiding
+     * one network update per scroll event. Keyframed clips remain draft-only in [commitFramingGesture].
+     */
+    fun scheduleFramingWheelCommit(clipId: String) {
+        framingWheelCommitJob?.cancel()
+        framingWheelCommitJob = viewModelScope.launch {
+            delay(FRAMING_WHEEL_IDLE_MILLIS)
+            commitFramingGesture(clipId)
+        }
+    }
+
+    fun commitFramingGesture(clipId: String) {
+        framingWheelCommitJob?.cancel()
+        framingWheelCommitJob = null
+        val clip = findClip(clipId)?.first ?: return
+        val effects = parseEffectsConfig(clip.effectsConfig)
+        if (effects.framingKeyframes.isEmpty()) updateClip(clip)
     }
 
     fun findClip(clipId: String?): Pair<Clip, Track>? {
@@ -2266,6 +2396,7 @@ class AppViewModel : ViewModel() {
         wsConnection?.close()
         playbackTicker?.cancel()
         jobPoller?.cancel()
+        framingWheelCommitJob?.cancel()
         super.onCleared()
     }
 }

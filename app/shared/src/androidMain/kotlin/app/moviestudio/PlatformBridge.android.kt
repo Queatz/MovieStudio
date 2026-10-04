@@ -31,7 +31,7 @@ actual fun requestVideoFullscreen() {
     // No-op on Android: the preview video element is a browser feature.
 }
 
-actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double) {
+actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double, zoom: Double) {
     // No-op on Android: the preview video element is a browser feature.
 }
 

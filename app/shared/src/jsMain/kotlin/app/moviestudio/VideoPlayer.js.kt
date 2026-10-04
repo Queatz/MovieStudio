@@ -50,12 +50,16 @@ actual fun VideoPlayer(
                     // bandwidth to live playback.
                     try { video.fetchPriority = 'high'; } catch (e) {}
                     video.style.position = 'absolute';
-                    video.style.zIndex = '1000';
+                    video.style.left = '0';
+                    video.style.top = '0';
+                    video.style.width = '100%';
+                    video.style.height = '100%';
                     video.style.backgroundColor = 'black';
-                    video.style.display = 'none';
+                    video.style.display = 'block';
                     // Center-crop fit: fill the (aspect-constrained) viewport and crop the overflow.
                     video.style.objectFit = 'cover';
                     video.style.objectPosition = 'center';
+                    video.style.transformOrigin = 'center center';
                     video.controls = false;
                     // Purely a decorative overlay (all interaction happens via the Compose transport
                     // controls) — let pointer events pass through so clicking the stage doesn't steal
@@ -63,7 +67,37 @@ actual fun VideoPlayer(
                     // play/pause shortcut and other keyboard input app-wide).
                     video.style.pointerEvents = 'none';
                     video.setAttribute('playsinline', 'true');
-                    document.body.appendChild(video);
+                    var wrap = document.createElement('div');
+                    wrap.id = 'compose-video-preview-wrap';
+                    wrap.style.position = 'absolute';
+                    wrap.style.zIndex = '1000';
+                    wrap.style.overflow = 'hidden';
+                    wrap.style.backgroundColor = 'black';
+                    wrap.style.pointerEvents = 'none';
+                    wrap.style.display = 'none';
+                    wrap.appendChild(video);
+                    document.body.appendChild(wrap);
+                }
+                var wrap = document.getElementById('compose-video-preview-wrap');
+                if (!wrap) {
+                    wrap = document.createElement('div');
+                    wrap.id = 'compose-video-preview-wrap';
+                    wrap.style.position = 'absolute';
+                    wrap.style.zIndex = '1000';
+                    wrap.style.overflow = 'hidden';
+                    wrap.style.backgroundColor = 'black';
+                    wrap.style.pointerEvents = 'none';
+                    wrap.style.display = 'none';
+                    document.body.appendChild(wrap);
+                }
+                if (video.parentNode !== wrap) {
+                    video.style.position = 'absolute';
+                    video.style.left = '0';
+                    video.style.top = '0';
+                    video.style.width = '100%';
+                    video.style.height = '100%';
+                    video.style.pointerEvents = 'none';
+                    wrap.appendChild(video);
                 }
                 video.ontimeupdate = function() {
                     onTimeUpdate(video.currentTime);
@@ -113,23 +147,24 @@ actual fun VideoPlayer(
     LaunchedEffect(alpha, offsetXFraction, offsetYFraction, revealRadiusFraction) {
         val updateTransition = js("""
             function(opacity, dx, dy, reveal) {
-                const video = document.getElementById('compose-video-preview');
-                if (video) {
-                    video.dataset.trOp = opacity;
-                    video.dataset.trDx = dx;
-                    video.dataset.trDy = dy;
-                    video.dataset.trReveal = reveal;
-                    const x = parseFloat(video.dataset.baseX || '0');
-                    const y = parseFloat(video.dataset.baseY || '0');
-                    const w = parseFloat(video.dataset.baseW || '0');
-                    const h = parseFloat(video.dataset.baseH || '0');
-                    video.style.left = (x + dx * w) + 'px';
-                    video.style.top = (y + dy * h) + 'px';
-                    video.style.opacity = opacity;
+                const host = document.getElementById('compose-video-preview-wrap') ||
+                    document.getElementById('compose-video-preview');
+                if (host) {
+                    host.dataset.trOp = opacity;
+                    host.dataset.trDx = dx;
+                    host.dataset.trDy = dy;
+                    host.dataset.trReveal = reveal;
+                    const x = parseFloat(host.dataset.baseX || '0');
+                    const y = parseFloat(host.dataset.baseY || '0');
+                    const w = parseFloat(host.dataset.baseW || '0');
+                    const h = parseFloat(host.dataset.baseH || '0');
+                    host.style.left = (x + dx * w) + 'px';
+                    host.style.top = (y + dy * h) + 'px';
+                    host.style.opacity = opacity;
                     // Circular reveal (CIRCLE transition), matching the FFmpeg geq mask.
                     const cp = reveal >= 1 ? 'none' : ('circle(' + (reveal * Math.hypot(w / 2, h / 2)) + 'px at 50% 50%)');
-                    video.style.clipPath = cp;
-                    video.style.webkitClipPath = cp;
+                    host.style.clipPath = cp;
+                    host.style.webkitClipPath = cp;
                 }
             }
         """)
@@ -161,9 +196,11 @@ actual fun VideoPlayer(
         onDispose {
             val hideVideo = js("""
                 function() {
+                    const wrap = document.getElementById('compose-video-preview-wrap');
                     const video = document.getElementById('compose-video-preview');
+                    if (wrap) { wrap.style.display = 'none'; }
                     if (video) {
-                        video.style.display = 'none';
+                        video.style.display = wrap ? 'block' : 'none';
                         video.pause();
                     }
                 }
@@ -186,28 +223,29 @@ actual fun VideoPlayer(
         val b = bounds ?: return@LaunchedEffect
         val updateBounds = js("""
             function(x, y, w, h) {
-                const video = document.getElementById('compose-video-preview');
-                if (video) {
+                const host = document.getElementById('compose-video-preview-wrap') ||
+                    document.getElementById('compose-video-preview');
+                if (host) {
                     // Remember the un-transformed stage bounds so the transition (opacity +
                     // slide offset + circular reveal) can be re-applied over them
                     // independently of layout.
-                    video.dataset.baseX = x;
-                    video.dataset.baseY = y;
-                    video.dataset.baseW = w;
-                    video.dataset.baseH = h;
-                    const dx = parseFloat(video.dataset.trDx || '0');
-                    const dy = parseFloat(video.dataset.trDy || '0');
-                    const op = video.dataset.trOp || '1';
-                    const rev = parseFloat(video.dataset.trReveal || '1');
-                    video.style.left = (x + dx * w) + 'px';
-                    video.style.top = (y + dy * h) + 'px';
-                    video.style.width = w + 'px';
-                    video.style.height = h + 'px';
-                    video.style.opacity = op;
+                    host.dataset.baseX = x;
+                    host.dataset.baseY = y;
+                    host.dataset.baseW = w;
+                    host.dataset.baseH = h;
+                    const dx = parseFloat(host.dataset.trDx || '0');
+                    const dy = parseFloat(host.dataset.trDy || '0');
+                    const op = host.dataset.trOp || '1';
+                    const rev = parseFloat(host.dataset.trReveal || '1');
+                    host.style.left = (x + dx * w) + 'px';
+                    host.style.top = (y + dy * h) + 'px';
+                    host.style.width = w + 'px';
+                    host.style.height = h + 'px';
+                    host.style.opacity = op;
                     const cp = rev >= 1 ? 'none' : ('circle(' + (rev * Math.hypot(w / 2, h / 2)) + 'px at 50% 50%)');
-                    video.style.clipPath = cp;
-                    video.style.webkitClipPath = cp;
-                    video.style.display = 'block';
+                    host.style.clipPath = cp;
+                    host.style.webkitClipPath = cp;
+                    host.style.display = 'block';
                 }
             }
         """)

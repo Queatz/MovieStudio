@@ -383,15 +383,19 @@ actual fun requestVideoFullscreen() {
 
 // ------------------------------------------------------------------ preview object-position
 
-private fun jsSetPreviewObjectPosition(x: Double, y: Double): Unit = js("""
-    (function(x, y) {
+private fun jsSetPreviewObjectPosition(x: Double, y: Double, zoom: Double): Unit = js("""
+    (function(x, y, zoom) {
         var video = document.getElementById('compose-video-preview');
-        if (video) { video.style.objectPosition = x + '% ' + y + '%'; }
-    })(x, y)
+        if (!video) { return; }
+        video.style.objectPosition = x + '% ' + y + '%';
+        var z = (zoom > 0) ? zoom : 1;
+        video.style.transformOrigin = 'center center';
+        video.style.transform = 'scale(' + z + ')';
+    })(x, y, zoom)
 """)
 
-actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double) {
-    jsSetPreviewObjectPosition(xPercent, yPercent)
+actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double, zoom: Double) {
+    jsSetPreviewObjectPosition(xPercent, yPercent, zoom)
 }
 
 // -------------------------------------------------------------------- preview overlay visibility
@@ -401,8 +405,9 @@ actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double) {
 // and the overlay is restored to exactly the state it was in once the dialog closes.
 private fun jsSetPreviewOverlayVisible(visible: Boolean): Unit = js("""
     (function(visible) {
-        var video = document.getElementById('compose-video-preview');
-        if (video) { video.style.visibility = visible ? 'visible' : 'hidden'; }
+        var host = document.getElementById('compose-video-preview-wrap') ||
+            document.getElementById('compose-video-preview');
+        if (host) { host.style.visibility = visible ? 'visible' : 'hidden'; }
     })(visible)
 """)
 

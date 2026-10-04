@@ -1,14 +1,22 @@
 package app.moviestudio
 
 import app.moviestudio.ui.buildPrintableDocumentHtml
+import app.moviestudio.ui.clipLocalPlayheadSeconds
+import app.moviestudio.ui.clipSupportsFraming
 import app.moviestudio.ui.collectSnapEdges
+import app.moviestudio.ui.deleteNearestFramingKeyframe
 import app.moviestudio.ui.markdownToPrintHtml
+import app.moviestudio.ui.nearestFramingKeyframe
+import app.moviestudio.ui.setFramingKeyframeInterpolation
 import app.moviestudio.ui.snapMovedStart
+import app.moviestudio.ui.staticFramingEffects
+import app.moviestudio.ui.upsertFramingKeyframe
 import kotlinx.serialization.json.Json
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SharedCommonTest {
@@ -268,9 +276,15 @@ class SharedCommonTest {
     @Test
     fun testMovedClipGroup() {
         val tracks = listOf(
-            TrackWithClips(preloadTrack("v0", TrackType.VIDEO, 0), listOf(preloadClip("c1", "v0", "a").copy(timelineStart = 2f))),
+            TrackWithClips(
+                preloadTrack("v0", TrackType.VIDEO, 0),
+                listOf(preloadClip("c1", "v0", "a").copy(timelineStart = 2f))
+            ),
             TrackWithClips(preloadTrack("v1", TrackType.VIDEO, 1), emptyList()),
-            TrackWithClips(preloadTrack("m0", TrackType.MUSIC, 2), listOf(preloadClip("c2", "m0", "a").copy(timelineStart = 5f)))
+            TrackWithClips(
+                preloadTrack("m0", TrackType.MUSIC, 2),
+                listOf(preloadClip("c2", "m0", "a").copy(timelineStart = 5f))
+            )
         )
         val movers = listOf(
             MovingClip(tracks[0].clips[0], 0, TrackType.VIDEO),
@@ -327,7 +341,12 @@ class SharedCommonTest {
         // Excluded ids never move (the item being edited).
         assertEquals(
             emptyList(),
-            rippleShiftedClips(all, excludeClipIds = setOf("a", "b", "c", "d"), thresholdSeconds = 0f, deltaSeconds = 5f)
+            rippleShiftedClips(
+                all,
+                excludeClipIds = setOf("a", "b", "c", "d"),
+                thresholdSeconds = 0f,
+                deltaSeconds = 5f
+            )
         )
 
         // Zero delta still returns followers at their original starts so a live drag that
@@ -444,13 +463,221 @@ class SharedCommonTest {
         // snaps its own settle point — start + 1.25 — onto other edges, in addition to start/end.
         val draggingVideo = collectSnapEdges(timeline, excludeClipIds = setOf("vid"))
         assertFalse(draggingVideo.containsTime(5.25f))
-        assertEquals(5.6f, snapMovedStart(draggingVideo, start = 5.6f, duration = 5f, transitionWindow = 1.25f), 0.0001f)
+        assertEquals(
+            5.6f,
+            snapMovedStart(draggingVideo, start = 5.6f, duration = 5f, transitionWindow = 1.25f),
+            0.0001f
+        )
         // Settle at 12.15 is 0.15s from the plain clip's start; the clip start (10.9) and end (15.9)
         // are both outside the 1s threshold, so the settle point is what snaps.
-        assertEquals(12f - 1.25f, snapMovedStart(draggingVideo, start = 10.9f, duration = 5f, transitionWindow = 1.25f), 0.0001f)
+        assertEquals(
+            12f - 1.25f,
+            snapMovedStart(draggingVideo, start = 10.9f, duration = 5f, transitionWindow = 1.25f),
+            0.0001f
+        )
         assertEquals(10.9f, snapMovedStart(draggingVideo, start = 10.9f, duration = 5f), 0.0001f)
         // When the start is closer than the settle point, the start still wins.
-        assertEquals(12f, snapMovedStart(draggingVideo, start = 11.5f, duration = 5f, transitionWindow = 1.25f), 0.0001f)
+        assertEquals(
+            12f,
+            snapMovedStart(draggingVideo, start = 11.5f, duration = 5f, transitionWindow = 1.25f),
+            0.0001f
+        )
+    }
+
+    @Test
+    fun clipSupportsFramingOnlyForImageAndVideoMedia() {
+        assertTrue(clipSupportsFraming(TrackType.VIDEO, AssetType.VIDEO, descriptionOnly = false))
+        assertTrue(clipSupportsFraming(TrackType.VIDEO, AssetType.IMAGE, descriptionOnly = false))
+        assertFalse(clipSupportsFraming(TrackType.VIDEO, AssetType.VIDEO, descriptionOnly = true))
+        assertFalse(clipSupportsFraming(TrackType.VIDEO, AssetType.TEXT, descriptionOnly = false))
+        assertFalse(clipSupportsFraming(TrackType.VIDEO, AssetType.TEXT, descriptionOnly = true))
+        assertFalse(clipSupportsFraming(TrackType.VOICE, AssetType.VIDEO, descriptionOnly = false))
+        assertFalse(clipSupportsFraming(TrackType.VIDEO, null, descriptionOnly = false))
+    }
+
+    @Test
+    fun clipLocalPlayheadIsNullOutsideTheClip() {
+        assertEquals(1.5, clipLocalPlayheadSeconds(playhead = 3.5, timelineStart = 2.0, clipLength = 4.0))
+        assertEquals(0.0, clipLocalPlayheadSeconds(playhead = 2.0, timelineStart = 2.0, clipLength = 4.0))
+        assertEquals(4.0, clipLocalPlayheadSeconds(playhead = 6.0, timelineStart = 2.0, clipLength = 4.0))
+        assertNull(clipLocalPlayheadSeconds(playhead = 1.9, timelineStart = 2.0, clipLength = 4.0))
+        assertNull(clipLocalPlayheadSeconds(playhead = 6.1, timelineStart = 2.0, clipLength = 4.0))
+    }
+
+    @Test
+    fun framingSaveUpsertsAtPlayheadWithoutDuplicating() {
+        val start = EffectsConfig(zoom = 1.0, offsetX = 50.0, offsetY = 50.0)
+        val first = upsertFramingKeyframe(
+            start,
+            clipSeconds = 1.0,
+            pose = FramingPose(zoom = 1.5, panX = 40.0, panY = 60.0)
+        )
+        assertEquals(1, first.framingKeyframes.size)
+        assertEquals(1.0, first.framingKeyframes[0].time)
+        assertEquals(1.5, first.framingKeyframes[0].zoom)
+        assertEquals(FramingInterpolation.SMOOTH, first.framingKeyframes[0].interpolation)
+
+        val updated = upsertFramingKeyframe(
+            first,
+            clipSeconds = 1.0 + 0.05,
+            pose = FramingPose(zoom = 2.0, panX = 10.0, panY = 90.0),
+            interpolation = FramingInterpolation.INSTANT
+        )
+        assertEquals(1, updated.framingKeyframes.size, "second save near the same time must not duplicate")
+        assertEquals(1.0, updated.framingKeyframes[0].time, "upsert keeps the original keyframe time")
+        assertEquals(2.0, updated.framingKeyframes[0].zoom)
+        assertEquals(10.0, updated.framingKeyframes[0].panX)
+        assertEquals(90.0, updated.framingKeyframes[0].panY)
+        assertEquals(FramingInterpolation.INSTANT, updated.framingKeyframes[0].interpolation)
+
+        val second = upsertFramingKeyframe(
+            updated,
+            clipSeconds = 2.0,
+            pose = FramingPose(zoom = 0.5, panX = 50.0, panY = 50.0)
+        )
+        assertEquals(2, second.framingKeyframes.size)
+        assertEquals(listOf(1.0, 2.0), second.framingKeyframes.map { it.time })
+    }
+
+    @Test
+    fun framingDeleteLastKeyframeRestoresStaticPose() {
+        val withOne = EffectsConfig(
+            zoom = 1.0,
+            offsetX = 50.0,
+            offsetY = 50.0,
+            framingKeyframes = listOf(
+                FramingPoint(time = 0.5, zoom = 2.0, panX = 20.0, panY = 80.0)
+            )
+        )
+        val cleared = deleteNearestFramingKeyframe(withOne, clipSeconds = 0.5)
+        assertTrue(cleared.framingKeyframes.isEmpty())
+        assertEquals(2.0, cleared.zoom)
+        assertEquals(20.0, cleared.offsetX)
+        assertEquals(80.0, cleared.offsetY)
+
+        val withTwo = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(time = 0.0, zoom = 1.0, panX = 50.0, panY = 50.0),
+                FramingPoint(time = 2.0, zoom = 2.0, panX = 10.0, panY = 90.0)
+            )
+        )
+        val remaining = deleteNearestFramingKeyframe(withTwo, clipSeconds = 2.0)
+        assertEquals(1, remaining.framingKeyframes.size)
+        assertEquals(0.0, remaining.framingKeyframes[0].time)
+        assertEquals(1.0, remaining.zoom)
+        assertEquals(50.0, remaining.offsetX)
+    }
+
+    @Test
+    fun framingDeleteIgnoresPlayheadOutsideHitRadius() {
+        val effects = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(time = 0.0, zoom = 1.0, panX = 50.0, panY = 50.0)
+            )
+        )
+        val unchanged = deleteNearestFramingKeyframe(effects, clipSeconds = 1.0)
+        assertEquals(effects, unchanged)
+        assertNull(nearestFramingKeyframe(effects.framingKeyframes, 1.0))
+        assertEquals(effects.framingKeyframes[0], nearestFramingKeyframe(effects.framingKeyframes, 0.05))
+    }
+
+    @Test
+    fun framingInterpolationToggleUpdatesNearbyKeyframeOnly() {
+        val effects = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(
+                    time = 0.0,
+                    zoom = 1.0,
+                    panX = 50.0,
+                    panY = 50.0,
+                    interpolation = FramingInterpolation.SMOOTH
+                ),
+                FramingPoint(
+                    time = 2.0,
+                    zoom = 2.0,
+                    panX = 10.0,
+                    panY = 90.0,
+                    interpolation = FramingInterpolation.SMOOTH
+                )
+            )
+        )
+        val next =
+            setFramingKeyframeInterpolation(effects, clipSeconds = 2.02, interpolation = FramingInterpolation.INSTANT)
+        assertEquals(FramingInterpolation.SMOOTH, next.framingKeyframes[0].interpolation)
+        assertEquals(FramingInterpolation.INSTANT, next.framingKeyframes[1].interpolation)
+    }
+
+    @Test
+    fun staticFramingEffectsWriteZoomAndPan() {
+        val next = staticFramingEffects(
+            EffectsConfig(),
+            FramingPose(zoom = 1.75, panX = 12.0, panY = 88.0)
+        )
+        assertEquals(1.75, next.zoom)
+        assertEquals(12.0, next.offsetX)
+        assertEquals(88.0, next.offsetY)
+        assertTrue(next.framingKeyframes.isEmpty())
+    }
+
+    @Test
+    fun previewFramingPoseUsesDraftOnlyWhenPausedWithKeyframes() {
+        val effects = EffectsConfig(
+            zoom = 1.0,
+            offsetX = 50.0,
+            offsetY = 50.0,
+            framingKeyframes = listOf(
+                FramingPoint(time = 0.0, zoom = 1.0, panX = 50.0, panY = 50.0),
+                FramingPoint(time = 2.0, zoom = 2.0, panX = 10.0, panY = 90.0)
+            )
+        )
+        val draft = FramingDraft("clip-a", FramingPose(zoom = 1.5, panX = 20.0, panY = 80.0))
+        val paused = previewFramingPose(effects, "clip-a", 1.0, draft, isPlaying = false)
+        assertEquals(1.5, paused.zoom)
+        assertEquals(20.0, paused.panX)
+        val playing = previewFramingPose(effects, "clip-a", 1.0, draft, isPlaying = true)
+        assertEquals(1.5, playing.zoom, 0.0001)
+        assertEquals(30.0, playing.panX, 0.0001)
+        val otherClip = previewFramingPose(effects, "clip-b", 1.0, draft, isPlaying = false)
+        assertEquals(1.5, otherClip.zoom, 0.0001)
+        assertEquals(30.0, otherClip.panX, 0.0001)
+    }
+
+    @Test
+    fun previewFramingPoseIgnoresDraftWithoutKeyframes() {
+        val effects = EffectsConfig(zoom = 1.25, offsetX = 40.0, offsetY = 60.0)
+        val draft = FramingDraft("clip-a", FramingPose(zoom = 3.0, panX = 0.0, panY = 100.0))
+        val pose = previewFramingPose(effects, "clip-a", 1.0, draft, isPlaying = false)
+        assertEquals(1.25, pose.zoom)
+        assertEquals(40.0, pose.panX)
+        assertEquals(60.0, pose.panY)
+    }
+
+    @Test
+    fun webglLayerFrameCsvHasThirteenFloatsPerLayer() {
+        val layer = WebGLPreviewLayer(
+            key = "c1",
+            kind = WEBGL_LAYER_IMAGE,
+            url = "https://example.test/still.png",
+            positionSeconds = 1.25,
+            alpha = 0.5f,
+            translateXFraction = 0.1f,
+            translateYFraction = -0.2f,
+            revealRadiusFraction = 1f,
+            offsetXPercent = 40.0,
+            offsetYPercent = 60.0,
+            zoom = 1.5,
+            volume = 0.8,
+            pixelateFraction = 0.1f,
+            noiseFraction = 0.2f,
+            voronoiFraction = 0.3f,
+            vignetteRevealFraction = 0.9f
+        )
+        val csv = webglLayerFrameCsv(listOf(layer, layer))
+        val parts = csv.split(',')
+        assertEquals(WEBGL_LAYER_FRAME_STRIDE * 2, parts.size)
+        assertEquals("1.5", parts[7])
+        assertEquals("0.8", parts[8])
+        assertEquals("1.5", parts[7 + WEBGL_LAYER_FRAME_STRIDE])
     }
 
     @Test

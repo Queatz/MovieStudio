@@ -28,6 +28,10 @@ class ModelsTest {
         val legacy = parseEffectsConfig("""{"colorbalance":{"rs":0.1},"brightness":0.2}""")
         assertNull(legacy.transition)
         assertEquals(1.0, legacy.volume)
+        assertEquals(1.0, legacy.zoom)
+        assertTrue(legacy.framingKeyframes.isEmpty())
+        assertEquals(50.0, legacy.offsetX)
+        assertEquals(50.0, legacy.offsetY)
 
         assertEquals(EffectsConfig(), parseEffectsConfig(null))
         assertEquals(EffectsConfig(), parseEffectsConfig(""))
@@ -153,6 +157,191 @@ class ModelsTest {
         val legacy = parseEffectsConfig("""{"volume":0.6}""")
         assertTrue(legacy.volumeKeyframes.isEmpty())
         assertEquals(0.6, legacy.volumeAt(10.0), 0.0001)
+    }
+
+    @Test
+    fun framingAtFallsBackToStaticZoomAndOffsets() {
+        val config = EffectsConfig(zoom = 1.5, offsetX = 20.0, offsetY = 80.0)
+        assertPose(FramingPose(1.5, 20.0, 80.0), config.framingAt(0.0))
+        assertPose(FramingPose(1.5, 20.0, 80.0), config.framingAt(10.0))
+        // Defaults match today's cover-crop (zoom 1, pan centered).
+        assertPose(FramingPose(1.0, 50.0, 50.0), EffectsConfig().framingAt(1.0))
+        // Out-of-range static values are clamped at evaluation, not rewritten.
+        assertPose(
+            FramingPose(MAX_FRAMING_ZOOM, 0.0, 100.0),
+            EffectsConfig(zoom = 9.0, offsetX = -5.0, offsetY = 250.0).framingAt(0.0)
+        )
+        assertPose(
+            FramingPose(MIN_FRAMING_ZOOM, 50.0, 50.0),
+            EffectsConfig(zoom = 0.01).framingAt(0.0)
+        )
+    }
+
+    @Test
+    fun framingAtInterpolatesSmoothlyBetweenKeyframes() {
+        val config = EffectsConfig(
+            zoom = 1.0,
+            offsetX = 50.0,
+            offsetY = 50.0,
+            framingKeyframes = listOf(
+                FramingPoint(time = 2.0, zoom = 1.0, panX = 0.0, panY = 20.0, interpolation = FramingInterpolation.SMOOTH),
+                FramingPoint(time = 6.0, zoom = 3.0, panX = 100.0, panY = 80.0)
+            )
+        )
+        // Before the first keyframe and after the last one the envelope holds its edge poses.
+        assertPose(FramingPose(1.0, 0.0, 20.0), config.framingAt(0.0))
+        assertPose(FramingPose(3.0, 100.0, 80.0), config.framingAt(9.0))
+        assertPose(FramingPose(1.0, 0.0, 20.0), config.framingAt(2.0))
+        assertPose(FramingPose(2.0, 50.0, 50.0), config.framingAt(4.0))
+        assertPose(FramingPose(2.5, 75.0, 65.0), config.framingAt(5.0))
+        assertPose(FramingPose(3.0, 100.0, 80.0), config.framingAt(6.0))
+    }
+
+    @Test
+    fun framingAtHoldsInstantPoseUntilNextKeyframe() {
+        val config = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(time = 1.0, zoom = 1.0, panX = 10.0, panY = 20.0, interpolation = FramingInterpolation.INSTANT),
+                FramingPoint(time = 5.0, zoom = 2.0, panX = 90.0, panY = 80.0, interpolation = FramingInterpolation.SMOOTH)
+            )
+        )
+        assertPose(FramingPose(1.0, 10.0, 20.0), config.framingAt(0.0))
+        assertPose(FramingPose(1.0, 10.0, 20.0), config.framingAt(1.0))
+        assertPose(FramingPose(1.0, 10.0, 20.0), config.framingAt(4.999))
+        assertPose(FramingPose(2.0, 90.0, 80.0), config.framingAt(5.0))
+        assertPose(FramingPose(2.0, 90.0, 80.0), config.framingAt(8.0))
+    }
+
+    @Test
+    fun framingAtSortsUnsortedKeyframesAndResolvesZeroLengthSpans() {
+        val unsorted = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(time = 4.0, zoom = 2.0, panX = 80.0, panY = 80.0),
+                FramingPoint(time = 0.0, zoom = 1.0, panX = 20.0, panY = 20.0)
+            )
+        )
+        assertPose(FramingPose(1.5, 50.0, 50.0), unsorted.framingAt(2.0))
+
+        val sameTime = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(time = 2.0, zoom = 1.0, panX = 0.0, panY = 0.0, interpolation = FramingInterpolation.SMOOTH),
+                FramingPoint(time = 2.0, zoom = 3.0, panX = 100.0, panY = 100.0, interpolation = FramingInterpolation.INSTANT)
+            )
+        )
+        assertPose(FramingPose(1.0, 0.0, 0.0), sameTime.framingAt(1.0))
+        assertPose(FramingPose(3.0, 100.0, 100.0), sameTime.framingAt(2.0))
+        assertPose(FramingPose(3.0, 100.0, 100.0), sameTime.framingAt(3.0))
+    }
+
+    @Test
+    fun effectsConfigRoundTripsFramingAndStaysBackwardCompatible() {
+        val config = EffectsConfig(
+            zoom = 1.25,
+            offsetX = 20.0,
+            offsetY = 80.0,
+            framingKeyframes = listOf(
+                FramingPoint(0.0, 1.0, 50.0, 50.0, FramingInterpolation.SMOOTH),
+                FramingPoint(1.5, 2.0, 10.0, 90.0, FramingInterpolation.INSTANT)
+            )
+        )
+        assertEquals(config, parseEffectsConfig(encodeEffectsConfig(config)))
+        val legacy = parseEffectsConfig("""{"offsetX":25.0,"offsetY":75.0}""")
+        assertEquals(1.0, legacy.zoom)
+        assertTrue(legacy.framingKeyframes.isEmpty())
+        assertPose(FramingPose(1.0, 25.0, 75.0), legacy.framingAt(10.0))
+    }
+
+    @Test
+    fun framingWindowZoomOneMatchesCoverCropForWideAndTallSources() {
+        val center = FramingPose(zoom = 1.0, panX = 50.0, panY = 50.0)
+        val aspect16x9 = 16.0 / 9.0
+        val aspect9x16 = 9.0 / 16.0
+
+        // Equal aspect: full source, full frame — pan has nowhere to go.
+        assertWindow(
+            framingWindow(center, sourceAspect = aspect16x9, frameAspect = aspect16x9),
+            u0 = 0.0, v0 = 0.0, u1 = 1.0, v1 = 1.0,
+            dx = 0.0, dy = 0.0, dw = 1.0, dh = 1.0
+        )
+
+        // Tall 9:16 on 16:9: current WebGL/FFmpeg cover (crop Y, fill X).
+        // vScale = source/frame = 81/256; vOff = (1 - vScale) * 0.5 = 175/512.
+        val tallCover = framingWindow(center, sourceAspect = aspect9x16, frameAspect = aspect16x9)
+        assertWindow(
+            tallCover,
+            u0 = 0.0, v0 = 175.0 / 512.0, u1 = 1.0, v1 = 175.0 / 512.0 + 81.0 / 256.0,
+            dx = 0.0, dy = 0.0, dw = 1.0, dh = 1.0
+        )
+        assertEquals(coverUvOffset(aspect9x16, aspect16x9, 50.0, 50.0).first, tallCover.u0, 0.0001)
+        assertEquals(coverUvOffset(aspect9x16, aspect16x9, 50.0, 50.0).second, tallCover.v0, 0.0001)
+
+        // Wide 16:9 on 9:16: current cover (crop X, fill Y).
+        val wideCover = framingWindow(center, sourceAspect = aspect16x9, frameAspect = aspect9x16)
+        assertWindow(
+            wideCover,
+            u0 = 175.0 / 512.0, v0 = 0.0, u1 = 175.0 / 512.0 + 81.0 / 256.0, v1 = 1.0,
+            dx = 0.0, dy = 0.0, dw = 1.0, dh = 1.0
+        )
+        assertEquals(coverUvOffset(aspect16x9, aspect9x16, 50.0, 50.0).first, wideCover.u0, 0.0001)
+        assertEquals(coverUvOffset(aspect16x9, aspect9x16, 50.0, 50.0).second, wideCover.v0, 0.0001)
+
+        // Non-center pan must match FFmpeg's (iw-ow)*ox / (ih-oh)*oy window.
+        val panned = FramingPose(zoom = 1.0, panX = 0.0, panY = 100.0)
+        val tallPanned = framingWindow(panned, sourceAspect = aspect9x16, frameAspect = aspect16x9)
+        val expected = coverUvOffset(aspect9x16, aspect16x9, 0.0, 100.0)
+        assertEquals(expected.first, tallPanned.u0, 0.0001)
+        assertEquals(expected.second, tallPanned.v0, 0.0001)
+        assertEquals(0.0, tallPanned.dx, 0.0001)
+        assertEquals(1.0, tallPanned.dw, 0.0001)
+    }
+
+    @Test
+    fun framingWindowZoomInAndOutGoldens() {
+        val center = FramingPose(zoom = 1.0, panX = 50.0, panY = 50.0)
+        val aspect16x9 = 16.0 / 9.0
+        val aspect9x16 = 9.0 / 16.0
+
+        assertWindow(
+            framingWindow(center.copy(zoom = 2.0), sourceAspect = aspect16x9, frameAspect = aspect16x9),
+            u0 = 0.25, v0 = 0.25, u1 = 0.75, v1 = 0.75,
+            dx = 0.0, dy = 0.0, dw = 1.0, dh = 1.0
+        )
+        assertWindow(
+            framingWindow(center.copy(zoom = 0.5), sourceAspect = aspect16x9, frameAspect = aspect16x9),
+            u0 = 0.0, v0 = 0.0, u1 = 1.0, v1 = 1.0,
+            dx = 0.25, dy = 0.25, dw = 0.5, dh = 0.5
+        )
+
+        // Tall 9:16 on 16:9 at 200%: UV window is half the cover size, dest still fills the frame.
+        assertWindow(
+            framingWindow(center.copy(zoom = 2.0), sourceAspect = aspect9x16, frameAspect = aspect16x9),
+            u0 = 0.25, v0 = 431.0 / 1024.0, u1 = 0.75, v1 = 431.0 / 1024.0 + 81.0 / 512.0,
+            dx = 0.0, dy = 0.0, dw = 1.0, dh = 1.0
+        )
+        // Zoom-out 50%: full source width (pillarbox) while height is still cropped.
+        assertWindow(
+            framingWindow(center.copy(zoom = 0.5), sourceAspect = aspect9x16, frameAspect = aspect16x9),
+            u0 = 0.0, v0 = 47.0 / 256.0, u1 = 1.0, v1 = 47.0 / 256.0 + 81.0 / 128.0,
+            dx = 0.25, dy = 0.0, dw = 0.5, dh = 1.0
+        )
+
+        // Wide 16:9 on 9:16 zoom-out: full source height (letterbox) while width is still cropped.
+        assertWindow(
+            framingWindow(center.copy(zoom = 0.5), sourceAspect = aspect16x9, frameAspect = aspect9x16),
+            u0 = 47.0 / 256.0, v0 = 0.0, u1 = 47.0 / 256.0 + 81.0 / 128.0, v1 = 1.0,
+            dx = 0.0, dy = 0.25, dw = 1.0, dh = 0.5
+        )
+        // Past contain, dest is pan-able and UVs stay the full source.
+        val zoomedOutPanned = framingWindow(
+            FramingPose(zoom = 0.5, panX = 0.0, panY = 100.0),
+            sourceAspect = aspect16x9,
+            frameAspect = aspect16x9
+        )
+        assertWindow(
+            zoomedOutPanned,
+            u0 = 0.0, v0 = 0.0, u1 = 1.0, v1 = 1.0,
+            dx = 0.0, dy = 0.5, dw = 0.5, dh = 0.5
+        )
     }
 
     @Test
@@ -886,5 +1075,49 @@ class ModelsTest {
         assertEquals("Bonjour", unwrapTranslatedSpeakingPrompt("  \"Bonjour\"  "))
         assertEquals("Bonjour", unwrapTranslatedSpeakingPrompt("“Bonjour”"))
         assertEquals("Bonjour", unwrapTranslatedSpeakingPrompt("Bonjour"))
+    }
+
+    private fun assertPose(expected: FramingPose, actual: FramingPose, abs: Double = 0.0001) {
+        assertEquals(expected.zoom, actual.zoom, abs)
+        assertEquals(expected.panX, actual.panX, abs)
+        assertEquals(expected.panY, actual.panY, abs)
+    }
+
+    private fun assertWindow(
+        actual: FramingWindow,
+        u0: Double,
+        v0: Double,
+        u1: Double,
+        v1: Double,
+        dx: Double,
+        dy: Double,
+        dw: Double,
+        dh: Double,
+        abs: Double = 0.0001
+    ) {
+        assertEquals(u0, actual.u0, abs)
+        assertEquals(v0, actual.v0, abs)
+        assertEquals(u1, actual.u1, abs)
+        assertEquals(v1, actual.v1, abs)
+        assertEquals(dx, actual.dx, abs)
+        assertEquals(dy, actual.dy, abs)
+        assertEquals(dw, actual.dw, abs)
+        assertEquals(dh, actual.dh, abs)
+    }
+
+    /** Today's WebGL/FFmpeg cover-crop UV origin: `(1 - scale) * pan/100` on the overflowing axis. */
+    private fun coverUvOffset(
+        sourceAspect: Double,
+        frameAspect: Double,
+        panX: Double,
+        panY: Double
+    ): Pair<Double, Double> {
+        return if (sourceAspect > frameAspect) {
+            val uScale = frameAspect / sourceAspect
+            Pair((1.0 - uScale) * (panX / 100.0), 0.0)
+        } else {
+            val vScale = sourceAspect / frameAspect
+            Pair(0.0, (1.0 - vScale) * (panY / 100.0))
+        }
     }
 }
