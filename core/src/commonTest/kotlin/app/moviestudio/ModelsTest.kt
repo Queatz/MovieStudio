@@ -252,6 +252,38 @@ class ModelsTest {
     }
 
     @Test
+    fun splitAtKeepsKeyframeAbsoluteTimes() {
+        val config = EffectsConfig(
+            volume = 0.8,
+            volumeKeyframes = listOf(
+                VolumePoint(time = 1.0, volume = 0.2),
+                VolumePoint(time = 3.0, volume = 1.0),
+                VolumePoint(time = 6.0, volume = 0.5)
+            ),
+            zoom = 1.0,
+            offsetX = 50.0,
+            offsetY = 50.0,
+            framingKeyframes = listOf(
+                FramingPoint(time = 0.0, zoom = 1.0, panX = 40.0, panY = 60.0),
+                FramingPoint(time = 3.0, zoom = 2.0, panX = 10.0, panY = 90.0, interpolation = FramingInterpolation.INSTANT),
+                FramingPoint(time = 5.0, zoom = 1.5, panX = 80.0, panY = 20.0)
+            )
+        )
+        val (left, right) = config.splitAt(3.0)
+        assertEquals(listOf(1.0, 3.0), left.volumeKeyframes.map { it.time })
+        assertEquals(listOf(0.0, 3.0), right.volumeKeyframes.map { it.time })
+        assertEquals(1.0, right.volumeKeyframes[0].volume)
+        assertEquals(0.5, right.volumeKeyframes[1].volume)
+        assertEquals(listOf(0.0, 3.0), left.framingKeyframes.map { it.time })
+        assertEquals(listOf(0.0, 2.0), right.framingKeyframes.map { it.time })
+        assertEquals(2.0, right.framingKeyframes[0].zoom)
+        assertEquals(FramingInterpolation.INSTANT, right.framingKeyframes[0].interpolation)
+        assertEquals(1.5, right.framingKeyframes[1].zoom)
+        assertEquals(0.8, left.volume)
+        assertEquals(0.8, right.volume)
+    }
+
+    @Test
     fun framingWindowZoomOneMatchesCoverCropForWideAndTallSources() {
         val center = FramingPose(zoom = 1.0, panX = 50.0, panY = 50.0)
         val aspect16x9 = 16.0 / 9.0

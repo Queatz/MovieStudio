@@ -382,6 +382,13 @@ internal fun nearestFramingKeyframeIndex(
     return if (abs(keyframes[idx].time - clipSeconds) <= hitSeconds) idx else -1
 }
 
+/** Interpolation of the latest keyframe strictly before [clipSeconds], if any. */
+internal fun previousFramingInterpolation(
+    keyframes: List<FramingPoint>,
+    clipSeconds: Double,
+): FramingInterpolation? =
+    keyframes.filter { it.time < clipSeconds }.maxByOrNull { it.time }?.interpolation
+
 /**
  * Inserts or replaces a framing keyframe at [clipSeconds]. A second save within [hitSeconds] of
  * an existing point updates that point's pose (and optional interpolation) instead of duplicating.
@@ -400,7 +407,10 @@ internal fun upsertFramingKeyframe(
         zoom = pose.zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM),
         panX = pose.panX.coerceIn(0.0, 100.0),
         panY = pose.panY.coerceIn(0.0, 100.0),
-        interpolation = interpolation ?: existing?.interpolation ?: FramingInterpolation.SMOOTH
+        interpolation = interpolation
+            ?: existing?.interpolation
+            ?: previousFramingInterpolation(effects.framingKeyframes, clipSeconds)
+            ?: FramingInterpolation.SMOOTH
     )
     val next = if (existingIndex >= 0) {
         effects.framingKeyframes.mapIndexed { i, p -> if (i == existingIndex) point else p }

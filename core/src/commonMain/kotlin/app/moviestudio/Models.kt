@@ -1242,6 +1242,29 @@ fun EffectsConfig.framingAt(clipSeconds: Double): FramingPose {
 }
 
 /**
+ * Splits clip-local volume and framing envelopes at [splitSeconds] so a timeline split keeps
+ * keyframes at the same absolute times. The left side keeps points at `t <= split`; the right
+ * side keeps points at `t >= split` remapped to `t - split`. A point exactly on the cut is
+ * duplicated onto both sides so each clip still holds that pose.
+ */
+fun EffectsConfig.splitAt(splitSeconds: Double): Pair<EffectsConfig, EffectsConfig> {
+    val cut = splitSeconds
+    fun <T> splitPoints(
+        points: List<T>,
+        timeOf: (T) -> Double,
+        withTime: (T, Double) -> T,
+    ): Pair<List<T>, List<T>> {
+        val left = points.filter { timeOf(it) <= cut }
+        val right = points.filter { timeOf(it) >= cut }.map { withTime(it, timeOf(it) - cut) }
+        return left to right
+    }
+    val (leftVolume, rightVolume) = splitPoints(volumeKeyframes, { it.time }) { p, t -> p.copy(time = t) }
+    val (leftFraming, rightFraming) = splitPoints(framingKeyframes, { it.time }) { p, t -> p.copy(time = t) }
+    return copy(volumeKeyframes = leftVolume, framingKeyframes = leftFraming) to
+        copy(volumeKeyframes = rightVolume, framingKeyframes = rightFraming)
+}
+
+/**
  * Cover-crop UV window and destination rect for [pose]. Zoom 1 + pan 50/50 matches today's
  * WebGL/FFmpeg cover-crop (full-frame dest, UV window = `uScale = min(1, frame/source)`,
  * `vScale = min(1, source/frame)`, offset `(1-scale) * pan/100`). Zoom-in shrinks UVs; zoom-out

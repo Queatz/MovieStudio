@@ -273,8 +273,22 @@ private const val SETTLE_NANOS = 500_000_000L
                     const rvfc = (typeof entry.el.requestVideoFrameCallback === 'function');
                     if (!entry.uploaded || entry.hasNewFrame || !rvfc) {
                         try {
-                            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, entry.el);
-                        } catch (e) { continue; }
+                            // Blit through a 2D canvas sized to videoWidth×videoHeight so the
+                            // texture matches CSS Default (rotation metadata applied). texImage2D
+                            // from <video> can upload the coded (unrotated) frame, which looks
+                            // 90° off and stretched against display dimensions.
+                            const vw = entry.el.videoWidth;
+                            const vh = entry.el.videoHeight;
+                            if (!entry.blit) { entry.blit = document.createElement('canvas'); }
+                            if (entry.blit.width !== vw) { entry.blit.width = vw; }
+                            if (entry.blit.height !== vh) { entry.blit.height = vh; }
+                            entry.blit.getContext('2d').drawImage(entry.el, 0, 0, vw, vh);
+                            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, entry.blit);
+                        } catch (e1) {
+                            try {
+                                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, entry.el);
+                            } catch (e) { continue; }
+                        }
                         entry.uploaded = true;
                         entry.hasNewFrame = false;
                     }
@@ -354,6 +368,7 @@ private const val SETTLE_NANOS = 500_000_000L
             reveal: old ? old.reveal : 1,
             offsetX: old ? old.offsetX : 50,
             offsetY: old ? old.offsetY : 50,
+            zoom: old ? old.zoom : 1,
             pixelate: old ? old.pixelate : 0,
             noise: old ? old.noise : 0,
             voronoi: old ? old.voronoi : 0,

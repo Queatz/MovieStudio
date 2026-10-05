@@ -936,11 +936,17 @@ class AppViewModel : ViewModel() {
         val length = clip.trimOut - clip.trimIn
         if (offset <= minSplitSliver || offset >= length - minSplitSliver) return
 
-        val left = clip.copy(trimOut = clip.trimIn + offset)
+        val effects = parseEffectsConfig(clip.effectsConfig)
+        val (leftEffects, rightEffects) = effects.splitAt(offset.toDouble())
+        val left = clip.copy(
+            trimOut = clip.trimIn + offset,
+            effectsConfig = encodeEffectsConfig(leftEffects)
+        )
         val right = clip.copy(
             id = generateId(),
             timelineStart = clip.timelineStart + offset,
-            trimIn = clip.trimIn + offset
+            trimIn = clip.trimIn + offset,
+            effectsConfig = encodeEffectsConfig(rightEffects)
         )
         // Optimistically update local state so the split appears instantly.
         applyClipLocally(left)

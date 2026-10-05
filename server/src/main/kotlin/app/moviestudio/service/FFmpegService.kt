@@ -1012,21 +1012,33 @@ object FFmpegService {
         }
         val srcStart = asset.sourceOffsetSeconds + clip.trimIn
         val srcEnd = asset.sourceOffsetSeconds + clip.trimOut
-        val vf = mutableListOf<String>()
+        val prefix = mutableListOf<String>()
         if (asset.type != AssetType.IMAGE) {
-            vf.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
-            vf.add("setpts=PTS-STARTPTS")
+            prefix.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
+            prefix.add("setpts=PTS-STARTPTS")
         }
-        appendFramingFilters(vf, effects, canvasWidth, canvasHeight)
-        vf.add("fps=$RENDER_FPS")
-        appendColorGrading(vf, rawEffects)
+        val suffix = mutableListOf<String>()
+        suffix.add("fps=$RENDER_FPS")
+        appendColorGrading(suffix, rawEffects)
         // Clone the last decoded frame out to the slot length. Source files are often shorter
         // than the timeline duration (stream frame count truncated below the container duration);
         // without this, concat shifts every following clip early and its fade starts late.
         val frames = frameCount.coerceAtLeast(1)
-        vf.add("tpad=stop_mode=clone:stop_duration=${(frames / RENDER_FPS.toDouble() + 0.5).ff()}")
-        vf.add("setsar=1")
-        vf.add("format=yuv420p")
+        suffix.add("tpad=stop_mode=clone:stop_duration=${(frames / RENDER_FPS.toDouble() + 0.5).ff()}")
+        suffix.add("setsar=1")
+        suffix.add("format=yuv420p")
+        val graph = mutableListOf<String>()
+        appendFramedClipGraph(
+            filters = graph,
+            inputLabel = "0:v",
+            outputTag = "vout",
+            uniqueId = clip.id,
+            prefix = prefix,
+            effects = effects,
+            canvasWidth = canvasWidth,
+            canvasHeight = canvasHeight,
+            suffix = suffix
+        )
 
         val args = mutableListOf<String>()
         args.add(MediaUtil.ffmpegBinary); args.add("-y")
@@ -1037,7 +1049,8 @@ object FFmpegService {
         } else {
             args.add("-i"); args.add(srcFile.absolutePath)
         }
-        args.add("-vf"); args.add(vf.joinToString(","))
+        args.add("-filter_complex"); args.add(graph.joinToString(";"))
+        args.add("-map"); args.add("[vout]")
         args.add("-an")
         args.add("-c:v"); args.add("libx264")
         args.add("-preset"); args.add("ultrafast")
@@ -1276,27 +1289,37 @@ object FFmpegService {
         }
         val srcStart = asset.sourceOffsetSeconds + clip.trimIn
         val srcEnd = asset.sourceOffsetSeconds + clip.trimOut
-        val videoFilters = mutableListOf<String>()
-        videoFilters.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
-        videoFilters.add("setpts=PTS-STARTPTS")
-        appendFramingFilters(videoFilters, effects, canvasWidth, canvasHeight)
-        videoFilters.add("fps=30")
-        appendColorGrading(videoFilters, rawEffects)
+        val prefix = mutableListOf<String>()
+        prefix.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
+        prefix.add("setpts=PTS-STARTPTS")
+        val suffix = mutableListOf<String>()
+        suffix.add("fps=30")
+        appendColorGrading(suffix, rawEffects)
 
         val transition = effects.transition
         val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
         buildTransitionFilters(
-            videoFilters, transition, transitionDur, timelineStartForSlide, canvasWidth, canvasHeight
+            suffix, transition, transitionDur, timelineStartForSlide, canvasWidth, canvasHeight
         )
 
         val pad = displayDur - duration
         if (pad > 0.001) {
             // Hold the last frame across a bridged sub-frame sliver (mirrors eof_action=repeat).
-            videoFilters.add("tpad=stop_mode=clone:stop_duration=${pad.ff()}")
+            suffix.add("tpad=stop_mode=clone:stop_duration=${pad.ff()}")
         }
-        videoFilters.add("format=yuva420p")
-        videoFilters.add("setsar=1")
-        filters.add("[$inputIndex:v]${videoFilters.joinToString(",")}[$outputTag]")
+        suffix.add("format=yuva420p")
+        suffix.add("setsar=1")
+        appendFramedClipGraph(
+            filters = filters,
+            inputLabel = "$inputIndex:v",
+            outputTag = outputTag,
+            uniqueId = clip.id,
+            prefix = prefix,
+            effects = effects,
+            canvasWidth = canvasWidth,
+            canvasHeight = canvasHeight,
+            suffix = suffix
+        )
     }
 
     /** Description-only placeholder as a canvas-sized yuva segment with centered white text. */
@@ -1443,22 +1466,32 @@ object FFmpegService {
         }
         val srcStart = asset.sourceOffsetSeconds + clip.trimIn
         val srcEnd = asset.sourceOffsetSeconds + clip.trimOut
-        val videoFilters = mutableListOf<String>()
-        videoFilters.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
-        videoFilters.add("setpts=PTS-STARTPTS")
-        appendFramingFilters(videoFilters, effects, canvasWidth, canvasHeight)
-        videoFilters.add("fps=30")
-        appendColorGrading(videoFilters, rawEffects)
+        val prefix = mutableListOf<String>()
+        prefix.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
+        prefix.add("setpts=PTS-STARTPTS")
+        val suffix = mutableListOf<String>()
+        suffix.add("fps=30")
+        appendColorGrading(suffix, rawEffects)
 
         val transition = effects.transition
         val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
         val overlayExtra = buildTransitionFilters(
-            videoFilters, transition, transitionDur, start, canvasWidth, canvasHeight
+            suffix, transition, transitionDur, start, canvasWidth, canvasHeight
         )
-        videoFilters.add("setpts=PTS+${start.ff()}/TB")
-
+        suffix.add("setpts=PTS+${start.ff()}/TB")
         val trimmedTag = "v_trimmed_${clip.id}"
-        filters.add("[$idx:v]${videoFilters.joinToString(",")}[$trimmedTag]")
+        appendFramedClipGraph(
+            filters = filters,
+            inputLabel = "$idx:v",
+            outputTag = trimmedTag,
+            uniqueId = clip.id,
+            prefix = prefix,
+            effects = effects,
+            canvasWidth = canvasWidth,
+            canvasHeight = canvasHeight,
+            suffix = suffix
+        )
+
         val nextVideoTag = "v_overlaid_${clip.id}"
         filters.add(
             "[$currentVideoTag][$trimmedTag]overlay=eof_action=repeat:" +
@@ -2226,8 +2259,11 @@ object FFmpegService {
 
     /**
      * Cover-scale, then crop (and pad on zoom-out) using [EffectsConfig.framingAt]. Zoom 1 + pan
-     * 50/50 is today's `crop=W:H:(iw-ow)*ox:(ih-oh)*oy`. Animated keyframes use `eval=frame`
-     * expressions (Smooth = piecewise linear, Instant = hold until the next time).
+     * 50/50 is today's `crop=W:H:(iw-ow)*ox:(ih-oh)*oy`.
+     *
+     * Static poses stay a linear scale/crop/pad chain. Animated keyframes cannot: FFmpeg 8+ `crop`
+     * has no `eval` option, and `pad` x/y cannot parse `if`/`lt` pan expressions. Those use
+     * [FramingStage.overlayFilter] (zoom via `scale=eval=frame`, then overlay onto a black canvas).
      */
     internal fun appendFramingFilters(
         filters: MutableList<String>,
@@ -2235,38 +2271,85 @@ object FFmpegService {
         canvasWidth: Int,
         canvasHeight: Int
     ) {
-        filters.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
+        filters.addAll(framingStage(effects, canvasWidth, canvasHeight).mediaFilters)
+    }
+
+    /** Linear media filters plus an optional overlay used to composite animated framing. */
+    internal data class FramingStage(
+        val mediaFilters: List<String>,
+        val overlayFilter: String? = null
+    )
+
+    internal fun framingStage(
+        effects: EffectsConfig,
+        canvasWidth: Int,
+        canvasHeight: Int
+    ): FramingStage {
+        val media = mutableListOf<String>()
+        media.add("scale=$canvasWidth:$canvasHeight:force_original_aspect_ratio=increase")
         if (effects.framingKeyframes.isEmpty()) {
             val pose = effects.framingAt(0.0)
             val z = pose.zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM)
             val px = (pose.panX / 100.0).coerceIn(0.0, 1.0)
             val py = (pose.panY / 100.0).coerceIn(0.0, 1.0)
             if (kotlin.math.abs(z - 1.0) <= 1e-9) {
-                filters.add("crop=$canvasWidth:$canvasHeight:(iw-ow)*${px.ff()}:(ih-oh)*${py.ff()}")
-                return
+                media.add("crop=$canvasWidth:$canvasHeight:(iw-ow)*${px.ff()}:(ih-oh)*${py.ff()}")
+                return FramingStage(media)
             }
-            filters.add("scale=iw*${z.ff()}:ih*${z.ff()}")
-            filters.add(
+            media.add("scale=iw*${z.ff()}:ih*${z.ff()}")
+            media.add(
                 "crop=w='min(iw\\,$canvasWidth)':h='min(ih\\,$canvasHeight)':" +
                     "x='(iw-ow)*${px.ff()}':y='(ih-oh)*${py.ff()}'"
             )
             if (z < 1.0) {
-                filters.add(
+                media.add(
                     "pad=$canvasWidth:$canvasHeight:(ow-iw)*${px.ff()}:(oh-ih)*${py.ff()}:black"
                 )
             }
-            return
+            return FramingStage(media)
         }
         val zoomExpr = framingZoomExpression(effects)
         val panXExpr = framingPanUnitExpression(effects, x = true)
         val panYExpr = framingPanUnitExpression(effects, x = false)
-        filters.add("scale=iw*($zoomExpr):ih*($zoomExpr):eval=frame")
+        media.add("scale=iw*($zoomExpr):ih*($zoomExpr):eval=frame")
+        // Overlay x/y are per-frame and accept the same `if(lt(t,…))` expressions as volume.
+        // Zoom-in clips (overlay larger than the canvas); zoom-out letterboxes.
+        val overlay =
+            "overlay=x='(W-w)*($panXExpr)':y='(H-h)*($panYExpr)':shortest=1"
+        return FramingStage(media, overlay)
+    }
+
+    /**
+     * Writes [prefix] + framing + [suffix] as one clip chain into [filters]. Static framing is a
+     * single comma-joined node; animated framing inserts a black canvas and overlays the zooming
+     * sprite onto it (FFmpeg 8 crop has no `eval=frame`).
+     */
+    internal fun appendFramedClipGraph(
+        filters: MutableList<String>,
+        inputLabel: String,
+        outputTag: String,
+        uniqueId: String,
+        prefix: List<String>,
+        effects: EffectsConfig,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        suffix: List<String>
+    ) {
+        val stage = framingStage(effects, canvasWidth, canvasHeight)
+        val mediaChain = prefix + stage.mediaFilters
+        val overlay = stage.overlayFilter
+        if (overlay == null) {
+            filters.add("[$inputLabel]${(mediaChain + suffix).joinToString(",")}[$outputTag]")
+            return
+        }
+        val fg = "v_frfg_$uniqueId"
+        val bg = "v_frbg_$uniqueId"
+        filters.add("[$inputLabel]${mediaChain.joinToString(",")}[$fg]")
+        filters.add("color=c=black:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS[$bg]")
+        val rest = suffix.joinToString(",")
         filters.add(
-            "crop=w='min(iw\\,$canvasWidth)':h='min(ih\\,$canvasHeight)':" +
-                "x='(iw-ow)*($panXExpr)':y='(ih-oh)*($panYExpr)':eval=frame"
-        )
-        filters.add(
-            "pad=$canvasWidth:$canvasHeight:(ow-iw)*($panXExpr):(oh-ih)*($panYExpr):black"
+            if (rest.isEmpty()) "[$bg][$fg]$overlay[$outputTag]"
+            else "[$bg][$fg]$overlay,$rest[$outputTag]"
         )
     }
 

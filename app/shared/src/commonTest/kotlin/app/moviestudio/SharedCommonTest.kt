@@ -9,6 +9,7 @@ import app.moviestudio.ui.framingPoseFromNumberFields
 import app.moviestudio.ui.markdownToPrintHtml
 import app.moviestudio.ui.parseFramingNumber
 import app.moviestudio.ui.nearestFramingKeyframe
+import app.moviestudio.ui.previousFramingInterpolation
 import app.moviestudio.ui.setFramingKeyframeInterpolation
 import app.moviestudio.ui.snapMovedStart
 import app.moviestudio.ui.staticFramingEffects
@@ -555,6 +556,38 @@ class SharedCommonTest {
         )
         assertEquals(2, second.framingKeyframes.size)
         assertEquals(listOf(1.0, 2.0), second.framingKeyframes.map { it.time })
+        assertEquals(
+            FramingInterpolation.INSTANT,
+            second.framingKeyframes[1].interpolation,
+            "new keyframe inherits Instant/Smooth from the previous keyframe"
+        )
+    }
+
+    @Test
+    fun upsertFramingKeyframeInheritsPreviousInterpolation() {
+        val instant = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(time = 0.5, zoom = 1.0, panX = 50.0, panY = 50.0, interpolation = FramingInterpolation.INSTANT)
+            )
+        )
+        val next = upsertFramingKeyframe(
+            instant,
+            clipSeconds = 2.0,
+            pose = FramingPose(zoom = 2.0, panX = 10.0, panY = 90.0)
+        )
+        assertEquals(FramingInterpolation.INSTANT, next.framingKeyframes[1].interpolation)
+        assertEquals(FramingInterpolation.INSTANT, previousFramingInterpolation(instant.framingKeyframes, 2.0))
+        assertNull(previousFramingInterpolation(instant.framingKeyframes, 0.5))
+    }
+
+    @Test
+    fun nearestFramingKeyframeCanBeSelectedPastClipEnd() {
+        val points = listOf(
+            FramingPoint(time = 12.0, zoom = 1.2, panX = 30.0, panY = 70.0)
+        )
+        assertEquals(12.0, nearestFramingKeyframe(points, clipSeconds = 12.0)?.time)
+        assertEquals(12.0, nearestFramingKeyframe(points, clipSeconds = 12.05)?.time)
+        assertNull(clipLocalPlayheadSeconds(playhead = 12.0, timelineStart = 0.0, clipLength = 10.0))
     }
 
     @Test

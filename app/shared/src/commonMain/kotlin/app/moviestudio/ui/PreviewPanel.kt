@@ -216,6 +216,9 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
     LaunchedEffect(usingDefaultRenderer, StudioDialogTracker.anyOpen, VideoPreviewTracker.anyActive) {
         if (usingDefaultRenderer) {
             setPreviewOverlayVisible(!StudioDialogTracker.anyOpen || VideoPreviewTracker.anyActive)
+        } else {
+            // WebGL composites inside Compose; never leave the Default DOM overlay on top of it.
+            setPreviewOverlayVisible(false)
         }
     }
 
@@ -367,7 +370,9 @@ private fun FramingChrome(viewModel: AppViewModel, clip: Clip) {
         draft = viewModel.framingDraft,
         isPlaying = viewModel.isPlaying
     )
-    val nearby = playheadInClip?.let { nearestFramingKeyframe(keyframes, it) }
+    // Hit-test in unclamped clip-local time so a keyframe past the clip (or timeline) end
+    // can still be selected after seeking to it with allowPastEnd.
+    val nearby = nearestFramingKeyframe(keyframes, clipSeconds)
     val canSave = playheadInClip != null
     val canDelete = nearby != null
     val canSetInterpolation = nearby != null
@@ -409,7 +414,7 @@ private fun FramingChrome(viewModel: AppViewModel, clip: Clip) {
             commit(upsertFramingKeyframe(effects, time, savePose))
         }
         GhostPillButton("Delete", compact = true, enabled = canDelete) {
-            val time = playheadInClip ?: return@GhostPillButton
+            val time = nearby?.time ?: return@GhostPillButton
             commit(deleteNearestFramingKeyframe(effects, time))
         }
         FramingChromeDivider()
@@ -418,7 +423,7 @@ private fun FramingChrome(viewModel: AppViewModel, clip: Clip) {
             selected = nearby?.interpolation == FramingInterpolation.SMOOTH,
             enabled = canSetInterpolation
         ) {
-            val time = playheadInClip ?: return@FramingToggleChip
+            val time = nearby?.time ?: return@FramingToggleChip
             viewModel.updateClipEffects(
                 clip,
                 setFramingKeyframeInterpolation(effects, time, FramingInterpolation.SMOOTH)
@@ -429,7 +434,7 @@ private fun FramingChrome(viewModel: AppViewModel, clip: Clip) {
             selected = nearby?.interpolation == FramingInterpolation.INSTANT,
             enabled = canSetInterpolation
         ) {
-            val time = playheadInClip ?: return@FramingToggleChip
+            val time = nearby?.time ?: return@FramingToggleChip
             viewModel.updateClipEffects(
                 clip,
                 setFramingKeyframeInterpolation(effects, time, FramingInterpolation.INSTANT)
@@ -444,7 +449,7 @@ private fun FramingChrome(viewModel: AppViewModel, clip: Clip) {
                     enabled = true
                 ) {
                     viewModel.clearFramingDraft()
-                    viewModel.seek((clip.timelineStart + point.time).toFloat())
+                    viewModel.seek((clip.timelineStart + point.time).toFloat(), allowPastEnd = true)
                 }
             }
         }

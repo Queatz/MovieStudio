@@ -1022,6 +1022,73 @@ class FFmpegServiceErrorTest {
     }
 
     @Test
+    fun appendFramingFiltersAnimatedDoesNotUseCropEval() {
+        // FFmpeg 8 crop has no `eval` option ("Option not found", exit 8). Animated framing
+        // zooms via scale=eval=frame and composites with overlay onto a black canvas.
+        val effects = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(0.0, 0.5, 50.0, 50.0, FramingInterpolation.SMOOTH),
+                FramingPoint(2.0, 2.0, 20.0, 80.0, FramingInterpolation.INSTANT)
+            )
+        )
+        val stage = FFmpegService.framingStage(effects, canvasWidth = 1920, canvasHeight = 1080)
+        assertFalse(
+            stage.mediaFilters.any { it.startsWith("crop=") && it.contains("eval=") },
+            "crop must not set eval (removed in FFmpeg 8), got: ${stage.mediaFilters}"
+        )
+        assertTrue(
+            stage.mediaFilters.any { it.startsWith("scale=iw*") && it.endsWith("eval=frame") },
+            "animated zoom must scale per-frame, got: ${stage.mediaFilters}"
+        )
+        val overlay = assertNotNull(stage.overlayFilter, "animated framing must overlay onto a canvas")
+        assertTrue(overlay.startsWith("overlay=x='(W-w)*"), "overlay must pan with (W-w)*pan, got: $overlay")
+        assertFalse(overlay.contains("eval="), "overlay x/y are already per-frame, got: $overlay")
+    }
+
+    @Test
+    fun appendFramingFiltersAnimatedChainIsAcceptedByFfmpeg() {
+        val effects = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(0.0, 0.5, 50.0, 50.0, FramingInterpolation.SMOOTH),
+                FramingPoint(0.3, 2.0, 20.0, 80.0, FramingInterpolation.INSTANT),
+                FramingPoint(0.6, 1.0, 80.0, 20.0, FramingInterpolation.SMOOTH)
+            )
+        )
+        val graph = mutableListOf<String>()
+        FFmpegService.appendFramedClipGraph(
+            filters = graph,
+            inputLabel = "0:v",
+            outputTag = "vout",
+            uniqueId = "smoke",
+            prefix = emptyList(),
+            effects = effects,
+            canvasWidth = 320,
+            canvasHeight = 180,
+            suffix = listOf("format=yuv420p")
+        )
+        val temp = java.nio.file.Files.createTempDirectory("ms_framing_anim_").toFile()
+        try {
+            val out = File(temp, "out.mp4")
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "testsrc=s=640x360:r=30:d=1",
+                    "-filter_complex", graph.joinToString(";"),
+                    "-map", "[vout]",
+                    "-frames:v", "12",
+                    "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    out.absolutePath
+                ),
+                label = "framing-animated-smoke"
+            )
+            assertTrue(out.exists() && out.length() > 0L, "animated framing chain must produce output")
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
+    @Test
     fun volumeEnvelopeExpressionAvoidsScientificNotation() {
         // A keyframe time with float drift must not leak scientific notation into the volume filter.
         val expr = FFmpegService.volumeEnvelopeExpression(
