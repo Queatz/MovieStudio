@@ -87,7 +87,7 @@ interface AIGenerationService {
     suspend fun createVoiceClone(name: String, audioUrl: String): VoiceClone
 
     /**
-     * Creates a new designed voice (CosyVoice Voice Design) from a natural-language [description]
+     * Creates a new designed voice (Qwen-Audio Voice Design) from a natural-language [description]
      * and persists it. Returns the stored [VoiceDesign]. The default rejects the request for
      * backends without voice-design support.
      */

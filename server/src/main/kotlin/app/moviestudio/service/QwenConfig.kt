@@ -31,12 +31,19 @@ import org.slf4j.LoggerFactory
  *                              tier, there is no separate "-edit-" model name), so this also
  *                              defaults to [DEFAULT_IMAGE_MODEL_ID].
  * - QWEN_MUSIC_MODEL           Music generation model (default fun-music-v1).
- * - QWEN_TTS_MODEL             Text-to-speech model (default qwen-tts).
+ * - QWEN_TTS_MODEL             Text-to-speech model for preset voices (default qwen3-tts-flash).
+ *                              Do not set this to qwen-audio-3.0-tts-*: that family uses the
+ *                              SpeechSynthesizer endpoint and different voice ids (longan*), and
+ *                              posting it to multimodal-generation fails with HTTP 400 "url error".
  * - QWEN_TTS_INSTRUCT_MODEL    Instruction-following TTS model used when voice instructions
  *                              (e.g. "happy", "sad", "excited") are supplied (default
- *                              qwen3-tts-instruct).
+ *                              qwen3-tts-flash). Dedicated workspaces often lack instruct-flash;
+ *                              qwen3-tts-flash accepts the `instruct` input instead.
  * - QWEN_VOICE_ENROLL_MODEL    Voice cloning/enrollment model (default voice-enrollment).
- * - QWEN_VOICE_CLONE_TARGET    TTS model cloned voices target (default cosyvoice-v3.5-plus).
+ * - QWEN_VOICE_CLONE_TARGET    TTS model cloned and designed voices target
+ *                              (default qwen-audio-3.0-tts-plus). Enrollment `target_model` and
+ *                              SpeechSynthesizer synthesis must match. Override to
+ *                              cosyvoice-v3.5-plus only for legacy CosyVoice voices.
  * - QWEN_AUDIO_MODEL           Sound-effect model (Alibaba ThinkSound), used both text-to-audio
  *                              and video-driven (default thinksound-v1); served by the
  *                              audio-generation/audio-synthesis endpoint.
@@ -75,12 +82,26 @@ object QwenConfig {
     // this defaults to the same model name as [imageModel] rather than a distinct "-edit-" model.
     val imageEditModel: String = Env.get("QWEN_IMAGE_EDIT_MODEL", DEFAULT_IMAGE_MODEL_ID)
     val musicModel: String = Env.get("QWEN_MUSIC_MODEL", "fun-music-v1")
-    val ttsModel: String = Env.get("QWEN_TTS_MODEL", "qwen-audio-3.0-tts-plus")
-    // Instruction-following TTS (Qwen instruct): selected when the generation setup carries voice
-    // instructions describing how the line should be delivered (e.g. "happy", "sad", "excited").
-    val ttsInstructModel: String = Env.get("QWEN_TTS_INSTRUCT_MODEL", "qwen-audio-3.0-tts-plus")
+    // Preset Voice Library (Cherry/Serena/…) lives on qwen3-tts-flash + multimodal-generation.
+    // qwen-audio-3.0-tts-plus is a different SpeechSynthesizer family and is not a drop-in.
+    const val DEFAULT_TTS_MODEL = "qwen3-tts-flash"
+    const val DEFAULT_TTS_INSTRUCT_MODEL = "qwen3-tts-flash"
+    val ttsModel: String = Env.get("QWEN_TTS_MODEL", DEFAULT_TTS_MODEL)
+    // Instruction-following TTS: selected when the generation setup carries voice instructions
+    // describing how the line should be delivered (e.g. "happy", "sad", "excited"). Same model
+    // as [ttsModel] because qwen3-tts-flash accepts `instruct` and instruct-flash is not hosted
+    // on typical dedicated Beijing workspaces.
+    val ttsInstructModel: String = Env.get("QWEN_TTS_INSTRUCT_MODEL", DEFAULT_TTS_INSTRUCT_MODEL)
     val voiceEnrollModel: String = Env.get("QWEN_VOICE_ENROLL_MODEL", "voice-enrollment")
-    val voiceCloneTargetModel: String = Env.get("QWEN_VOICE_CLONE_TARGET", "cosyvoice-v3.5-plus")
+    // Cloned + designed Voice Library voices enroll against this model and are synthesized
+    // on SpeechSynthesizer (`services/audio/tts/SpeechSynthesizer`). Preset Cherry/Serena
+    // voices stay on [ttsModel] / multimodal-generation — do not mix the two families.
+    const val DEFAULT_VOICE_CLONE_TARGET = "qwen-audio-3.0-tts-plus"
+    val voiceCloneTargetModel: String = Env.get("QWEN_VOICE_CLONE_TARGET", DEFAULT_VOICE_CLONE_TARGET)
+
+    /** True when [model] is the Qwen-Audio-TTS SpeechSynthesizer family (cloned/designed voices). */
+    fun isQwenAudioTtsFamily(model: String = voiceCloneTargetModel): Boolean =
+        model.startsWith("qwen-audio", ignoreCase = true)
 
     // Sound-effect model (Alibaba ThinkSound) backing the audio-generation/audio-synthesis
     // endpoint, for both the direct text-to-audio and video-driven (GenerationSetup.sfxModel ==

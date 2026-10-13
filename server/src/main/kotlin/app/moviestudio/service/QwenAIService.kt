@@ -366,11 +366,11 @@ object QwenAIService : AIGenerationService {
     }
 
     /**
-     * Creates a "designed" voice (CosyVoice Voice Design). Unlike [createVoiceClone], which enrolls
-     * a voice from a reference audio sample, Voice Design synthesizes a brand-new voice from a
-     * natural-language [description] (e.g. "a warm, gravelly old storyteller with a slow pace").
-     * The enrolled voice targets the CosyVoice family ([QwenConfig.voiceCloneTargetModel]) so it is
-     * synthesized through the same path as cloned voices (see [executeClonedVoiceTts]).
+     * Creates a "designed" voice from a natural-language [description] (e.g. "a warm, gravelly
+     * old storyteller with a slow pace"). Unlike [createVoiceClone], which enrolls a voice from a
+     * reference audio sample, no source recording is required. The enrolled voice targets
+     * [QwenConfig.voiceCloneTargetModel] (qwen-audio-3.0-tts-plus) so it is synthesized through
+     * the same SpeechSynthesizer path as cloned voices (see [executeClonedVoiceTts]).
      */
     override suspend fun createVoiceDesign(name: String, description: String): VoiceDesign {
         // Graceful degradation: design an offline mock voice when Qwen is not configured.
@@ -407,13 +407,12 @@ object QwenAIService : AIGenerationService {
     }
 
     /**
-     * Builds the CosyVoice Voice Design enrollment request body. It mirrors the voice-cloning
-     * enrollment ([createVoiceClone]) but describes the desired voice in natural language instead
-     * of supplying a reference audio `url`. The provider requires BOTH `voice_prompt` (the voice
-     * description) and `preview_text` (the line spoken in the returned preview clip) — sending
-     * only one of them (e.g. the previous `text` field) fails with HTTP 400 "provide url, or
-     * provide both voice_prompt and preview_text.". Pure and network-free so its shape can be
-     * unit-tested.
+     * Builds the Voice Design enrollment request body. It mirrors the voice-cloning enrollment
+     * ([createVoiceClone]) but describes the desired voice in natural language instead of supplying
+     * a reference audio `url`. The provider requires BOTH `voice_prompt` (the voice description)
+     * and `preview_text` (the line spoken in the returned preview clip) — sending only one of them
+     * (e.g. the previous `text` field) fails with HTTP 400 "provide url, or provide both
+     * voice_prompt and preview_text.". Pure and network-free so its shape can be unit-tested.
      */
     internal fun buildVoiceDesignRequestBody(
         prefix: String,
@@ -440,19 +439,24 @@ object QwenAIService : AIGenerationService {
 
     /**
      * Synthesizes a short spoken preview ("sample") of [voiceId] and returns a temporary audio URL
-     * the client can play. Preset voices go through the qwen-tts endpoint; cloned/designed voices
-     * (CosyVoice) go through the speech-synthesis endpoint. Both are synchronous calls (the hosted
-     * account rejects asynchronous calls with HTTP 403 "current user api does not support
-     * asynchronous calls"). Samples are ephemeral previews, so the returned DashScope URL is used
-     * directly (not re-hosted on OSS). Returns an empty string when Qwen is not configured so the
-     * caller can degrade gracefully.
+     * the client can play. Preset voices go through qwen3-tts multimodal-generation; cloned/designed
+     * voices go through Qwen-Audio SpeechSynthesizer (or CosyVoice WebSocket when the clone target
+     * is still a cosyvoice-* override). Both are synchronous calls. Samples are ephemeral previews,
+     * so the returned DashScope URL is used directly when the HTTP path yields one. Returns an
+     * empty string when Qwen is not configured so the caller can degrade gracefully.
      */
     override suspend fun sampleVoice(voiceId: String, text: String): String {
         if (!QwenConfig.isConfigured) return ""
         val sampleText = text.ifBlank { VOICE_SAMPLE_TEXT }
         val setup = GenerationSetup(kind = "tts", prompt = sampleText, voice = voiceId)
         if (isCosyVoiceVoice(voiceId)) {
-            val audioBytes = synthesizeCosyVoiceAudio(setup, voiceId, QwenConfig.voiceCloneTargetModel)
+            val model = QwenConfig.voiceCloneTargetModel
+            if (QwenConfig.isQwenAudioTtsFamily(model)) {
+                val response = postQwenAudioSpeechSynthesizer(setup, voiceId)
+                return extractSyncTtsAudioUrl(response)
+                    ?: throw IllegalStateException("Qwen Audio TTS sample response missing audio url: $response")
+            }
+            val audioBytes = synthesizeCosyVoiceAudio(setup, voiceId, model)
             val (ossUrl, _) = rehostBytes(audioBytes, "samples", "voice-sample", "mp3", fallbackDuration = 2.0)
             return ossUrl
         }
@@ -467,9 +471,9 @@ object QwenAIService : AIGenerationService {
     }
 
     /**
-     * True when [voiceId] is a user cloned or designed voice — both enrolled against the CosyVoice
-     * family ([QwenConfig.voiceCloneTargetModel]) and therefore synthesized through the CosyVoice
-     * speech-synthesis endpoint rather than the qwen-tts `multimodal-generation` endpoint.
+     * True when [voiceId] is a user cloned or designed voice. Those enroll against
+     * [QwenConfig.voiceCloneTargetModel] (qwen-audio-3.0-tts-plus by default) and are synthesized
+     * through SpeechSynthesizer, not the preset qwen3-tts `multimodal-generation` endpoint.
      */
     private fun isCosyVoiceVoice(voiceId: String): Boolean =
         VoiceCloneRepository.listAll().any { it.qwenVoiceId == voiceId } ||
@@ -661,9 +665,9 @@ object QwenAIService : AIGenerationService {
     }
 
     /**
-     * TTS [dialogue] with [voiceId] (preset multimodal TTS or CosyVoice) and re-host under
-     * `ai-generated/<movieId>/driving-*.mp3`. Failures return null so video gen can continue
-     * visual-only.
+     * TTS [dialogue] with [voiceId] (preset multimodal TTS or cloned/designed SpeechSynthesizer)
+     * and re-host under `ai-generated/<movieId>/driving-*.mp3`. Failures return null so video gen
+     * can continue visual-only.
      */
     private suspend fun synthesizeDrivingAudio(
         dialogue: String,
@@ -679,16 +683,25 @@ object QwenAIService : AIGenerationService {
         return try {
             if (isCosyVoiceVoice(voiceId)) {
                 val model = QwenConfig.voiceCloneTargetModel
-                val audioBytes = synthesizeCosyVoiceAudio(ttsSetup, voiceId, model)
-                val response = buildJsonObject {
-                    put("request_id", UUID.randomUUID().toString())
-                    putJsonObject("output") {
-                        put("audio_bytes", audioBytes.size)
+                if (QwenConfig.isQwenAudioTtsFamily(model)) {
+                    val response = postQwenAudioSpeechSynthesizer(ttsSetup, voiceId)
+                    val mediaUrl = extractSyncTtsAudioUrl(response)
+                        ?: throw IllegalStateException("Qwen Audio TTS driving-audio response missing audio url: $response")
+                    ledger.recordCall("Driving audio TTS ($model)", model, response)
+                    val (ossUrl, _) = rehost(mediaUrl, movieId, "driving", "mp3", fallbackDuration = 3.0)
+                    ossUrl
+                } else {
+                    val audioBytes = synthesizeCosyVoiceAudio(ttsSetup, voiceId, model)
+                    val response = buildJsonObject {
+                        put("request_id", UUID.randomUUID().toString())
+                        putJsonObject("output") {
+                            put("audio_bytes", audioBytes.size)
+                        }
                     }
+                    ledger.recordCall("Driving audio TTS ($model)", model, response)
+                    val (ossUrl, _) = rehostBytes(audioBytes, movieId, "driving", "mp3", fallbackDuration = 3.0)
+                    ossUrl
                 }
-                ledger.recordCall("Driving audio TTS ($model)", model, response)
-                val (ossUrl, _) = rehostBytes(audioBytes, movieId, "driving", "mp3", fallbackDuration = 3.0)
-                ossUrl
             } else {
                 val model = QwenConfig.ttsModel
                 val response = postJson(
@@ -1084,19 +1097,18 @@ object QwenAIService : AIGenerationService {
      *
      * Two distinct backends are used depending on the voice:
      * - Preset voices (and the instruction-following variant when the setup carries voice
-     *   instructions like "happy"/"sad"/"excited") use the qwen-tts family on the synchronous
+     *   instructions like "happy"/"sad"/"excited") use qwen3-tts-flash on the synchronous
      *   `multimodal-generation/generation` endpoint, with the instructions riding along as the
      *   `instruct` input.
-     * - Cloned voices are enrolled against the CosyVoice family ([QwenConfig.voiceCloneTargetModel]),
-     *   which is NOT exposed through the qwen-tts HTTP generation endpoint. The provider returns
-     *   HTTP 400 "url error, please check url！" when a CosyVoice voice/model is sent there. They
-     *   are synthesized through the DashScope WebSocket speech-synthesis task instead (see
-     *   [executeClonedVoiceTts]).
+     * - Cloned and designed voices enroll against [QwenConfig.voiceCloneTargetModel]
+     *   (qwen-audio-3.0-tts-plus) and are synthesized on SpeechSynthesizer HTTP. Posting that
+     *   family to multimodal-generation fails with HTTP 400 "url error, please check url！".
+     *   A CosyVoice WebSocket fallback remains when `QWEN_VOICE_CLONE_TARGET` is still cosyvoice-*.
      */
     private suspend fun executeTts(job: Job, payload: AiJobPayload, ledger: MutableList<AiLedgerEntry>, onProgress: suspend (Int, String) -> Unit) {
         val setup = payload.setup
         val voice = setup.voice.ifBlank { "Cherry" }
-        // Cloned and designed voices are both CosyVoice voices and share the synthesis path below.
+        // Cloned and designed voices share the SpeechSynthesizer (or CosyVoice fallback) path.
         if (isCosyVoiceVoice(voice)) {
             executeClonedVoiceTts(job, payload, voice, ledger, onProgress)
             return
@@ -1121,10 +1133,9 @@ object QwenAIService : AIGenerationService {
     }
 
     /**
-     * Cloned/designed voice speech synthesis. The enrolled voice targets the CosyVoice family
-     * ([QwenConfig.voiceCloneTargetModel]) and must be synthesized through DashScope's WebSocket
-     * speech-synthesis task protocol — not the qwen-tts HTTP endpoint. Binary audio frames are
-     * collected and re-hosted on OSS like other generated media.
+     * Cloned/designed voice speech synthesis. Default enrollment targets Qwen-Audio-TTS
+     * ([QwenConfig.voiceCloneTargetModel] = qwen-audio-3.0-tts-plus) and synthesizes through
+     * SpeechSynthesizer HTTP. CosyVoice WebSocket remains for a cosyvoice-* clone-target override.
      */
     private suspend fun executeClonedVoiceTts(
         job: Job,
@@ -1136,6 +1147,16 @@ object QwenAIService : AIGenerationService {
         val setup = payload.setup
         val model = QwenConfig.voiceCloneTargetModel
         onProgress(20, "Synthesizing speech with cloned voice ($model)...")
+
+        if (QwenConfig.isQwenAudioTtsFamily(model)) {
+            val response = postQwenAudioSpeechSynthesizer(setup, voice)
+            val mediaUrl = extractSyncTtsAudioUrl(response)
+                ?: throw IllegalStateException("Qwen Audio TTS response missing audio url: $response")
+            ledger.recordCall("Synthesized speech ($model)", model, response)
+            onProgress(75, "Uploading voiceover to Alibaba OSS...")
+            finalizeVoiceover(job, payload, setup, mediaUrl, ledger, onProgress)
+            return
+        }
 
         val audioBytes = synthesizeCosyVoiceAudio(setup, voice, model)
         val response = buildJsonObject {
@@ -1152,13 +1173,23 @@ object QwenAIService : AIGenerationService {
 
     /**
      * Pulls the synthesized audio URL out of a synchronous DashScope TTS response, checking the
-     * qwen-tts `output.audio.url` shape first and then the flatter `audio_url` / `url` keys used by
-     * the CosyVoice speech-synthesis endpoint. Shared by the preset, cloned-voice and sample paths.
+     * `output.audio.url` shape used by both qwen3-tts and Qwen-Audio SpeechSynthesizer, then the
+     * flatter `audio_url` / `url` keys. Shared by the preset, cloned-voice and sample paths.
      */
     private fun extractSyncTtsAudioUrl(response: JsonObject): String? {
         val output = response["output"]?.jsonObject ?: return null
         return output["audio"]?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull
             ?: extractMediaUrl(output, listOf("audio_url", "url"))
+    }
+
+    private suspend fun postQwenAudioSpeechSynthesizer(setup: GenerationSetup, voice: String): JsonObject {
+        val model = QwenConfig.voiceCloneTargetModel
+        return postJson(
+            "${QwenConfig.dashScopeBaseUrl}/services/audio/tts/SpeechSynthesizer",
+            buildQwenAudioTtsRequestBody(setup, voice, model),
+            async = false,
+            timeoutSeconds = 180,
+        )
     }
 
     private suspend fun synthesizeCosyVoiceAudio(setup: GenerationSetup, voice: String, model: String): ByteArray {
@@ -1301,10 +1332,32 @@ object QwenAIService : AIGenerationService {
         }
 
     /**
-     * Builds the CosyVoice (cloned-voice) speech-synthesis request body. The enrolled `voice_id`
-     * rides in `input.voice`; CosyVoice does not support the qwen-tts `instruct` steering input,
-     * so voice instructions are intentionally omitted here. Pure and network-free so its shape can
-     * be unit-tested.
+     * Builds the Qwen-Audio-TTS SpeechSynthesizer HTTP body used for cloned and designed voices.
+     * Voice instructions ride as `instruction` (not the qwen3-tts `instruct` field); speed/pitch
+     * are `input.rate` / `input.pitch` and are omitted at the 1.0× default. Pure and network-free
+     * so its shape can be unit-tested.
+     */
+    internal fun buildQwenAudioTtsRequestBody(setup: GenerationSetup, voice: String, model: String): JsonObject =
+        buildJsonObject {
+            put("model", model)
+            putJsonObject("input") {
+                put("text", setup.prompt)
+                put("voice", voice)
+                put("format", "mp3")
+                put("sample_rate", 24_000)
+                val instructions = setup.instructions.trim()
+                if (instructions.isNotBlank()) put("instruction", instructions)
+                val rate = setup.speed.coerceIn(TTS_MIN_SPEED, TTS_MAX_SPEED)
+                val pitch = setup.pitch.coerceIn(TTS_MIN_PITCH, TTS_MAX_PITCH)
+                if (rate != TTS_DEFAULT_SPEED) put("rate", rate)
+                if (pitch != TTS_DEFAULT_PITCH) put("pitch", pitch)
+            }
+        }
+
+    /**
+     * Builds the CosyVoice WebSocket speech-synthesis run-task body (legacy fallback when
+     * [QwenConfig.voiceCloneTargetModel] is still a cosyvoice-* override). The enrolled `voice_id`
+     * rides in `parameters.voice`. Pure and network-free so its shape can be unit-tested.
      */
     internal fun buildClonedVoiceTtsRequestBody(
         setup: GenerationSetup,

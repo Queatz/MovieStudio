@@ -85,9 +85,9 @@ Recognized variables:
 | `QWEN_IMAGE_EDIT_MODEL` | Image-to-image editing model (default `qwen-image-3.0-pro`; same unified model as above). |
 | `QWEN_MUSIC_MODEL` | Music generation model (default `fun-music-v1`).                                      |
 | `QWEN_AUDIO_MODEL` | Sound-effect model — Alibaba ThinkSound (text-to-audio and video-driven, default `thinksound-v1`). |
-| `QWEN_TTS_MODEL` | Text-to-speech model (default `qwen3-tts`).                                           |
+| `QWEN_TTS_MODEL` | Text-to-speech model for preset voices (default `qwen3-tts-flash`). Do not set this to `qwen-audio-3.0-tts-*`; that family uses a different endpoint and voice ids. |
 | `QWEN_VOICE_ENROLL_MODEL` | Voice cloning enrollment model (default `voice-enrollment`).                          |
-| `QWEN_VOICE_CLONE_TARGET` | TTS model cloned voices target (default `cosyvoice-v3.5-plus`).                       |
+| `QWEN_VOICE_CLONE_TARGET` | TTS model cloned and designed voices target (default `qwen-audio-3.0-tts-plus`).      |
 | `QWEN_TRANSCRIPTION_MODEL` | Speech-to-text model for transcripts (default `qwen-audio-3.0-asr-flash`).            |
 | `QWEN_POLL_INTERVAL_MS` | Async task poll interval in ms (default `3000`).                                      |
 | `QWEN_POLL_TIMEOUT_MS` | Async task max wait in ms (default `3000000`).                                        |

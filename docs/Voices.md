@@ -1,7 +1,7 @@
 # Voices — the Voice Library and text-to-speech
 
 Movie Studio turns written narration into spoken **voiceover** audio with Alibaba **Qwen3-TTS**
-(preset voices) and **CosyVoice** (cloned and designed voices). Every selectable voice lives in a
+(preset voices) and **Qwen-Audio-TTS** (cloned and designed voices). Every selectable voice lives in a
 single **Voice Library** with three sections — **Default Voices**, **Cloned Voices** and **Voice
 Design voices** — and any of them can be previewed ("sampled") before use.
 
@@ -19,8 +19,8 @@ gets picked and previewed, and how narration is finally synthesized. It ties tog
 | Kind          | Where it comes from                                  | Model family            | Data class     |
 |---------------|------------------------------------------------------|-------------------------|----------------|
 | Default       | Ships with the studio (Qwen3-TTS presets)            | `qwen3-tts-*`           | `VoicePreset`  |
-| Cloned        | Enrolled from a user's reference **audio sample**    | CosyVoice               | `VoiceClone`   |
-| Voice Design  | Synthesized from a natural-language **description**  | CosyVoice               | `VoiceDesign`  |
+| Cloned        | Enrolled from a user's reference **audio sample**    | Qwen-Audio-TTS          | `VoiceClone`   |
+| Voice Design  | Synthesized from a natural-language **description**  | Qwen-Audio-TTS          | `VoiceDesign`  |
 
 - **Default Voices** are a fixed, documented catalog — Qwen3-TTS exposes voices as an enumerated
   set, not a queryable endpoint — so they are shipped as data (see `QWEN_VOICE_CATALOG`). Only the
@@ -29,10 +29,12 @@ gets picked and previewed, and how narration is finally synthesized. It ties tog
 - **Cloned Voices** enroll a real voice from a reference recording (Qwen voice cloning, China
   mainland) and reference the enrolled `qwenVoiceId` at synthesis time.
 - **Voice Design voices** are brand-new voices *invented* from a text prompt (e.g. "a warm,
-  gravelly old storyteller with a slow pace") via CosyVoice Voice Design.
+  gravelly old storyteller with a slow pace") via Qwen-Audio Voice Design.
 
-Cloned and designed voices are **both CosyVoice voices** — they enroll against
-`QwenConfig.voiceCloneTargetModel` and are synthesized through the same (synchronous) path (§5).
+Cloned and designed voices are **both Qwen-Audio-TTS voices** — they enroll against
+`QwenConfig.voiceCloneTargetModel` (`qwen-audio-3.0-tts-plus`) and are synthesized through the
+same SpeechSynthesizer HTTP path (§5). A CosyVoice WebSocket fallback remains if that env var is
+overridden to `cosyvoice-*`.
 
 ---
 
@@ -56,7 +58,7 @@ data class VoicePreset(
 @Serializable
 data class VoiceClone(val id: String, val name: String, val qwenVoiceId: String, /* ... */)
 
-/** A voice synthesized from a natural-language description (CosyVoice Voice Design). */
+/** A voice synthesized from a natural-language description (Qwen-Audio Voice Design). */
 @Serializable
 data class VoiceDesign(
     val id: String,
@@ -151,38 +153,44 @@ private fun isCosyVoiceVoice(voiceId: String): Boolean =
         VoiceDesignRepository.listAll().any { it.qwenVoiceId == voiceId }
 ```
 
-- **Preset voice** → **qwen-tts** at `services/aigc/multimodal-generation/generation` (sync),
-  built by `buildTtsRequestBody(...)`. Voice **instructions** ("happy", "whispering", …) switch the
-  model to `QwenConfig.ttsInstructModel` and add an `instruct` field.
-- **Cloned or designed voice** (`isCosyVoiceVoice`) → **CosyVoice** at
-  `services/audio/tts/generation` (**synchronous**), built by `buildClonedVoiceTtsRequestBody(...)`.
-  This request sends the enrolled `voice_id` and omits the unsupported `instruct` field — routing
-  here is what fixed the earlier HTTP 400 "url error" the qwen-tts endpoint returned for
-  `cosyvoice-*` models. The call is intentionally **not** asynchronous: the hosted account rejects
-  async CosyVoice calls with HTTP 403 "current user api does not support asynchronous calls", so the
-  audio URL is read straight from the response (`extractSyncTtsAudioUrl`) instead of being polled.
+- **Preset voice** → **qwen3-tts-flash** at `services/aigc/multimodal-generation/generation` (sync),
+  built by `buildTtsRequestBody(...)`. Voice **instructions** ("happy", "whispering", …) stay on the
+  same model and add an `instruct` field.
+- **Cloned or designed voice** (`isCosyVoiceVoice`) → **Qwen-Audio-TTS** at
+  `services/audio/tts/SpeechSynthesizer` (**synchronous**), built by
+  `buildQwenAudioTtsRequestBody(...)`. The enrolled `voice_id` is `input.voice`, and steering text
+  is `input.instruction` (not `instruct`). Routing here is what avoids the HTTP 400 "url error"
+  multimodal-generation returns for `qwen-audio-3.0-tts-*`. If `QWEN_VOICE_CLONE_TARGET` is still a
+  `cosyvoice-*` override, synthesis falls back to the CosyVoice WebSocket path
+  (`buildClonedVoiceTtsRequestBody`).
 
 `executeTts(...)` picks the path (falling back to `"Cherry"` when no voice is set); the request
 builders are pure/network-free so their shape is unit-tested. Enrollment for designs uses
 `buildVoiceDesignRequestBody(...)` against the `voice-enrollment` model, targeting
-`QwenConfig.voiceCloneTargetModel` (`cosyvoice-v3.5-plus`).
+`QwenConfig.voiceCloneTargetModel` (`qwen-audio-3.0-tts-plus`).
 
 **Speed & pitch.** `TtsDialog` exposes two sliders — **Speed** and **Pitch** — that set
 `GenerationSetup.speed` / `GenerationSetup.pitch` (0.5×–2.0×, `1.0×` = the voice's natural
 delivery; bounds are the `TTS_MIN_*`/`TTS_MAX_*` constants). They apply to all three voice kinds:
 `buildTtsRequestBody(...)` forwards them to Qwen as the `parameters.rate` / `parameters.pitch`
 synthesis parameters (only when moved off the default, so a plain voiceover's request is
-unchanged), and `buildClonedVoiceTtsRequestBody(...)` forwards them to CosyVoice as
-`payload.parameters.rate` / `payload.parameters.pitch`.
+unchanged), and `buildQwenAudioTtsRequestBody(...)` forwards them as `input.rate` / `input.pitch`.
 
 Relevant `QwenConfig` model names (all overridable via env):
 
 | Setting                 | Default env                    | Used for                          |
 |-------------------------|--------------------------------|-----------------------------------|
 | `ttsModel`              | `qwen3-tts-flash`              | Preset TTS                        |
-| `ttsInstructModel`      | `qwen3-tts-instruct-flash`     | Preset TTS with instructions      |
+| `ttsInstructModel`      | `qwen3-tts-flash`              | Preset TTS with instructions      |
 | `voiceEnrollModel`      | `voice-enrollment`             | Clone + design enrollment         |
-| `voiceCloneTargetModel` | `cosyvoice-v3.5-plus`          | CosyVoice synthesis target        |
+| `voiceCloneTargetModel` | `qwen-audio-3.0-tts-plus`      | Clone + design enrollment/synthesis |
+
+Do not set `ttsModel` to `qwen-audio-3.0-tts-plus` / `qwen-audio-3.0-tts-flash`. Those models are a
+different SpeechSynthesizer family (cloned/designed voice ids, plus system voices such as
+`longanhuan_v3.6`, not Cherry) and fail on the qwen-tts `multimodal-generation` endpoint with
+HTTP 400 `"url error, please check url！"`. Cloned and designed voices use that family via
+`voiceCloneTargetModel` instead. The dedicated instruct-flash variant is also often missing on
+Beijing workspaces; `qwen3-tts-flash` accepts the `instruct` input, so preset settings default to it.
 
 ---
 
@@ -217,7 +225,7 @@ When `GenerationSetup.kind == "video"` and at least one selected character has a
 1. **Primary voice** = first selected character (`characterIds` order) with a non-blank `voiceId`.
 2. **Dialogue** is taken from the prompt: quoted segments first (`extractQuotedDialogue`); if none,
    a short chat extract asks for spoken lines only (empty → skip audio).
-3. **TTS** that text with the primary voice (same preset vs CosyVoice branching as voiceover).
+3. **TTS** that text with the primary voice (same preset vs SpeechSynthesizer branching as voiceover).
 4. Audio is re-hosted under `ai-generated/<movieId>/driving-*.mp3` and folded into the job ledger.
 5. The WAN video request includes
    `{ "type": "driving_audio", "url": "<fresh OSS URL>" }` on the R2V or I2V `input.media` list

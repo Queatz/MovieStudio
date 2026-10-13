@@ -1,6 +1,7 @@
 package app.moviestudio
 
 import app.moviestudio.service.QwenAIService
+import app.moviestudio.service.QwenConfig
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.double
@@ -9,6 +10,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -80,8 +82,65 @@ class QwenTtsRequestTest {
     }
 
     @Test
+    fun clonedVoiceSpeechSynthesizerSendsTextVoiceAndFormat() {
+        val setup = GenerationSetup(kind = "tts", prompt = "This is my cloned voice")
+
+        val body = QwenAIService.buildQwenAudioTtsRequestBody(
+            setup,
+            "clone-abc123",
+            "qwen-audio-3.0-tts-plus"
+        )
+        val input = body.input()
+
+        assertEquals("qwen-audio-3.0-tts-plus", body.str("model"))
+        assertEquals("This is my cloned voice", input.str("text"))
+        assertEquals("clone-abc123", input.str("voice"))
+        assertEquals("mp3", input.str("format"))
+        assertEquals(24_000L, input.getValue("sample_rate").jsonPrimitive.long)
+        assertNull(input["instruct"])
+        assertNull(input["instruction"])
+        assertNull(body["parameters"])
+    }
+
+    @Test
+    fun clonedVoiceSpeechSynthesizerCarriesInstructionNotInstruct() {
+        val setup = GenerationSetup(kind = "tts", prompt = "Line", instructions = "sad")
+
+        val input = QwenAIService
+            .buildQwenAudioTtsRequestBody(setup, "clone-abc123", "qwen-audio-3.0-tts-plus")
+            .input()
+
+        assertEquals("sad", input.str("instruction"))
+        assertNull(input["instruct"])
+    }
+
+    @Test
+    fun clonedVoiceSpeechSynthesizerOmitsRateAndPitchWhenDefault() {
+        val setup = GenerationSetup(kind = "tts", prompt = "Line")
+
+        val input = QwenAIService
+            .buildQwenAudioTtsRequestBody(setup, "clone-abc123", "qwen-audio-3.0-tts-plus")
+            .input()
+
+        assertNull(input["rate"])
+        assertNull(input["pitch"])
+    }
+
+    @Test
+    fun clonedVoiceSpeechSynthesizerCarriesAdjustedSpeedAndPitch() {
+        val setup = GenerationSetup(kind = "tts", prompt = "Line", speed = 0.75, pitch = 1.3)
+
+        val input = QwenAIService
+            .buildQwenAudioTtsRequestBody(setup, "clone-abc123", "qwen-audio-3.0-tts-plus")
+            .input()
+
+        assertEquals(0.75, input.getValue("rate").jsonPrimitive.double)
+        assertEquals(1.3, input.getValue("pitch").jsonPrimitive.double)
+    }
+
+    @Test
     fun clonedVoiceCarriesSpeedAndPitchAsRateAndPitchParameters() {
-        // CosyVoice (cloned + designed voices) always carries rate/pitch; default is 1.0×.
+        // CosyVoice WebSocket fallback always carries rate/pitch; default is 1.0×.
         val defaults = QwenAIService
             .buildClonedVoiceTtsRequestBody(GenerationSetup(kind = "tts", prompt = "Line"), "cosyvoice-x", "cosyvoice-v3.5-plus")
             .payload().getValue("parameters").jsonObject
@@ -172,12 +231,12 @@ class QwenTtsRequestTest {
         )
         val input = body.input()
 
-        // Voice Design enrolls against CosyVoice via natural language: the provider requires BOTH
-        // `voice_prompt` (the description) and `preview_text` (line spoken in the preview clip) -
-        // sending only one of them fails with HTTP 400 "provide url, or provide both voice_prompt
+        // Voice Design enrolls against Qwen-Audio-TTS via natural language: the provider requires
+        // BOTH `voice_prompt` (the description) and `preview_text` (line spoken in the preview clip)
+        // - sending only one of them fails with HTTP 400 "provide url, or provide both voice_prompt
         // and preview_text.". Unlike voice cloning, it does NOT carry a reference audio `url`.
         assertEquals("create_voice", input.str("action"))
-        assertEquals("cosyvoice-v3.5-plus", input.str("target_model"))
+        assertEquals("qwen-audio-3.0-tts-plus", input.str("target_model"))
         assertEquals("seacaptain", input.str("prefix"))
         assertEquals("A warm, gravelly older man with a slow storyteller's cadence.", input.str("voice_prompt"))
         assertEquals("Ahoy there, welcome aboard.", input.str("preview_text"))
@@ -193,6 +252,27 @@ class QwenTtsRequestTest {
         )
 
         assertEquals(VOICE_SAMPLE_TEXT, body.input().str("preview_text"))
+    }
+
+    @Test
+    fun presetTtsDefaultsStayOnQwen3TtsFlashNotQwenAudioFamily() {
+        // qwen-audio-3.0-tts-plus lives on SpeechSynthesizer with longan* / cloned / designed
+        // voices. Posting it to multimodal-generation (the preset Cherry/Serena path) fails with
+        // HTTP 400 "url error".
+        assertEquals("qwen3-tts-flash", QwenConfig.DEFAULT_TTS_MODEL)
+        assertEquals("qwen3-tts-flash", QwenConfig.DEFAULT_TTS_INSTRUCT_MODEL)
+        assertEquals(QwenConfig.DEFAULT_TTS_MODEL, QwenConfig.ttsModel)
+        assertEquals(QwenConfig.DEFAULT_TTS_INSTRUCT_MODEL, QwenConfig.ttsInstructModel)
+    }
+
+    @Test
+    fun clonedAndDesignedVoicesDefaultToQwenAudioTtsPlus() {
+        assertEquals("qwen-audio-3.0-tts-plus", QwenConfig.DEFAULT_VOICE_CLONE_TARGET)
+        assertEquals(QwenConfig.DEFAULT_VOICE_CLONE_TARGET, QwenConfig.voiceCloneTargetModel)
+        assertTrue(QwenConfig.isQwenAudioTtsFamily())
+        assertTrue(QwenConfig.isQwenAudioTtsFamily("qwen-audio-3.0-tts-flash"))
+        assertFalse(QwenConfig.isQwenAudioTtsFamily("qwen3-tts-flash"))
+        assertFalse(QwenConfig.isQwenAudioTtsFamily("cosyvoice-v3.5-plus"))
     }
 
     @Test
