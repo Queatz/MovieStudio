@@ -343,6 +343,9 @@ internal fun formatSeconds(value: Double): String {
 /** Seconds: a framing keyframe this close to the playhead is treated as "at" it. */
 internal const val FRAMING_KEYFRAME_HIT_SECONDS = 0.08
 
+/** Fallback offset when duplicating a keyframe onto an occupied playhead. */
+internal const val FRAMING_DUPLICATE_OFFSET_SECONDS = 0.25
+
 /** Image/video clips on the video track that have media (not text or description cards). */
 internal fun clipSupportsFraming(
     trackType: TrackType,
@@ -458,6 +461,127 @@ internal fun setFramingKeyframeInterpolation(
     }
     return effects.copy(framingKeyframes = next)
 }
+
+/** True when [time] sits inside another keyframe's hit window. */
+internal fun framingTimeOccupied(
+    keyframes: List<FramingPoint>,
+    time: Double,
+    hitSeconds: Double = FRAMING_KEYFRAME_HIT_SECONDS,
+): Boolean = keyframes.any { abs(it.time - time) <= hitSeconds }
+
+/**
+ * Nearest time in `[0, clipLength]` that is not within [hitSeconds] of any existing keyframe.
+ * Searches forward from [preferred] first (or backward when [preferForward] is false), then the
+ * other direction. Returns null when the clip is packed.
+ */
+internal fun nextFreeFramingTime(
+    keyframes: List<FramingPoint>,
+    preferred: Double,
+    clipLength: Double,
+    hitSeconds: Double = FRAMING_KEYFRAME_HIT_SECONDS,
+    preferForward: Boolean = true,
+): Double? {
+    if (clipLength < 0.0) return null
+    val start = preferred.coerceIn(0.0, clipLength)
+    if (!framingTimeOccupied(keyframes, start, hitSeconds)) return start
+    return if (preferForward) {
+        searchFreeFramingTime(keyframes, start, clipLength, hitSeconds, forward = true)
+            ?: searchFreeFramingTime(keyframes, start, clipLength, hitSeconds, forward = false)
+    } else {
+        searchFreeFramingTime(keyframes, start, clipLength, hitSeconds, forward = false)
+            ?: searchFreeFramingTime(keyframes, start, clipLength, hitSeconds, forward = true)
+    }
+}
+
+private fun searchFreeFramingTime(
+    keyframes: List<FramingPoint>,
+    start: Double,
+    clipLength: Double,
+    hitSeconds: Double,
+    forward: Boolean,
+): Double? {
+    val clearance = hitSeconds + 1e-4
+    var t = start
+    repeat(keyframes.size + 2) {
+        val blockers = keyframes.filter { abs(it.time - t) <= hitSeconds }
+        if (blockers.isEmpty()) return t.takeIf { it in 0.0..clipLength }
+        t = if (forward) blockers.maxOf { it.time } + clearance else blockers.minOf { it.time } - clearance
+        if (forward && t > clipLength) {
+            return clipLength.takeIf { !framingTimeOccupied(keyframes, it, hitSeconds) }
+        }
+        if (!forward && t < 0.0) {
+            return 0.0.takeIf { !framingTimeOccupied(keyframes, it, hitSeconds) }
+        }
+    }
+    return null
+}
+
+/**
+ * Relocates the keyframe nearest [fromTime]. Clamps [toTime] to the clip, nudges off any neighbor
+ * in the move direction instead of merging, and keeps pose + interpolation. No-op when the source
+ * is missing or the clip has no free slot.
+ */
+internal fun moveFramingKeyframe(
+    effects: EffectsConfig,
+    fromTime: Double,
+    toTime: Double,
+    clipLength: Double,
+    hitSeconds: Double = FRAMING_KEYFRAME_HIT_SECONDS,
+): EffectsConfig {
+    val source = nearestFramingKeyframe(effects.framingKeyframes, fromTime, hitSeconds) ?: return effects
+    val others = effects.framingKeyframes.filter { it.time != source.time }
+    val clamped = toTime.coerceIn(0.0, clipLength)
+    val preferForward = clamped >= source.time
+    val target = if (!framingTimeOccupied(others, clamped, hitSeconds)) {
+        clamped
+    } else {
+        nextFreeFramingTime(others, clamped, clipLength, hitSeconds, preferForward) ?: return effects
+    }
+    return effects.copy(framingKeyframes = (others + source.copy(time = target)).sortedBy { it.time })
+}
+
+/**
+ * Copies the keyframe nearest [sourceTime] (pose + interpolation). Uses [preferredTime] when it is
+ * inside the clip and free; otherwise searches from `source + 0.25s`. Returns null when the source
+ * is missing or no slot remains.
+ */
+internal fun duplicateFramingKeyframe(
+    effects: EffectsConfig,
+    sourceTime: Double,
+    preferredTime: Double?,
+    clipLength: Double,
+    hitSeconds: Double = FRAMING_KEYFRAME_HIT_SECONDS,
+): Pair<EffectsConfig, Double>? {
+    val source = nearestFramingKeyframe(effects.framingKeyframes, sourceTime, hitSeconds) ?: return null
+    val keys = effects.framingKeyframes
+    val target = if (
+        preferredTime != null &&
+        preferredTime in 0.0..clipLength &&
+        !framingTimeOccupied(keys, preferredTime, hitSeconds)
+    ) {
+        preferredTime
+    } else {
+        nextFreeFramingTime(
+            keys,
+            source.time + FRAMING_DUPLICATE_OFFSET_SECONDS,
+            clipLength,
+            hitSeconds,
+        )
+    } ?: return null
+    val next = (keys + source.copy(time = target)).sortedBy { it.time }
+    return effects.copy(framingKeyframes = next) to target
+}
+
+/** Clears every framing keyframe and restores zoom 100% / pan center. */
+internal fun resetFramingToDefault(effects: EffectsConfig): EffectsConfig =
+    effects.copy(zoom = 1.0, offsetX = 50.0, offsetY = 50.0, framingKeyframes = emptyList())
+
+/** True when the clip has no framing keys and the static pose is the default cover-crop. */
+internal fun isDefaultFraming(effects: EffectsConfig): Boolean =
+    effects.framingKeyframes.isEmpty() &&
+            effects.zoom == 1.0 &&
+            effects.offsetX == 50.0 &&
+            effects.offsetY == 50.0
 
 internal fun staticFramingEffects(effects: EffectsConfig, pose: FramingPose): EffectsConfig = effects.copy(
     zoom = pose.zoom.coerceIn(MIN_FRAMING_ZOOM, MAX_FRAMING_ZOOM),

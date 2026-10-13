@@ -1,9 +1,12 @@
 package app.moviestudio.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,11 +18,17 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -29,25 +38,34 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.ScaleFactor
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.moviestudio.AppViewModel
@@ -55,6 +73,7 @@ import app.moviestudio.Asset
 import app.moviestudio.AssetType
 import app.moviestudio.EffectsConfig
 import app.moviestudio.FramingInterpolation
+import app.moviestudio.FramingPoint
 import app.moviestudio.FramingPose
 import app.moviestudio.MAX_FRAMING_ZOOM
 import app.moviestudio.MIN_FRAMING_ZOOM
@@ -80,6 +99,7 @@ import app.moviestudio.bridgedClipEnd
 import app.moviestudio.calculatedDuration
 import app.moviestudio.collectPreloadMedia
 import app.moviestudio.timelineEnd
+import app.moviestudio.encodeEffectsConfig
 import app.moviestudio.parseEffectsConfig
 import app.moviestudio.preloadTimelineMedia
 import app.moviestudio.progressAt
@@ -97,6 +117,7 @@ import coil3.compose.AsyncImage
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.Font
+import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.roundToInt
 
@@ -183,11 +204,11 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                 key = active.clip.id,
                 url = active.asset.ossUrl,
                 positionSeconds = active.asset.sourceOffsetSeconds + active.clip.trimIn +
-                    (playhead - active.clip.timelineStart).toDouble(),
+                        (playhead - active.clip.timelineStart).toDouble(),
                 // The volume-over-time envelope (when present) is evaluated at the playhead.
                 // Voice tracks get the same VOICE_VOLUME_BOOST as the FFmpeg export.
                 volume = effects.volumeAt((playhead - active.clip.timelineStart).toDouble()) *
-                    trackVolumeBoost(active.trackType)
+                        trackVolumeBoost(active.trackType)
             )
         }
     LaunchedEffect(audioItems, viewModel.isPlaying) {
@@ -251,96 +272,103 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentAlignment = Alignment.Center
                 ) {
-            val ratio = aspectRatioToFloat(movie?.aspectRatio ?: "16:9")
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(if (fullscreen) 0.dp else 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .aspectRatio(ratio)
-                        .clipToBounds() // keep sliding-in clips inside the movie frame (like FFmpeg)
-                        .background(Color.Black)
-                        .framingStageGestures(viewModel, visualClips),
-                    contentAlignment = Alignment.Center
-                ) {
-                    // Render EVERY visual clip under the playhead, lowest zIndex first so overlay
-                    // tracks (higher zIndex) stack on top: still images, the active video and
-                    // description-only text cards all live together here.
-                    if (viewModel.previewUseWebGL && isWebGLPreviewSupported()) {
-                        // WebGL method: every media layer is composited on the GPU and drawn back
-                        // INTO the Compose scene graph (bottom of the stage). Description cards are
-                        // text and stay Compose-rendered on top of it, so — unlike the old floating
-                        // overlay — dialogs, cards and captions all layer over the preview correctly.
-                        WebGLStage(visualClips, playhead, viewModel)
-                        visualClips.forEach { active ->
-                            when {
-                                // Styled text elements render (with transitions) on top of the GPU
-                                // composite, just like description cards do.
-                                active.asset.isTextElement -> TextClip(active, active.transitionVisual(playhead), playhead)
-                                active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
-                            }
-                        }
-                    } else {
-                        visualClips.forEach { active ->
-                            // Transition-in over whatever plays beneath this clip, evaluated at the
-                            // playhead from the SAME shared spec the FFmpeg export uses, so the preview
-                            // matches the render (fade / slide, honoring slide direction).
-                            val transitionVisual = active.transitionVisual(playhead)
-                            when {
-                                // A first-class text element: styled text over its own background,
-                                // fading / sliding in like any other visual clip.
-                                active.asset.isTextElement -> TextClip(active, transitionVisual, playhead)
-                                // A clip with no media yet is a description card: large centered text.
-                                active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
-                                // Still images: plain Compose AsyncImage, center-cropped + offset.
-                                active.asset.type == AssetType.IMAGE -> ClipImage(
-                                    active,
-                                    transitionVisual,
-                                    active.framingPose(playhead, viewModel)
-                                )
-                                // The single video that owns the shared <video> element.
-                                active === activeVideo -> {
-                                    val clipLocal = (playhead - active.clip.timelineStart).toDouble()
-                                    val mediaTime = active.asset.sourceOffsetSeconds.toFloat() +
-                                        active.clip.trimIn + (playhead - active.clip.timelineStart)
-                                    VideoPlayer(
-                                        url = active.asset.ossUrl,
-                                        isPlaying = viewModel.isPlaying,
-                                        playhead = mediaTime,
-                                        onTimeUpdate = { /* the ticker is the master clock */ },
-                                        modifier = Modifier.fillMaxSize(),
-                                        alpha = transitionVisual.alpha,
-                                        offsetXFraction = transitionVisual.translateXFraction,
-                                        offsetYFraction = transitionVisual.translateYFraction,
-                                        revealRadiusFraction = transitionVisual.revealRadiusFraction,
-                                        // The volume-over-time envelope (when present) evaluated at the playhead.
-                                        volume = parseEffectsConfig(active.clip.effectsConfig).volumeAt(clipLocal).toFloat()
-                                    )
+                    val ratio = aspectRatioToFloat(movie?.aspectRatio ?: "16:9")
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(if (fullscreen) 0.dp else 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .aspectRatio(ratio)
+                                .clipToBounds() // keep sliding-in clips inside the movie frame (like FFmpeg)
+                                .background(Color.Black)
+                                .framingStageGestures(viewModel, visualClips),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            // Render EVERY visual clip under the playhead, lowest zIndex first so overlay
+                            // tracks (higher zIndex) stack on top: still images, the active video and
+                            // description-only text cards all live together here.
+                            if (viewModel.previewUseWebGL && isWebGLPreviewSupported()) {
+                                // WebGL method: every media layer is composited on the GPU and drawn back
+                                // INTO the Compose scene graph (bottom of the stage). Description cards are
+                                // text and stay Compose-rendered on top of it, so — unlike the old floating
+                                // overlay — dialogs, cards and captions all layer over the preview correctly.
+                                WebGLStage(visualClips, playhead, viewModel)
+                                visualClips.forEach { active ->
+                                    when {
+                                        // Styled text elements render (with transitions) on top of the GPU
+                                        // composite, just like description cards do.
+                                        active.asset.isTextElement -> TextClip(
+                                            active,
+                                            active.transitionVisual(playhead),
+                                            playhead
+                                        )
+
+                                        active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
+                                    }
                                 }
-                                // Any further simultaneous videos can't share the one <video> element.
+                            } else {
+                                visualClips.forEach { active ->
+                                    // Transition-in over whatever plays beneath this clip, evaluated at the
+                                    // playhead from the SAME shared spec the FFmpeg export uses, so the preview
+                                    // matches the render (fade / slide, honoring slide direction).
+                                    val transitionVisual = active.transitionVisual(playhead)
+                                    when {
+                                        // A first-class text element: styled text over its own background,
+                                        // fading / sliding in like any other visual clip.
+                                        active.asset.isTextElement -> TextClip(active, transitionVisual, playhead)
+                                        // A clip with no media yet is a description card: large centered text.
+                                        active.asset.isDescriptionOnly -> DescriptionCard(active.asset)
+                                        // Still images: plain Compose AsyncImage, center-cropped + offset.
+                                        active.asset.type == AssetType.IMAGE -> ClipImage(
+                                            active,
+                                            transitionVisual,
+                                            active.framingPose(playhead, viewModel)
+                                        )
+                                        // The single video that owns the shared <video> element.
+                                        active === activeVideo -> {
+                                            val clipLocal = (playhead - active.clip.timelineStart).toDouble()
+                                            val mediaTime = active.asset.sourceOffsetSeconds.toFloat() +
+                                                    active.clip.trimIn + (playhead - active.clip.timelineStart)
+                                            VideoPlayer(
+                                                url = active.asset.ossUrl,
+                                                isPlaying = viewModel.isPlaying,
+                                                playhead = mediaTime,
+                                                onTimeUpdate = { /* the ticker is the master clock */ },
+                                                modifier = Modifier.fillMaxSize(),
+                                                alpha = transitionVisual.alpha,
+                                                offsetXFraction = transitionVisual.translateXFraction,
+                                                offsetYFraction = transitionVisual.translateYFraction,
+                                                revealRadiusFraction = transitionVisual.revealRadiusFraction,
+                                                // The volume-over-time envelope (when present) evaluated at the playhead.
+                                                volume = parseEffectsConfig(active.clip.effectsConfig).volumeAt(
+                                                    clipLocal
+                                                ).toFloat()
+                                            )
+                                        }
+                                        // Any further simultaneous videos can't share the one <video> element.
+                                    }
+                                }
+                            }
+
+                            if (visualClips.isEmpty()) {
+                                EmptyStageContent(viewModel)
+                            }
+
+                            // Captions for active voice clips.
+                            captionClips.forEach { active ->
+                                val captions = parseEffectsConfig(active.clip.effectsConfig).captions
+                                if (captions != null && captions.enabled) {
+                                    CaptionOverlay(active, captions, playhead)
+                                }
                             }
                         }
                     }
-
-                    if (visualClips.isEmpty()) {
-                        EmptyStageContent(viewModel)
-                    }
-
-                    // Captions for active voice clips.
-                    captionClips.forEach { active ->
-                        val captions = parseEffectsConfig(active.clip.effectsConfig).captions
-                        if (captions != null && captions.enabled) {
-                            CaptionOverlay(active, captions, playhead)
-                        }
-                    }
-                }
-            }
                 }
                 if (showFramingChrome) {
-                    selectedPair?.let { FramingChrome(viewModel, it.first) }
+                    FramingChrome(viewModel, selectedPair.first)
                 }
             }
         }
@@ -352,6 +380,8 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
     }
 }
 
+private val FramingPlayheadTick = Color(0xFFFF5A6E)
+
 @Composable
 private fun FramingChrome(viewModel: AppViewModel, clip: Clip) {
     val effects = parseEffectsConfig(clip.effectsConfig)
@@ -361,25 +391,40 @@ private fun FramingChrome(viewModel: AppViewModel, clip: Clip) {
         timelineStart = clip.timelineStart.toDouble(),
         clipLength = clipLength
     )
-    val keyframes = effects.framingKeyframes
+    var dragSourceTime by remember { mutableStateOf<Double?>(null) }
+    var dragEffects by remember { mutableStateOf<EffectsConfig?>(null) }
+    val liveEffects = dragEffects ?: effects
+    val keyframes = liveEffects.framingKeyframes
     val clipSeconds = (viewModel.playhead - clip.timelineStart).toDouble()
     val pose = previewFramingPose(
-        effects = effects,
+        effects = liveEffects,
         clipId = clip.id,
         clipSeconds = clipSeconds,
         draft = viewModel.framingDraft,
         isPlaying = viewModel.isPlaying
     )
     // Hit-test in unclamped clip-local time so a keyframe past the clip (or timeline) end
-    // can still be selected after seeking to it with allowPastEnd.
+    // can still be selected after seeking to it with allowPastEnd. While a marker is dragged,
+    // keep that point selected even if it leaves the 0.08s playhead window.
     val nearby = nearestFramingKeyframe(keyframes, clipSeconds)
+    val selectedPoint = dragSourceTime?.let { time ->
+        keyframes.minByOrNull { abs(it.time - time) }
+    } ?: nearby
     val canSave = playheadInClip != null
-    val canDelete = nearby != null
-    val canSetInterpolation = nearby != null
+    val canDelete = selectedPoint != null
+    val canSetInterpolation = selectedPoint != null
+    val canReset = !isDefaultFraming(liveEffects)
+    val canDuplicate = selectedPoint != null &&
+            duplicateFramingKeyframe(liveEffects, selectedPoint.time, playheadInClip, clipLength) != null
 
     fun commit(next: EffectsConfig) {
         viewModel.clearFramingDraft()
         viewModel.updateClipEffects(clip, next)
+    }
+
+    fun seekToClipTime(time: Double) {
+        viewModel.clearFramingDraft()
+        viewModel.seek((clip.timelineStart + time).toFloat(), allowPastEnd = true)
     }
 
     var showNumbersDialog by remember { mutableStateOf(false) }
@@ -394,66 +439,355 @@ private fun FramingChrome(viewModel: AppViewModel, clip: Clip) {
         )
     }
 
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(36.dp)
             .background(Color(0xFF1A1620))
-            .padding(horizontal = 8.dp)
-            .horizontalScroll(rememberScrollState()),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        FramingNumberChip("${(pose.zoom * 100.0).roundToInt()}%") { showNumbersDialog = true }
-        FramingNumberChip("X ${pose.panX.roundToInt()}") { showNumbersDialog = true }
-        FramingNumberChip("Y ${pose.panY.roundToInt()}") { showNumbersDialog = true }
-        FramingChromeDivider()
-        GhostPillButton("Save", compact = true, enabled = canSave) {
-            val time = playheadInClip ?: return@GhostPillButton
-            val savePose = viewModel.framingDraft?.takeIf { it.clipId == clip.id }?.pose ?: pose
-            commit(upsertFramingKeyframe(effects, time, savePose))
-        }
-        GhostPillButton("Delete", compact = true, enabled = canDelete) {
-            val time = nearby?.time ?: return@GhostPillButton
-            commit(deleteNearestFramingKeyframe(effects, time))
-        }
-        FramingChromeDivider()
-        FramingToggleChip(
-            label = "Smooth",
-            selected = nearby?.interpolation == FramingInterpolation.SMOOTH,
-            enabled = canSetInterpolation
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(32.dp)
+                .padding(horizontal = 8.dp)
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            val time = nearby?.time ?: return@FramingToggleChip
-            viewModel.updateClipEffects(
-                clip,
-                setFramingKeyframeInterpolation(effects, time, FramingInterpolation.SMOOTH)
-            )
-        }
-        FramingToggleChip(
-            label = "Instant",
-            selected = nearby?.interpolation == FramingInterpolation.INSTANT,
-            enabled = canSetInterpolation
-        ) {
-            val time = nearby?.time ?: return@FramingToggleChip
-            viewModel.updateClipEffects(
-                clip,
-                setFramingKeyframeInterpolation(effects, time, FramingInterpolation.INSTANT)
-            )
-        }
-        if (keyframes.isNotEmpty()) {
+            FramingNumberChip("${(pose.zoom * 100.0).roundToInt()}%") { showNumbersDialog = true }
+            FramingNumberChip("X ${pose.panX.roundToInt()}") { showNumbersDialog = true }
+            FramingNumberChip("Y ${pose.panY.roundToInt()}") { showNumbersDialog = true }
+            RoundIconButton(
+                glyph = "↻",
+                contentDescription = "Reset frame",
+                enabled = canReset,
+                tint = Color(0xFFB8B0C8),
+                size = 28.dp,
+                onLongClick = { commit(resetFramingToDefault(liveEffects)) }
+            ) {
+                viewModel.applyFramingPose(
+                    clip,
+                    FramingPose(zoom = 1.0, panX = 50.0, panY = 50.0),
+                    commit = true
+                )
+            }
             FramingChromeDivider()
-            keyframes.sortedBy { it.time }.forEach { point ->
-                FramingToggleChip(
-                    label = "${formatSeconds(point.time)}s",
-                    selected = nearby == point,
-                    enabled = true
-                ) {
-                    viewModel.clearFramingDraft()
-                    viewModel.seek((clip.timelineStart + point.time).toFloat(), allowPastEnd = true)
+            GhostPillButton("Save", compact = true, enabled = canSave) {
+                val time = playheadInClip ?: return@GhostPillButton
+                val savePose = viewModel.framingDraft?.takeIf { it.clipId == clip.id }?.pose ?: pose
+                commit(upsertFramingKeyframe(liveEffects, time, savePose))
+            }
+            RoundIconButton(
+                glyph = "⎙",
+                contentDescription = "Duplicate keyframe",
+                enabled = canDuplicate,
+                tint = Color(0xFFB8B0C8),
+                size = 28.dp
+            ) {
+                val source = selectedPoint ?: return@RoundIconButton
+                val result = duplicateFramingKeyframe(liveEffects, source.time, playheadInClip, clipLength)
+                    ?: return@RoundIconButton
+                commit(result.first)
+                seekToClipTime(result.second)
+            }
+            RoundIconButton(
+                glyph = "✕",
+                contentDescription = "Delete keyframe",
+                enabled = canDelete,
+                tint = Color(0xFFB8B0C8),
+                size = 28.dp
+            ) {
+                val time = selectedPoint?.time ?: return@RoundIconButton
+                commit(deleteNearestFramingKeyframe(liveEffects, time))
+            }
+            FramingChromeDivider()
+            FramingToggleChip(
+                label = "Smooth",
+                selected = selectedPoint?.interpolation == FramingInterpolation.SMOOTH,
+                enabled = canSetInterpolation
+            ) {
+                val time = selectedPoint?.time ?: return@FramingToggleChip
+                viewModel.updateClipEffects(
+                    clip,
+                    setFramingKeyframeInterpolation(liveEffects, time, FramingInterpolation.SMOOTH)
+                )
+            }
+            FramingToggleChip(
+                label = "Instant",
+                selected = selectedPoint?.interpolation == FramingInterpolation.INSTANT,
+                enabled = canSetInterpolation
+            ) {
+                val time = selectedPoint?.time ?: return@FramingToggleChip
+                viewModel.updateClipEffects(
+                    clip,
+                    setFramingKeyframeInterpolation(liveEffects, time, FramingInterpolation.INSTANT)
+                )
+            }
+            if (selectedPoint != null) {
+                FramingChromeDivider()
+                FramingTimeField(
+                    timeSeconds = selectedPoint.time,
+                    onSubmit = { raw ->
+                        val parsed = parseFramingTime(raw)
+                        if (parsed == null) return@FramingTimeField
+                        val next = moveFramingKeyframe(liveEffects, selectedPoint.time, parsed, clipLength)
+                        if (next == liveEffects) return@FramingTimeField
+                        commit(next)
+                        seekToClipTime(
+                            framingTimeAfterMove(liveEffects, next, parsed, clipLength)
+                        )
+                    }
+                )
+            }
+        }
+        FramingKeyframeRuler(
+            keyframes = keyframes,
+            clipLength = clipLength,
+            playheadClipSeconds = clipSeconds,
+            selectedTime = selectedPoint?.time,
+            onSeek = { seekToClipTime(it) },
+            onDragStart = { time ->
+                dragSourceTime = time
+                dragEffects = liveEffects
+                viewModel.clearFramingDraft()
+                viewModel.seek((clip.timelineStart + time).toFloat(), allowPastEnd = true)
+            },
+            onDragTo = { fromTime, toTime ->
+                val current = dragEffects ?: liveEffects
+                val next = relocateFramingKeyframe(current, fromTime, toTime, clipLength)
+                val actual = toTime.coerceIn(0.0, clipLength)
+                dragEffects = next
+                dragSourceTime = actual
+                viewModel.updateClipLocal(clip.copy(effectsConfig = encodeEffectsConfig(next)))
+                viewModel.seek((clip.timelineStart + actual).toFloat(), allowPastEnd = true)
+            },
+            onDragEnd = {
+                val current = dragEffects
+                val time = dragSourceTime
+                dragEffects = null
+                dragSourceTime = null
+                if (current == null || time == null) return@FramingKeyframeRuler
+                val nudged = moveFramingKeyframe(current, time, time, clipLength)
+                viewModel.updateClip(clip.copy(effectsConfig = encodeEffectsConfig(nudged)))
+                if (nudged != current) {
+                    seekToClipTime(framingTimeAfterMove(current, nudged, time, clipLength))
                 }
+            }
+        )
+    }
+}
+
+@Composable
+private fun FramingTimeField(timeSeconds: Double, onSubmit: (String) -> Unit) {
+    val focusManager = LocalFocusManager.current
+    var text by remember(timeSeconds) { mutableStateOf(formatSeconds(timeSeconds)) }
+    var hadFocus by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(6.dp)
+    BasicTextField(
+        value = text,
+        onValueChange = { text = it },
+        singleLine = true,
+        textStyle = TextStyle(
+            color = Color(0xFFB8B0C8),
+            fontSize = 11.sp,
+            textAlign = TextAlign.Center
+        ),
+        cursorBrush = SolidColor(Color(0xFFB8B0C8)),
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Decimal,
+            imeAction = ImeAction.Done
+        ),
+        keyboardActions = KeyboardActions(
+            onDone = {
+                onSubmit(text)
+                focusManager.clearFocus()
+            }
+        ),
+        modifier = Modifier
+            .width(52.dp)
+            .height(24.dp)
+            .clip(shape)
+            .background(Color(0xFF2A2434), shape)
+            .onFocusChanged { focus ->
+                if (hadFocus && !focus.isFocused) onSubmit(text)
+                hadFocus = focus.isFocused
+            },
+        decorationBox = { inner ->
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { inner() }
+        }
+    )
+}
+
+@Composable
+private fun FramingKeyframeRuler(
+    keyframes: List<FramingPoint>,
+    clipLength: Double,
+    playheadClipSeconds: Double,
+    selectedTime: Double?,
+    onSeek: (Double) -> Unit,
+    onDragStart: (Double) -> Unit,
+    onDragTo: (fromTime: Double, toTime: Double) -> Unit,
+    onDragEnd: () -> Unit,
+) {
+    val density = LocalDensity.current
+    val primary = MaterialTheme.colorScheme.primary
+    val sorted = remember(keyframes) { keyframes.sortedBy { it.time } }
+    val trackShape = RoundedCornerShape(6.dp)
+    val latestOnSeek = rememberUpdatedState(onSeek)
+    val latestOnDragStart = rememberUpdatedState(onDragStart)
+    val latestOnDragTo = rememberUpdatedState(onDragTo)
+    val latestOnDragEnd = rememberUpdatedState(onDragEnd)
+    val latestSorted = rememberUpdatedState(sorted)
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(28.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    ) {
+        val widthPx = constraints.maxWidth.toFloat()
+        val heightPx = constraints.maxHeight.toFloat()
+        val markerPx = with(density) { 12.dp.toPx() }
+        val hitPx = with(density) { 10.dp.toPx() }
+        val latestHitPx = rememberUpdatedState(hitPx)
+        fun markerAt(x: Float, points: List<FramingPoint>, hit: Float): FramingPoint? =
+            points.minByOrNull {
+                abs(framingTimeToX(it.time, widthPx, clipLength) - x)
+            }?.takeIf {
+                abs(framingTimeToX(it.time, widthPx, clipLength) - x) <= hit
+            }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(trackShape)
+                .background(Color(0xFF121016))
+                .pointerInput(clipLength, widthPx) {
+                    detectTapGestures { offset ->
+                        val hit = markerAt(offset.x, latestSorted.value, latestHitPx.value)
+                        latestOnSeek.value(hit?.time ?: framingXToTime(offset.x, widthPx, clipLength))
+                    }
+                }
+                .pointerInput(clipLength, widthPx) {
+                    var activeFrom: Double? = null
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            val hit = markerAt(offset.x, latestSorted.value, latestHitPx.value)
+                            activeFrom = hit?.time
+                            if (hit != null) latestOnDragStart.value(hit.time)
+                        },
+                        onDrag = { change, _ ->
+                            val from = activeFrom ?: return@detectDragGestures
+                            change.consume()
+                            val toTime = framingXToTime(change.position.x, widthPx, clipLength)
+                            latestOnDragTo.value(from, toTime)
+                            activeFrom = toTime
+                        },
+                        onDragEnd = {
+                            if (activeFrom != null) latestOnDragEnd.value()
+                            activeFrom = null
+                        },
+                        onDragCancel = {
+                            if (activeFrom != null) latestOnDragEnd.value()
+                            activeFrom = null
+                        }
+                    )
+                }
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                val y = size.height / 2f
+                drawLine(
+                    color = Color(0xFF2A2434),
+                    start = Offset(0f, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = 2f
+                )
+                for (i in 0 until sorted.lastIndex) {
+                    val from = sorted[i]
+                    val to = sorted[i + 1]
+                    val start = Offset(framingTimeToX(from.time, size.width, clipLength), y)
+                    val end = Offset(framingTimeToX(to.time, size.width, clipLength), y)
+                    if (from.interpolation == FramingInterpolation.SMOOTH) {
+                        drawLine(Color(0xFF6F6884), start, end, strokeWidth = 2f)
+                    } else {
+                        drawLine(
+                            color = Color(0xFF6F6884),
+                            start = start,
+                            end = end,
+                            strokeWidth = 2f,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 5f))
+                        )
+                    }
+                }
+                val playheadX = framingTimeToX(
+                    playheadClipSeconds.coerceIn(0.0, clipLength),
+                    size.width,
+                    clipLength
+                )
+                drawLine(
+                    color = FramingPlayheadTick,
+                    start = Offset(playheadX, 0f),
+                    end = Offset(playheadX, size.height),
+                    strokeWidth = 2f
+                )
+            }
+            sorted.forEach { point ->
+                val selected = selectedTime != null && point.time == selectedTime
+                val shape = if (point.interpolation == FramingInterpolation.SMOOTH) {
+                    CircleShape
+                } else {
+                    RoundedCornerShape(2.dp)
+                }
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            val x = framingTimeToX(point.time, widthPx, clipLength)
+                            IntOffset(
+                                (x - markerPx / 2f).roundToInt(),
+                                ((heightPx - markerPx) / 2f).roundToInt()
+                            )
+                        }
+                        .size(12.dp)
+                        .clip(shape)
+                        .background(if (selected) primary else Color(0xFF8A82A0))
+                )
             }
         }
     }
+}
+
+private fun framingTimeToX(time: Double, width: Float, clipLength: Double): Float {
+    if (clipLength <= 0.0 || width <= 0f) return 0f
+    return ((time / clipLength) * width).toFloat().coerceIn(0f, width)
+}
+
+private fun framingXToTime(x: Float, width: Float, clipLength: Double): Double {
+    if (width <= 0f) return 0.0
+    return (x / width).toDouble().coerceIn(0.0, 1.0) * clipLength
+}
+
+private fun framingTimeAfterMove(
+    before: EffectsConfig,
+    after: EffectsConfig,
+    requested: Double,
+    clipLength: Double,
+): Double {
+    val oldTimes = before.framingKeyframes.map { it.time }.toSet()
+    after.framingKeyframes.map { it.time }.firstOrNull { it !in oldTimes }?.let { return it }
+    val clamped = requested.coerceIn(0.0, clipLength)
+    return after.framingKeyframes.minByOrNull { abs(it.time - clamped) }?.time ?: clamped
+}
+
+/** Live-drag relocate: clamp to the clip without nudging, so the marker follows the pointer. */
+private fun relocateFramingKeyframe(
+    effects: EffectsConfig,
+    fromTime: Double,
+    toTime: Double,
+    clipLength: Double,
+): EffectsConfig {
+    val idx = nearestFramingKeyframeIndex(effects.framingKeyframes, fromTime)
+    if (idx < 0) return effects
+    val source = effects.framingKeyframes[idx]
+    val others = effects.framingKeyframes.filterIndexed { i, _ -> i != idx }
+    val clamped = toTime.coerceIn(0.0, clipLength)
+    return effects.copy(framingKeyframes = (others + source.copy(time = clamped)).sortedBy { it.time })
 }
 
 @Composable
@@ -550,6 +884,9 @@ private fun FramingNumbersDialog(
 internal fun parseFramingNumber(raw: String): Double? =
     raw.trim().removeSuffix("%").trim().toDoubleOrNull()
 
+internal fun parseFramingTime(raw: String): Double? =
+    raw.trim().removeSuffix("s").trim().toDoubleOrNull()
+
 internal fun framingPoseFromNumberFields(zoomPercent: String, panX: String, panY: String): FramingPose? {
     val zoom = parseFramingNumber(zoomPercent) ?: return null
     val x = parseFramingNumber(panX) ?: return null
@@ -581,7 +918,7 @@ private fun WebGLStage(visualClips: List<ActiveClip>, playhead: Float, viewModel
                 kind = if (active.asset.type == AssetType.IMAGE) WEBGL_LAYER_IMAGE else WEBGL_LAYER_VIDEO,
                 url = active.asset.ossUrl,
                 positionSeconds = active.asset.sourceOffsetSeconds + active.clip.trimIn +
-                    (playhead - active.clip.timelineStart).toDouble(),
+                        (playhead - active.clip.timelineStart).toDouble(),
                 alpha = transitionVisual.alpha,
                 translateXFraction = transitionVisual.translateXFraction,
                 translateYFraction = transitionVisual.translateYFraction,
@@ -679,7 +1016,7 @@ private fun Modifier.framingStageGestures(
     val selectedId = viewModel.selectedClipId
     val target = visualClips.firstOrNull { active ->
         active.clip.id == selectedId &&
-            clipSupportsFraming(active.trackType, active.asset.type, active.asset.isDescriptionOnly)
+                clipSupportsFraming(active.trackType, active.asset.type, active.asset.isDescriptionOnly)
     }
     val enabled = target != null && !viewModel.isPlaying
     val clipId = target?.clip?.id

@@ -5,11 +5,15 @@ import app.moviestudio.ui.clipLocalPlayheadSeconds
 import app.moviestudio.ui.clipSupportsFraming
 import app.moviestudio.ui.collectSnapEdges
 import app.moviestudio.ui.deleteNearestFramingKeyframe
+import app.moviestudio.ui.duplicateFramingKeyframe
 import app.moviestudio.ui.framingPoseFromNumberFields
+import app.moviestudio.ui.isDefaultFraming
 import app.moviestudio.ui.markdownToPrintHtml
+import app.moviestudio.ui.moveFramingKeyframe
 import app.moviestudio.ui.parseFramingNumber
 import app.moviestudio.ui.nearestFramingKeyframe
 import app.moviestudio.ui.previousFramingInterpolation
+import app.moviestudio.ui.resetFramingToDefault
 import app.moviestudio.ui.setFramingKeyframeInterpolation
 import app.moviestudio.ui.snapMovedStart
 import app.moviestudio.ui.staticFramingEffects
@@ -567,7 +571,13 @@ class SharedCommonTest {
     fun upsertFramingKeyframeInheritsPreviousInterpolation() {
         val instant = EffectsConfig(
             framingKeyframes = listOf(
-                FramingPoint(time = 0.5, zoom = 1.0, panX = 50.0, panY = 50.0, interpolation = FramingInterpolation.INSTANT)
+                FramingPoint(
+                    time = 0.5,
+                    zoom = 1.0,
+                    panX = 50.0,
+                    panY = 50.0,
+                    interpolation = FramingInterpolation.INSTANT
+                )
             )
         )
         val next = upsertFramingKeyframe(
@@ -630,6 +640,161 @@ class SharedCommonTest {
         assertEquals(effects, unchanged)
         assertNull(nearestFramingKeyframe(effects.framingKeyframes, 1.0))
         assertEquals(effects.framingKeyframes[0], nearestFramingKeyframe(effects.framingKeyframes, 0.05))
+    }
+
+    @Test
+    fun moveFramingKeyframeRelocatesAndKeepsPose() {
+        val start = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(time = 2.0, zoom = 1.0, panX = 50.0, panY = 50.0),
+                FramingPoint(
+                    time = 1.0,
+                    zoom = 1.5,
+                    panX = 40.0,
+                    panY = 60.0,
+                    interpolation = FramingInterpolation.INSTANT
+                )
+            )
+        )
+        val moved = moveFramingKeyframe(start, fromTime = 1.0, toTime = 2.5, clipLength = 5.0)
+        assertEquals(listOf(2.0, 2.5), moved.framingKeyframes.map { it.time })
+        val point = moved.framingKeyframes[1]
+        assertEquals(1.5, point.zoom)
+        assertEquals(40.0, point.panX)
+        assertEquals(60.0, point.panY)
+        assertEquals(FramingInterpolation.INSTANT, point.interpolation)
+    }
+
+    @Test
+    fun moveFramingKeyframeClampsAndNudgesOffNeighbor() {
+        val start = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(
+                    time = 1.0,
+                    zoom = 1.5,
+                    panX = 20.0,
+                    panY = 80.0,
+                    interpolation = FramingInterpolation.INSTANT
+                ),
+                FramingPoint(time = 2.0, zoom = 2.0, panX = 10.0, panY = 90.0)
+            )
+        )
+        val clamped = moveFramingKeyframe(start, fromTime = 1.0, toTime = 9.0, clipLength = 5.0)
+        assertEquals(5.0, clamped.framingKeyframes.last().time)
+        assertEquals(1.5, clamped.framingKeyframes.last().zoom)
+
+        val under = moveFramingKeyframe(start, fromTime = 1.0, toTime = -1.0, clipLength = 5.0)
+        assertEquals(0.0, under.framingKeyframes.first().time)
+
+        val nudged = moveFramingKeyframe(start, fromTime = 1.0, toTime = 2.0, clipLength = 5.0)
+        assertEquals(2, nudged.framingKeyframes.size, "drop onto a neighbor must not merge or delete")
+        assertEquals(2.0, nudged.framingKeyframes[0].time)
+        assertEquals(2.0, nudged.framingKeyframes[0].zoom)
+        val moved = nudged.framingKeyframes[1]
+        assertTrue(abs(moved.time - 2.0) > 0.08, "nudged time must sit outside the neighbor hit window")
+        assertEquals(1.5, moved.zoom)
+        assertEquals(20.0, moved.panX)
+        assertEquals(80.0, moved.panY)
+        assertEquals(FramingInterpolation.INSTANT, moved.interpolation)
+    }
+
+    @Test
+    fun duplicateFramingKeyframePrefersPlayheadWhenFree() {
+        val start = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(
+                    time = 1.0,
+                    zoom = 1.8,
+                    panX = 30.0,
+                    panY = 70.0,
+                    interpolation = FramingInterpolation.INSTANT
+                )
+            )
+        )
+        val result = duplicateFramingKeyframe(
+            start,
+            sourceTime = 1.0,
+            preferredTime = 3.0,
+            clipLength = 5.0
+        )
+        assertEquals(3.0, result!!.second)
+        assertEquals(listOf(1.0, 3.0), result.first.framingKeyframes.map { it.time })
+        val copy = result.first.framingKeyframes[1]
+        assertEquals(1.8, copy.zoom)
+        assertEquals(30.0, copy.panX)
+        assertEquals(70.0, copy.panY)
+        assertEquals(FramingInterpolation.INSTANT, copy.interpolation)
+    }
+
+    @Test
+    fun duplicateFramingKeyframeFallsBackToOffsetWhenPlayheadOccupied() {
+        val start = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(
+                    time = 1.0,
+                    zoom = 1.4,
+                    panX = 25.0,
+                    panY = 75.0,
+                    interpolation = FramingInterpolation.SMOOTH
+                )
+            )
+        )
+        val result = duplicateFramingKeyframe(
+            start,
+            sourceTime = 1.0,
+            preferredTime = 1.0,
+            clipLength = 5.0
+        )
+        assertEquals(1.25, result!!.second, 0.0001)
+        assertEquals(listOf(1.0, 1.25), result.first.framingKeyframes.map { it.time })
+        assertEquals(1.4, result.first.framingKeyframes[1].zoom)
+        assertEquals(FramingInterpolation.SMOOTH, result.first.framingKeyframes[1].interpolation)
+
+        val packed = EffectsConfig(
+            framingKeyframes = listOf(
+                FramingPoint(time = 0.0, zoom = 1.0, panX = 50.0, panY = 50.0)
+            )
+        )
+        assertNull(
+            duplicateFramingKeyframe(packed, sourceTime = 0.0, preferredTime = 0.0, clipLength = 0.05),
+            "no free slot on a packed short clip"
+        )
+    }
+
+    @Test
+    fun resetFramingToDefaultClearsKeysAndStaticPose() {
+        val custom = EffectsConfig(
+            zoom = 2.0,
+            offsetX = 10.0,
+            offsetY = 90.0,
+            volume = 0.5,
+            framingKeyframes = listOf(
+                FramingPoint(time = 1.0, zoom = 1.5, panX = 40.0, panY = 60.0)
+            )
+        )
+        val reset = resetFramingToDefault(custom)
+        assertTrue(reset.framingKeyframes.isEmpty())
+        assertEquals(1.0, reset.zoom)
+        assertEquals(50.0, reset.offsetX)
+        assertEquals(50.0, reset.offsetY)
+        assertEquals(0.5, reset.volume, "reset must not touch unrelated effects")
+    }
+
+    @Test
+    fun isDefaultFramingDetectsUntouchedClip() {
+        assertTrue(isDefaultFraming(EffectsConfig()))
+        assertFalse(
+            isDefaultFraming(EffectsConfig(zoom = 1.5, offsetX = 50.0, offsetY = 50.0))
+        )
+        assertFalse(
+            isDefaultFraming(
+                EffectsConfig(
+                    framingKeyframes = listOf(
+                        FramingPoint(time = 0.0, zoom = 1.0, panX = 50.0, panY = 50.0)
+                    )
+                )
+            )
+        )
     }
 
     @Test
