@@ -67,6 +67,10 @@ actual fun VideoPlayer(
                     // play/pause shortcut and other keyboard input app-wide).
                     video.style.pointerEvents = 'none';
                     video.setAttribute('playsinline', 'true');
+                    // Not a user-facing player: keep the clip in the preview stage (no context-menu
+                    // / tab-switch Picture-in-Picture).
+                    video.disablePictureInPicture = true;
+                    video.setAttribute('disablepictureinpicture', '');
                     var wrap = document.createElement('div');
                     wrap.id = 'compose-video-preview-wrap';
                     wrap.style.position = 'absolute';
@@ -99,6 +103,9 @@ actual fun VideoPlayer(
                     video.style.pointerEvents = 'none';
                     wrap.appendChild(video);
                 }
+                // Re-assert on an already-created overlay (hot reload / previous session).
+                video.disablePictureInPicture = true;
+                video.setAttribute('disablepictureinpicture', '');
                 video.ontimeupdate = function() {
                     onTimeUpdate(video.currentTime);
                 };
