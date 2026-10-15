@@ -126,6 +126,29 @@ fun trackInsertIndex(tracks: List<TrackWithClips>, type: TrackType): Int {
 }
 
 /**
+ * Track to place an asset of [type] onto when adding from the library (no explicit drop target).
+ * Prefers the first track of that type with no clip overlapping [[atSeconds], [atSeconds] +
+ * [durationSeconds]), so a video already under the playhead doesn't steal an image/music/voice
+ * add. Returns null when every matching lane is occupied in that window (caller creates a new
+ * track) or when no matching type exists yet.
+ */
+fun preferredTrackForAsset(
+    tracks: List<TrackWithClips>,
+    type: TrackType,
+    atSeconds: Float = 0f,
+    durationSeconds: Float = 0f,
+): TrackWithClips? {
+    val matching = tracks.filter { it.track.type == type }
+    val rangeStart = atSeconds.coerceAtLeast(0f)
+    val rangeEnd = rangeStart + durationSeconds.coerceAtLeast(0f)
+    return matching.firstOrNull { lane ->
+        lane.clips.none { clip ->
+            clip.timelineStart < rangeEnd && clipEnd(clip) > rangeStart
+        }
+    }
+}
+
+/**
  * Contiguous zIndex values for every existing track after inserting a new one at [insertIndex].
  * Tracks at or after the insertion point shift up by one; earlier tracks keep their row index.
  * The new track itself takes [insertIndex] as its zIndex.

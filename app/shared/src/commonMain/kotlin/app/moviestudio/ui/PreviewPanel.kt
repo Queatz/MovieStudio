@@ -86,6 +86,7 @@ import app.moviestudio.NO_TRANSITION
 import app.moviestudio.TrackType
 import app.moviestudio.TextConfig
 import app.moviestudio.TEXT_REFERENCE_HEIGHT
+import app.moviestudio.textPositionTranslationY
 import app.moviestudio.textScrollTranslationY
 import app.moviestudio.TransitionVisual
 import app.moviestudio.VideoPlayer
@@ -123,6 +124,21 @@ import kotlin.math.roundToInt
 
 /** A clip together with its resolved asset and track type, active under the playhead. */
 private data class ActiveClip(val clip: Clip, val asset: Asset, val trackType: TrackType, val zIndex: Int)
+
+/** Moving-picture media that the Default renderer would drive with the shared `<video>` element. */
+private fun ActiveClip.isPlayableVideo(): Boolean =
+    !asset.isDescriptionOnly && asset.type != AssetType.IMAGE && !asset.isTextElement
+
+/**
+ * True when the Default DOM `<video>` overlay cannot represent this stack: more than one video,
+ * or any image/text/card painted above a video (the overlay sits above the Compose canvas).
+ */
+private fun List<ActiveClip>.needsStackedPreview(): Boolean {
+    val videos = filter { it.isPlayableVideo() }
+    if (videos.size > 1) return true
+    val topVideo = videos.lastOrNull() ?: return false
+    return last() !== topVideo
+}
 
 /**
  * The movie preview area (always dark, regardless of theme). It composites EVERY visual clip under
@@ -192,7 +208,11 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
     // The web preview shares a single <video> element, so only one video clip can play at a time —
     // the top-most one wins; images and text on other tracks still render around it.
     val activeVideo = visualClips
-        .lastOrNull { !it.asset.isDescriptionOnly && it.asset.type != AssetType.IMAGE }
+        .lastOrNull { it.isPlayableVideo() }
+    // Default `<video>` is a DOM overlay above Compose, so it hides any image/text on a higher
+    // track and cannot show a second video. Use WebGL whenever the stack actually needs that.
+    val stackedPreview = visualClips.needsStackedPreview()
+    val useWebGLPreview = isWebGLPreviewSupported() && (viewModel.previewUseWebGL || stackedPreview)
     val captionClips = activeClips.filter { it.trackType == TrackType.VOICE }
 
     // Keep the audio-element pool in sync (music, voice, sound effects under the playhead).
@@ -233,7 +253,7 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
     // Exception: an inline VideoPreview reuses that SAME shared <video> element, so while one is
     // mounted (VideoPreviewTracker.anyActive) the overlay must stay visible even with a dialog open
     // — otherwise the dialog's preview goes black while its audio keeps playing.
-    val usingDefaultRenderer = !(viewModel.previewUseWebGL && isWebGLPreviewSupported())
+    val usingDefaultRenderer = !useWebGLPreview
     LaunchedEffect(usingDefaultRenderer, StudioDialogTracker.anyOpen, VideoPreviewTracker.anyActive) {
         if (usingDefaultRenderer) {
             setPreviewOverlayVisible(!StudioDialogTracker.anyOpen || VideoPreviewTracker.anyActive)
@@ -290,7 +310,7 @@ fun PreviewPanel(viewModel: AppViewModel, modifier: Modifier = Modifier, fullscr
                             // Render EVERY visual clip under the playhead, lowest zIndex first so overlay
                             // tracks (higher zIndex) stack on top: still images, the active video and
                             // description-only text cards all live together here.
-                            if (viewModel.previewUseWebGL && isWebGLPreviewSupported()) {
+                            if (useWebGLPreview) {
                                 // WebGL method: every media layer is composited on the GPU and drawn back
                                 // INTO the Compose scene graph (bottom of the stage). Description cards are
                                 // text and stay Compose-rendered on top of it, so — unlike the old floating
@@ -1090,10 +1110,11 @@ private fun Modifier.framingStageGestures(
  *
  * When [TextConfig.scrollEnabled] is set, the block crawls from [TextConfig.scrollStartPercent] of
  * the frame height below the bottom edge to [TextConfig.scrollEndPercent] of the frame height above
- * the top edge across the clip (see [textScrollTranslationY]). Otherwise text that fits stays
- * vertically centered, and text that overflows scrolls smoothly across the clip's duration (driven
- * by [playhead]) — starting ~2 blank lines above its first line and ending ~2 blank lines below its
- * last line — so the viewer has a moment to start and finish reading.
+ * the top edge across the clip (see [textScrollTranslationY]) and [TextConfig.position] is ignored.
+ * Otherwise text that fits is placed by [TextConfig.position] (0 = top, 50 = center, 100 = bottom;
+ * see [textPositionTranslationY]), and text that overflows scrolls smoothly across the clip's
+ * duration (driven by [playhead]) — starting ~2 blank lines above its first line and ending ~2
+ * blank lines below its last line — so the viewer has a moment to start and finish reading.
  */
 @Composable
 private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual, playhead: Float) {
@@ -1133,8 +1154,9 @@ private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual, pla
         var textHeightPx by remember { mutableStateOf(0) }
         val overflowPx = (textHeightPx - constraints.maxHeight).coerceAtLeast(0).toFloat()
         // Automatic read-through (scroll off): overflowing text pads ~2 blank lines above the first
-        // line and ~2 below the last so the viewer can start and finish reading. Text that fits
-        // stays centered. An explicit credits scroll replaces that and is driven by the percentages.
+        // line and ~2 below the last so the viewer can start and finish reading. Text that fits is
+        // placed by position (0 = top, 50 = center, 100 = bottom). An explicit credits scroll
+        // replaces that and is driven by the percentages.
         val topPadPx = if (!config.scrollEnabled && overflowPx > 0f) lineHeightPx * 2f else 0f
         val bottomPadPx = if (!config.scrollEnabled && overflowPx > 0f) lineHeightPx * 2f else 0f
         val scrollExtentPx = overflowPx + topPadPx + bottomPadPx
@@ -1147,7 +1169,16 @@ private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual, pla
                 progress = progress
             )
         } else {
-            overflowPx * 0.5f + topPadPx - progress * scrollExtentPx
+            val positionOffsetY = if (textHeightPx > 0) {
+                textPositionTranslationY(
+                    frameHeightPx = constraints.maxHeight.toFloat(),
+                    textHeightPx = textHeightPx.toFloat(),
+                    position = config.position
+                )
+            } else {
+                0f
+            }
+            overflowPx * 0.5f + topPadPx - progress * scrollExtentPx + positionOffsetY
         }
         Text(
             text,
@@ -1163,8 +1194,8 @@ private fun TextClip(active: ActiveClip, transitionVisual: TransitionVisual, pla
                 .fillMaxWidth()
                 .wrapContentHeight(unbounded = true)
                 .padding(horizontal = 24.dp)
-                // Centered when it fits and scroll is off; otherwise either the credits crawl or the
-                // overflow read-through computed above. +Y moves the centered block down.
+                // Positioned when it fits and scroll is off; otherwise either the credits crawl or
+                // the overflow read-through computed above. +Y moves the centered block down.
                 .graphicsLayer { translationY = scrollOffsetY }
         )
     }

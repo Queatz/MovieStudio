@@ -629,6 +629,7 @@ class ModelsTest {
         // A brand-new text config carries sensible, fully-transparent-background defaults.
         assertEquals(TRANSPARENT_COLOR, TextConfig().backgroundColor)
         assertFalse(TextConfig().scrollEnabled)
+        assertEquals(TEXT_POSITION_CENTER, TextConfig().position)
     }
 
     @Test
@@ -641,6 +642,29 @@ class ModelsTest {
         assertFalse(legacy.scrollEnabled)
         assertEquals(0, legacy.scrollStartPercent)
         assertEquals(0, legacy.scrollEndPercent)
+        assertEquals(TEXT_POSITION_CENTER, legacy.position)
+    }
+
+    @Test
+    fun textPositionRoundTripsAndPinsToTopAndBottom() {
+        val top = TextConfig(position = 0)
+        val bottom = TextConfig(position = 100)
+        assertEquals(top, parseEffectsConfig(encodeEffectsConfig(EffectsConfig(text = top))).text)
+        assertEquals(bottom, parseEffectsConfig(encodeEffectsConfig(EffectsConfig(text = bottom))).text)
+
+        val frame = 200f
+        val text = 40f
+        val centeredTop = (frame - text) / 2f
+        assertEquals(0f, textPositionTranslationY(frame, text, TEXT_POSITION_CENTER), 0.01f)
+        assertEquals(-centeredTop, textPositionTranslationY(frame, text, TEXT_POSITION_MIN), 0.01f)
+        assertEquals(centeredTop, textPositionTranslationY(frame, text, TEXT_POSITION_MAX), 0.01f)
+        // Halfway between center and top.
+        assertEquals(-centeredTop / 2f, textPositionTranslationY(frame, text, 25), 0.01f)
+        // Overflowing / empty frames leave placement to the scroll path.
+        assertEquals(0f, textPositionTranslationY(frame, frame + 10f, 0), 0.01f)
+        assertEquals(0f, textPositionTranslationY(0f, text, 0), 0.01f)
+        assertEquals(textPositionTranslationY(frame, text, 0), textPositionTranslationY(frame, text, -20), 0.01f)
+        assertEquals(textPositionTranslationY(frame, text, 100), textPositionTranslationY(frame, text, 140), 0.01f)
     }
 
     @Test

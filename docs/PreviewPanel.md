@@ -181,17 +181,11 @@ on `playhead` (as before) hid the element on every frame while `display:block` w
 from `onGloballyPositioned` (which runs on layout, not per tick), so the video showed for one frame
 and then went black.
 
-**Single-video constraint.** The web preview shares **one** `<video id="compose-video-preview">`
-element, so only one video clip can play at a time. If several video clips overlap, the panel plays
-the **top-most** (`activeVideo = visualClips.lastOrNull { it is a video }`) and skips the rest.
-Simultaneous images and text on other tracks still render normally.
-
-**Known layering limitation.** The `<video>` element is a DOM overlay drawn *above* the Compose
-canvas, so a playing video visually sits on top of canvas-drawn content (images, text, captions)
-regardless of `zIndex`. In practice the common cases work well — one video at a time, or images/text
-as the visual layer — and the exported FFmpeg render always layers strictly by `zIndex`. When true
-image-over-video layering (or several simultaneous videos) is needed in-preview, switch to the
-**WebGL preview method** (section 8), which is exactly such a canvas renderer.
+**Single-video constraint.** The Default web preview shares **one** `<video id="compose-video-preview">`
+element, so only one video clip can play at a time. If several video clips overlap, or an image/text
+clip sits on a higher track than a video, the panel **auto-switches to WebGL** for that playhead
+(the DOM overlay would otherwise cover Compose-drawn layers and cannot show a second video). You can
+still pick WebGL manually (section 8) for always-on GPU compositing.
 
 ### 5.3 Description-only card (no media yet)
 

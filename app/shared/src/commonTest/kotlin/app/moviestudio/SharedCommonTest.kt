@@ -414,6 +414,83 @@ class SharedCommonTest {
     }
 
     @Test
+    fun testPreferredTrackForAssetFavorsFirstEmptyOfType() {
+        val occupiedVideo = TrackWithClips(
+            preloadTrack("v0", TrackType.VIDEO, 0),
+            listOf(preloadClip("c0", "v0", "a0"))
+        )
+        val emptyVideo = TrackWithClips(preloadTrack("v1", TrackType.VIDEO, 1), emptyList())
+        val occupiedMusic = TrackWithClips(
+            preloadTrack("m0", TrackType.MUSIC, 2),
+            listOf(preloadClip("c1", "m0", "a1"))
+        )
+        val emptyMusic = TrackWithClips(preloadTrack("m1", TrackType.MUSIC, 3), emptyList())
+        val occupiedVoice = TrackWithClips(
+            preloadTrack("o0", TrackType.VOICE, 4),
+            listOf(preloadClip("c2", "o0", "a2"))
+        )
+        val emptyVoice = TrackWithClips(preloadTrack("o1", TrackType.VOICE, 5), emptyList())
+        val tracks = listOf(occupiedVideo, emptyVideo, occupiedMusic, emptyMusic, occupiedVoice, emptyVoice)
+
+        // Library add skips a lane that already has a clip under the playhead.
+        assertEquals("v1", preferredTrackForAsset(tracks, TrackType.VIDEO, atSeconds = 0f, durationSeconds = 5f)?.track?.id)
+        assertEquals("m1", preferredTrackForAsset(tracks, TrackType.MUSIC, atSeconds = 0f, durationSeconds = 5f)?.track?.id)
+        assertEquals("o1", preferredTrackForAsset(tracks, TrackType.VOICE, atSeconds = 0f, durationSeconds = 5f)?.track?.id)
+
+        // A lane with clips elsewhere is still preferred over one occupied at the add time.
+        val laterClipVideo = TrackWithClips(
+            preloadTrack("v1", TrackType.VIDEO, 1),
+            listOf(preloadClip("c-later", "v1", "a-later").copy(timelineStart = 20f))
+        )
+        assertEquals(
+            "v1",
+            preferredTrackForAsset(
+                listOf(occupiedVideo, laterClipVideo),
+                TrackType.VIDEO,
+                atSeconds = 0f,
+                durationSeconds = 5f,
+            )?.track?.id,
+        )
+
+        // When the first lane is free at the playhead, it wins even if it has other clips.
+        assertEquals(
+            "v0",
+            preferredTrackForAsset(
+                listOf(occupiedVideo, emptyVideo),
+                TrackType.VIDEO,
+                atSeconds = 10f,
+                durationSeconds = 5f,
+            )?.track?.id,
+        )
+
+        // When every matching lane is occupied in the placement window, return null so a new
+        // track can be created instead of stacking on track 0.
+        assertNull(
+            preferredTrackForAsset(
+                listOf(occupiedVideo),
+                TrackType.VIDEO,
+                atSeconds = 0f,
+                durationSeconds = 5f,
+            )
+        )
+
+        // The first free matching lane wins even if a later one is also free.
+        val twoEmptyVideos = listOf(
+            occupiedVideo,
+            emptyVideo,
+            TrackWithClips(preloadTrack("v2", TrackType.VIDEO, 6), emptyList())
+        )
+        assertEquals(
+            "v1",
+            preferredTrackForAsset(twoEmptyVideos, TrackType.VIDEO, atSeconds = 0f, durationSeconds = 5f)?.track?.id,
+        )
+
+        // No matching type (or an empty timeline) yields null so a new track can be created.
+        assertNull(preferredTrackForAsset(tracks, TrackType.EFFECTS, atSeconds = 0f, durationSeconds = 5f))
+        assertNull(preferredTrackForAsset(emptyList(), TrackType.VIDEO, atSeconds = 0f, durationSeconds = 5f))
+    }
+
+    @Test
     fun testShiftedZIndexesAfterInsert() {
         // Inserting at index 1 into 3 tracks: [0, 1, 2] → existing become [0, 2, 3] (new takes 1).
         assertEquals(listOf(0, 2, 3), shiftedZIndexesAfterInsert(3, 1))

@@ -27,9 +27,11 @@ import kotlin.math.roundToInt
  *   z-order at their timeline position (PTS-shifted so content lines up with the playhead).
  * - Images are looped for the clip duration (pre-scaled so multi-megapixel stills don't balloon
  *   decode memory).
- * - Non-overlapping clips on a video track are concatenated into one stream per track (not one
- *   full-timeline overlay per clip) so long image slideshows stay within RAM; tracks composite
- *   in z-order with a single overlay each.
+ * - Non-overlapping clips on a video track are pre-rendered into one stream per track (not one
+ *   full-timeline overlay per clip) so long image slideshows stay within RAM. Every video track
+ *   is then composited in z-order — a pre-rendered higher track is drawn *after* a per-clip lower
+ *   track, not before it. Zoomed clips keep a transparent letterbox so the track underneath
+ *   shows through, matching the preview.
  * - Description-only (skeleton) items render as large centered white text, matching the preview.
  * - Overlap transitions (alpha / noise / voronoi / slide / circle / pixelate) blend a clip in
  *   over the media playing underneath it.
@@ -243,61 +245,24 @@ object FFmpegService {
 
             // ------------------------------------------------------------------ video pipeline
             var currentVideoTag = "0:v"
-            var chain = 0
 
-            // 1) Composite pre-rendered track files in z-order (one overlay each).
-            //
-            // Pre-rendered tracks are opaque yuv420p with solid-black gap frames (concat-demuxer
-            // cannot carry alpha). Overlaying the whole stream would paint those gaps over every
-            // lower track — the first video track goes fully black in multi-track movies. Gate
-            // each overlay to the track's clip windows so gaps pass the layer underneath through.
-            // Fade-style transitions are applied as overlay alpha here (not baked into the
-            // segment files) so a crossfade blends over the track below instead of fading from black.
-            for (track in videoTracksSorted) {
-                val tIdx = trackInputMap[track.id] ?: continue
-                val trackClipsForOverlay = (clipsByTrack[track.id] ?: emptyList())
-                    .sortedBy { it.timelineStart }
-                    .filter { (it.trimOut - it.trimIn) > 0f && assetsById.containsKey(it.assetId) }
-                val nextTag = "v_preroll_${track.id}"
-                filters.add(
-                    preRenderedTrackOverlayFilter(
-                        currentVideoTag = currentVideoTag,
-                        overlayInputIndex = tIdx,
-                        outputTag = nextTag,
-                        trackClips = trackClipsForOverlay
-                    )
-                )
-                currentVideoTag = nextTag
-                logger.info("Composited pre-rendered track ${track.id} (input $tIdx)")
-            }
-
-            // 2) Legacy per-clip overlay for tracks we did not pre-render.
-            for (track in videoTracksSorted) {
-                if (track.id in preRenderedTrackIds) continue
-                val trackClips = (clipsByTrack[track.id] ?: emptyList())
-                    .sortedBy { it.timelineStart }
-                    .filter { (it.trimOut - it.trimIn) > 0f && assetsById.containsKey(it.assetId) }
-                if (trackClips.isEmpty()) continue
-                logger.info(
-                    "Composing video track ${track.id} via per-clip overlay " +
-                        "(${trackClips.size} clip(s))"
-                )
-                for (clip in trackClips) {
-                    val result = overlayClipOntoVideo(
-                        filters = filters,
-                        currentVideoTag = currentVideoTag,
-                        clip = clip,
-                        trackClips = trackClips,
-                        assetsById = assetsById,
-                        assetInputMap = assetInputMap,
-                        canvasWidth = canvasWidth,
-                        canvasHeight = canvasHeight,
-                        chain = chain
-                    ) ?: continue
-                    currentVideoTag = result.videoTag
-                    chain = result.chain
-                }
-            }
+            // Composite every video track in z-order, whether it was pre-rendered or not.
+            // Doing all pre-rendered tracks first paints a full-frame lower track (per-clip, often
+            // the only clip on track 0) on top of a higher pre-rendered track — images and videos
+            // on track 1 vanish, while their audio still mixes.
+            currentVideoTag = appendVideoTracksInZOrder(
+                filters = filters,
+                videoTracksSorted = videoTracksSorted,
+                clipsByTrack = clipsByTrack,
+                assetsById = assetsById,
+                preRenderedTrackIds = preRenderedTrackIds,
+                trackInputMap = trackInputMap,
+                assetInputMap = assetInputMap,
+                canvasWidth = canvasWidth,
+                canvasHeight = canvasHeight,
+                currentVideoTag = currentVideoTag,
+                chain = 0
+            ).videoTag
 
             // Captions for voice clips (burned in over the final video).
             //
@@ -777,8 +742,10 @@ object FFmpegService {
         // Lock overlay PTS to the packed frame grid before geq. Timestamp-based T can sit one
         // frame behind the pixels at a concat cut, so the previous clip's full opacity would
         // paint the incoming clip solid for one frame before the fade.
+        // Multiply the segment's own alpha so a zoomed letterbox stays transparent while the
+        // fade ramps. Overwriting `a` with the ramp used to paint that letterbox opaque.
         return "[$overlayInputIndex:v]setpts=N/$RENDER_FPS/TB,format=yuva420p," +
-            "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='$alpha'[$alphaTag];" +
+            "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='alpha(X,Y)*($alpha)/255'[$alphaTag];" +
             "[$currentVideoTag][$alphaTag]overlay=eof_action=pass:format=auto$enableArg[$outputTag]"
     }
 
@@ -856,9 +823,24 @@ object FFmpegService {
         timelineFrameIndex(seconds) / RENDER_FPS.toDouble()
 
     /**
-     * Pre-renders a sequential track to a single H.264 file: one short FFmpeg invocation per clip
+     * True when a pre-rendered clip letterboxes (zoom below 1, including a framing animation that
+     * dips below 1). H.264 cannot store that transparency, so the whole track is encoded as
+     * QuickTime Animation instead of being flattened to opaque black.
+     */
+    internal fun clipNeedsTransparentLetterbox(clip: Clip): Boolean {
+        val effects = parseEffectsConfig(clip.effectsConfig)
+        if (effects.framingKeyframes.any { it.zoom < 1.0 - 1e-6 }) return true
+        return effects.framingAt(0.0).zoom < 1.0 - 1e-6
+    }
+
+    /**
+     * Pre-renders a sequential track to a single file: one short FFmpeg invocation per clip
      * (and per gap), then a concat demuxer pass. Peak RSS stays near one still/decode instead of
      * holding every image input open at once.
+     *
+     * Full-frame tracks stay H.264. A track with any zoomed-out clip is QuickTime Animation
+     * (`qtrle` / `argb` in a `.mov`) so the letterbox — and the gaps — stay transparent and the
+     * video underneath shows through, matching the preview.
      *
      * Each piece is an exact frame count on the [RENDER_FPS] grid, and a short source is cloned
      * out to fill its slot. Without that, concat packs later clips early (generated videos often
@@ -879,17 +861,20 @@ object FFmpegService {
         val pieces = mutableListOf<File>()
         var cursorFrame = 0
         val sorted = trackClips.sortedBy { it.timelineStart }
+        val preserveAlpha = sorted.any { clipNeedsTransparentLetterbox(it) }
+        val ext = if (preserveAlpha) "mov" else "mp4"
         var gapIdx = 0
 
-        fun addBlackGapFrames(frames: Int) {
+        fun addGapFrames(frames: Int) {
             if (frames <= 0) return
-            val gapFile = File(tempDir, "gap_${trackId}_${gapIdx++}.mp4")
+            val gapFile = File(tempDir, "gap_${trackId}_${gapIdx++}.$ext")
             renderSolidColorSegmentFile(
                 outFile = gapFile,
                 frameCount = frames,
                 canvasWidth = canvasWidth,
                 canvasHeight = canvasHeight,
-                color = "black"
+                color = "black",
+                preserveAlpha = preserveAlpha
             )
             pieces += gapFile
             onPiece()
@@ -906,10 +891,10 @@ object FFmpegService {
             // A previous slot that rounded onto this one wins; don't emit an overlapping piece.
             if (cursorFrame >= endFrame) continue
             val slotStart = maxOf(startFrame, cursorFrame)
-            if (slotStart > cursorFrame) addBlackGapFrames(slotStart - cursorFrame)
+            if (slotStart > cursorFrame) addGapFrames(slotStart - cursorFrame)
             val clipFrames = endFrame - slotStart
 
-            val segFile = File(tempDir, "seg_${clip.id}.mp4")
+            val segFile = File(tempDir, "seg_${clip.id}.$ext")
             when {
                 asset.ossUrl.isBlank() -> {
                     // Placeholder / text element: render via a tiny lavfi+drawtext graph.
@@ -919,7 +904,8 @@ object FFmpegService {
                         effects = parseEffectsConfig(clip.effectsConfig),
                         frameCount = clipFrames,
                         canvasWidth = canvasWidth,
-                        canvasHeight = canvasHeight
+                        canvasHeight = canvasHeight,
+                        preserveAlpha = preserveAlpha
                     )
                 }
                 else -> {
@@ -934,7 +920,8 @@ object FFmpegService {
                         duration = duration,
                         frameCount = clipFrames,
                         canvasWidth = canvasWidth,
-                        canvasHeight = canvasHeight
+                        canvasHeight = canvasHeight,
+                        preserveAlpha = preserveAlpha
                     )
                 }
             }
@@ -944,55 +931,62 @@ object FFmpegService {
         }
 
         val totalFrames = timelineFrameIndex(totalDuration)
-        if (cursorFrame < totalFrames) addBlackGapFrames(totalFrames - cursorFrame)
+        if (cursorFrame < totalFrames) addGapFrames(totalFrames - cursorFrame)
         if (pieces.isEmpty()) {
-            val blank = File(tempDir, "track_${trackId}_blank.mp4")
+            val blank = File(tempDir, "track_${trackId}_blank.$ext")
             renderSolidColorSegmentFile(
                 blank,
                 timelineFrameIndex(totalDuration).coerceAtLeast(1),
                 canvasWidth,
                 canvasHeight,
-                "black"
+                "black",
+                preserveAlpha
             )
             return blank
         }
 
-        val outFile = File(tempDir, "track_${trackId}.mp4")
-        concatVideoFilesDemuxer(pieces, outFile)
+        val outFile = File(tempDir, "track_${trackId}.$ext")
+        concatVideoFilesDemuxer(pieces, outFile, preserveAlpha)
         return outFile
     }
 
-    /** Solid-color H.264 segment used for timeline gaps in pre-rendered tracks. */
+    /** Solid-color segment used for timeline gaps in pre-rendered tracks. */
     internal fun renderSolidColorSegmentFile(
         outFile: File,
         frameCount: Int,
         canvasWidth: Int,
         canvasHeight: Int,
-        color: String
+        color: String,
+        preserveAlpha: Boolean = false
     ) {
         val frames = frameCount.coerceAtLeast(1)
         // Generate a hair extra and cut with -frames:v so the piece is exactly [frames] long.
         // Truncating (duration * fps).toInt() used to drop a fraction of a frame per gap, and
         // those fractions accumulated into a multi-frame shift by the end of a long track.
         val dur = frames / RENDER_FPS.toDouble() + 0.1
-        runFfmpegChecked(
-            listOf(
-                MediaUtil.ffmpegBinary, "-y",
-                "-f", "lavfi",
-                "-i", "color=c=$color:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS:d=${dur.ff()}",
-                "-frames:v", frames.toString(),
-                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-                "-an",
-                outFile.absolutePath
-            ),
-            label = "solid-segment ${outFile.name}"
+        val src = if (preserveAlpha) {
+            "color=c=black@0:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS:d=${dur.ff()},format=rgba"
+        } else {
+            "color=c=$color:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS:d=${dur.ff()}"
+        }
+        val args = mutableListOf(
+            MediaUtil.ffmpegBinary, "-y",
+            "-f", "lavfi",
+            "-i", src,
+            "-frames:v", frames.toString()
         )
+        appendSegmentEncoder(args, preserveAlpha)
+        args.add(outFile.absolutePath)
+        runFfmpegChecked(args, label = "solid-segment ${outFile.name}")
     }
 
     /**
-     * Encodes one media clip to a canvas-sized H.264 segment. Transitions are NOT baked in — the
-     * concat demuxer cannot carry alpha, and an RGB fade-from-black would cover the track below.
-     * Fade-style transitions are applied as overlay alpha in [preRenderedTrackOverlayFilter].
+     * Encodes one media clip to a canvas-sized segment. Transitions are NOT baked in — an RGB
+     * fade-from-black would cover the track below. Fade-style transitions are applied as overlay
+     * alpha in [preRenderedTrackOverlayFilter].
+     *
+     * When [preserveAlpha] is set, the letterbox stays transparent (QuickTime Animation) instead
+     * of being flattened to opaque black by `format=yuv420p` + H.264.
      */
     internal fun renderMediaClipSegmentFile(
         outFile: File,
@@ -1003,7 +997,8 @@ object FFmpegService {
         duration: Double,
         frameCount: Int,
         canvasWidth: Int,
-        canvasHeight: Int
+        canvasHeight: Int,
+        preserveAlpha: Boolean = false
     ) {
         val rawEffects = try {
             json.parseToJsonElement(clip.effectsConfig).jsonObject
@@ -1017,16 +1012,18 @@ object FFmpegService {
             prefix.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
             prefix.add("setpts=PTS-STARTPTS")
         }
+        // Grade before the zoom-out pad so `eq`/`colorbalance` cannot strip the transparent
+        // letterbox that lets the track underneath show through.
+        appendColorGrading(prefix, rawEffects)
         val suffix = mutableListOf<String>()
         suffix.add("fps=$RENDER_FPS")
-        appendColorGrading(suffix, rawEffects)
         // Clone the last decoded frame out to the slot length. Source files are often shorter
         // than the timeline duration (stream frame count truncated below the container duration);
         // without this, concat shifts every following clip early and its fade starts late.
         val frames = frameCount.coerceAtLeast(1)
         suffix.add("tpad=stop_mode=clone:stop_duration=${(frames / RENDER_FPS.toDouble() + 0.5).ff()}")
         suffix.add("setsar=1")
-        suffix.add("format=yuv420p")
+        suffix.add(if (preserveAlpha) "format=rgba" else "format=yuv420p")
         val graph = mutableListOf<String>()
         appendFramedClipGraph(
             filters = graph,
@@ -1051,23 +1048,21 @@ object FFmpegService {
         }
         args.add("-filter_complex"); args.add(graph.joinToString(";"))
         args.add("-map"); args.add("[vout]")
-        args.add("-an")
-        args.add("-c:v"); args.add("libx264")
-        args.add("-preset"); args.add("ultrafast")
-        args.add("-pix_fmt"); args.add("yuv420p")
         args.add("-frames:v"); args.add(frames.toString())
+        appendSegmentEncoder(args, preserveAlpha)
         args.add(outFile.absolutePath)
         runFfmpegChecked(args, label = "clip-segment ${clip.id}")
     }
 
-    /** Description-only / simple text stand-in as an H.264 segment. */
+    /** Description-only / simple text stand-in as a segment matching the track's codec. */
     private fun renderPlaceholderSegmentFile(
         outFile: File,
         asset: Asset,
         effects: EffectsConfig,
         frameCount: Int,
         canvasWidth: Int,
-        canvasHeight: Int
+        canvasHeight: Int,
+        preserveAlpha: Boolean = false
     ) {
         val text = (asset.description ?: asset.aiPrompt ?: "")
         val lines = wrapText(text, 34, 4)
@@ -1082,25 +1077,27 @@ object FFmpegService {
         val _effects = effects
         val frames = frameCount.coerceAtLeast(1)
         val dur = frames / RENDER_FPS.toDouble() + 0.1
-        runFfmpegChecked(
-            listOf(
-                MediaUtil.ffmpegBinary, "-y",
-                "-f", "lavfi",
-                "-i", "color=c=black:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS:d=${dur.ff()}",
-                "-vf", draws.joinToString(","),
-                "-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-                "-frames:v", frames.toString(),
-                outFile.absolutePath
-            ),
-            label = "placeholder-segment ${asset.id}"
+        val args = mutableListOf(
+            MediaUtil.ffmpegBinary, "-y",
+            "-f", "lavfi",
+            "-i", "color=c=black:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS:d=${dur.ff()}",
+            "-vf", draws.joinToString(","),
+            "-frames:v", frames.toString()
         )
+        appendSegmentEncoder(args, preserveAlpha)
+        args.add(outFile.absolutePath)
+        runFfmpegChecked(args, label = "placeholder-segment ${asset.id}")
     }
 
     /**
-     * Joins [pieces] end-to-end with the concat demuxer (re-encode to normalize timebases). Each
-     * piece must already be canvas-sized yuv420p H.264.
+     * Joins [pieces] end-to-end with the concat demuxer (re-encode to normalize timebases).
+     * Pieces are canvas-sized H.264, or QuickTime Animation when [preserveAlpha] is set.
      */
-    internal fun concatVideoFilesDemuxer(pieces: List<File>, outFile: File) {
+    internal fun concatVideoFilesDemuxer(
+        pieces: List<File>,
+        outFile: File,
+        preserveAlpha: Boolean = false
+    ) {
         require(pieces.isNotEmpty()) { "concatVideoFilesDemuxer requires at least one piece" }
         if (pieces.size == 1) {
             pieces[0].copyTo(outFile, overwrite = true)
@@ -1114,17 +1111,29 @@ object FFmpegService {
                 "file '$p'"
             } + "\n"
         )
-        runFfmpegChecked(
-            listOf(
-                MediaUtil.ffmpegBinary, "-y",
-                "-f", "concat", "-safe", "0",
-                "-i", listFile.absolutePath,
-                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-                "-an",
-                outFile.absolutePath
-            ),
-            label = "concat-demuxer ${outFile.name}"
+        val args = mutableListOf(
+            MediaUtil.ffmpegBinary, "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", listFile.absolutePath
         )
+        appendSegmentEncoder(args, preserveAlpha)
+        args.add(outFile.absolutePath)
+        runFfmpegChecked(args, label = "concat-demuxer ${outFile.name}")
+    }
+
+    /** Encoder args shared by segment pieces and the concat that joins them. */
+    private fun appendSegmentEncoder(args: MutableList<String>, preserveAlpha: Boolean) {
+        if (preserveAlpha) {
+            // H.264 cannot store the transparent letterbox. qtrle in a .mov can.
+            args.add("-c:v"); args.add("qtrle")
+            args.add("-pix_fmt"); args.add("argb")
+            args.add("-r"); args.add(RENDER_FPS.toString())
+        } else {
+            args.add("-c:v"); args.add("libx264")
+            args.add("-preset"); args.add("ultrafast")
+            args.add("-pix_fmt"); args.add("yuv420p")
+        }
+        args.add("-an")
     }
 
     /** Runs FFmpeg and throws with stderr tail when the exit code is non-zero. */
@@ -1292,9 +1301,9 @@ object FFmpegService {
         val prefix = mutableListOf<String>()
         prefix.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
         prefix.add("setpts=PTS-STARTPTS")
+        appendColorGrading(prefix, rawEffects)
         val suffix = mutableListOf<String>()
         suffix.add("fps=30")
-        appendColorGrading(suffix, rawEffects)
 
         val transition = effects.transition
         val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
@@ -1368,7 +1377,7 @@ object FFmpegService {
         val textCfg = effects.text ?: TextConfig()
         val rawText = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "" }
         val fontSize =
-            (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(8, canvasHeight)
+            (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(1, canvasHeight)
         val wrapWidth = textSafeAreaWrapWidth(canvasWidth, fontSize)
         val lines = wrapText(rawText, wrapWidth, 40)
         val fontColor = ffmpegDrawtextColor(textCfg.color)
@@ -1407,13 +1416,77 @@ object FFmpegService {
         filters.add("$head,${layer.joinToString(",")}[$outputTag]")
     }
 
-    private data class OverlayStepResult(val videoTag: String, val chain: Int)
+    internal data class OverlayStepResult(val videoTag: String, val chain: Int)
+
+    /**
+     * Composites [videoTracksSorted] (ascending zIndex) onto [currentVideoTag]. Pre-rendered and
+     * per-clip tracks are interleaved in that order — a higher track is always drawn later, even
+     * when the lower track stayed on the per-clip path (one long base video) and the higher track
+     * was pre-rendered (several PiP clips).
+     */
+    internal fun appendVideoTracksInZOrder(
+        filters: MutableList<String>,
+        videoTracksSorted: List<Track>,
+        clipsByTrack: Map<String, List<Clip>>,
+        assetsById: Map<String, Asset>,
+        preRenderedTrackIds: Set<String>,
+        trackInputMap: Map<String, Int>,
+        assetInputMap: Map<String, Int>,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        currentVideoTag: String,
+        chain: Int
+    ): OverlayStepResult {
+        var tag = currentVideoTag
+        var nextChain = chain
+        for (track in videoTracksSorted) {
+            val trackClips = (clipsByTrack[track.id] ?: emptyList())
+                .sortedBy { it.timelineStart }
+                .filter { (it.trimOut - it.trimIn) > 0f && assetsById.containsKey(it.assetId) }
+            if (trackClips.isEmpty()) continue
+            if (track.id in preRenderedTrackIds) {
+                val tIdx = trackInputMap[track.id] ?: continue
+                val nextTag = "v_preroll_${track.id}"
+                filters.add(
+                    preRenderedTrackOverlayFilter(
+                        currentVideoTag = tag,
+                        overlayInputIndex = tIdx,
+                        outputTag = nextTag,
+                        trackClips = trackClips
+                    )
+                )
+                tag = nextTag
+                logger.info("Composited pre-rendered track ${track.id} (input $tIdx) in z-order")
+            } else {
+                logger.info(
+                    "Composing video track ${track.id} via per-clip overlay " +
+                        "(${trackClips.size} clip(s))"
+                )
+                for (clip in trackClips) {
+                    val result = overlayClipOntoVideo(
+                        filters = filters,
+                        currentVideoTag = tag,
+                        clip = clip,
+                        trackClips = trackClips,
+                        assetsById = assetsById,
+                        assetInputMap = assetInputMap,
+                        canvasWidth = canvasWidth,
+                        canvasHeight = canvasHeight,
+                        chain = nextChain
+                    ) ?: continue
+                    tag = result.videoTag
+                    nextChain = result.chain
+                }
+            }
+        }
+        return OverlayStepResult(tag, nextChain)
+    }
 
     /**
      * Legacy per-clip overlay: processes one clip and composites it onto [currentVideoTag] with
      * `enable='between(t,start,displayEnd)'`. Used when a track can't take the concat path.
      */
-    private fun overlayClipOntoVideo(
+    internal fun overlayClipOntoVideo(
         filters: MutableList<String>,
         currentVideoTag: String,
         clip: Clip,
@@ -1467,11 +1540,18 @@ object FFmpegService {
         val srcStart = asset.sourceOffsetSeconds + clip.trimIn
         val srcEnd = asset.sourceOffsetSeconds + clip.trimOut
         val prefix = mutableListOf<String>()
-        prefix.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
-        prefix.add("setpts=PTS-STARTPTS")
+        // Looped stills are already a single frame (or a `-loop 1` stream from t=0). `trim` on a
+        // PNG/JPEG often yields zero frames, so the overlay vanishes while its audio (if any) still
+        // mixes — the same "hear it, don't see it" bug as a missing video overlay.
+        if (asset.type != AssetType.IMAGE) {
+            prefix.add("trim=start=${srcStart.ff()}:end=${srcEnd.ff()}")
+            prefix.add("setpts=PTS-STARTPTS")
+        }
+        // Grade before zoom-out pad so `eq`/`colorbalance` cannot strip the transparent
+        // letterbox that lets the track underneath show through.
+        appendColorGrading(prefix, rawEffects)
         val suffix = mutableListOf<String>()
         suffix.add("fps=30")
-        appendColorGrading(suffix, rawEffects)
 
         val transition = effects.transition
         val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
@@ -1479,6 +1559,10 @@ object FFmpegService {
             suffix, transition, transitionDur, start, canvasWidth, canvasHeight
         )
         suffix.add("setpts=PTS+${start.ff()}/TB")
+        // yuva + SAR 1 so a second video actually alpha-blends over the first (FFmpeg's
+        // default yuv420 overlay plus a non-1 SAR can drop the overlay or size it wrong).
+        suffix.add("format=yuva420p")
+        suffix.add("setsar=1")
         val trimmedTag = "v_trimmed_${clip.id}"
         appendFramedClipGraph(
             filters = filters,
@@ -1494,7 +1578,7 @@ object FFmpegService {
 
         val nextVideoTag = "v_overlaid_${clip.id}"
         filters.add(
-            "[$currentVideoTag][$trimmedTag]overlay=eof_action=repeat:" +
+            "[$currentVideoTag][$trimmedTag]overlay=eof_action=repeat:format=auto:" +
                 "enable='between(t,${start.ff()},${displayEnd.ff()})'$overlayExtra[$nextVideoTag]"
         )
         return OverlayStepResult(nextVideoTag, nextChain)
@@ -1647,11 +1731,12 @@ object FFmpegService {
      * whole layer PTS-shifted to [start] and overlaid between [start] and [end] — mirroring the
      * styled text preview so the export matches it.
      *
-     * Text that fits stays vertically centered. Text that overflows the canvas height instead
-     * scrolls smoothly from its top to its bottom (plus ~2 extra blank lines so the last line can
-     * be read) across the clip's duration — unless a credits crawl is enabled, in which case the
-     * block travels from a percentage of the frame below the bottom edge to a percentage above the
-     * top edge. Both match the preview's `TextClip`.
+     * Text that fits is placed by [TextConfig.position] (0 = top, 50 = center, 100 = bottom).
+     * Text that overflows the canvas height instead scrolls smoothly from its top to its bottom
+     * (plus ~2 extra blank lines so the last line can be read) across the clip's duration — unless
+     * a credits crawl is enabled, in which case the block travels from a percentage of the frame
+     * below the bottom edge to a percentage above the top edge and [TextConfig.position] is ignored.
+     * Both match the preview's `TextClip`.
      */
     private fun renderTextElementLayer(
         filters: MutableList<String>,
@@ -1668,7 +1753,7 @@ object FFmpegService {
         val textCfg = effects.text ?: TextConfig()
         val rawText = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "" }
         // Font size is authored relative to a TEXT_REFERENCE_HEIGHT-tall canvas (same as the preview).
-        val fontSize = (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(8, canvasHeight)
+        val fontSize = (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(1, canvasHeight)
         // Wrap within a horizontally padded safe area (mirrors the preview's horizontal padding on
         // TextClip) so wrapped lines never reach/overflow the frame's edges. Vertically the block is
         // allowed to grow past the canvas (a generous line cap keeps the full text) — that overflow
@@ -1716,7 +1801,7 @@ object FFmpegService {
 
         val nextVideoTag = "v_overlaid_text_${clip.id}"
         filters.add(
-            "[$currentVideoTag][$layerTag]overlay=eof_action=pass:enable='between(t,${start.ff()},${end.ff()})'$overlayExtra[$nextVideoTag]"
+            "[$currentVideoTag][$layerTag]overlay=eof_action=pass:format=auto:enable='between(t,${start.ff()},${end.ff()})'$overlayExtra[$nextVideoTag]"
         )
         return nextVideoTag
     }
@@ -2259,11 +2344,13 @@ object FFmpegService {
 
     /**
      * Cover-scale, then crop (and pad on zoom-out) using [EffectsConfig.framingAt]. Zoom 1 + pan
-     * 50/50 is today's `crop=W:H:(iw-ow)*ox:(ih-oh)*oy`.
+     * 50/50 is today's `crop=W:H:(iw-ow)*ox:(ih-oh)*oy`. Zoom-out pad is **transparent** so an
+     * overlay track does not paint opaque black over the clip underneath — matching the preview.
      *
      * Static poses stay a linear scale/crop/pad chain. Animated keyframes cannot: FFmpeg 8+ `crop`
      * has no `eval` option, and `pad` x/y cannot parse `if`/`lt` pan expressions. Those use
-     * [FramingStage.overlayFilter] (zoom via `scale=eval=frame`, then overlay onto a black canvas).
+     * [FramingStage.overlayFilter] (zoom via `scale=eval=frame`, then overlay onto a transparent
+     * canvas).
      */
     internal fun appendFramingFilters(
         filters: MutableList<String>,
@@ -2302,8 +2389,11 @@ object FFmpegService {
                     "x='(iw-ow)*${px.ff()}':y='(ih-oh)*${py.ff()}'"
             )
             if (z < 1.0) {
+                // Preview letterbox is empty stage pixels; opaque `black` here used to cover
+                // every lower track. Convert to yuva first so pad's alpha is kept.
+                media.add("format=yuva420p")
                 media.add(
-                    "pad=$canvasWidth:$canvasHeight:(ow-iw)*${px.ff()}:(oh-ih)*${py.ff()}:black"
+                    "pad=$canvasWidth:$canvasHeight:(ow-iw)*${px.ff()}:(oh-ih)*${py.ff()}:black@0"
                 )
             }
             return FramingStage(media)
@@ -2313,16 +2403,17 @@ object FFmpegService {
         val panYExpr = framingPanUnitExpression(effects, x = false)
         media.add("scale=iw*($zoomExpr):ih*($zoomExpr):eval=frame")
         // Overlay x/y are per-frame and accept the same `if(lt(t,…))` expressions as volume.
-        // Zoom-in clips (overlay larger than the canvas); zoom-out letterboxes.
+        // Zoom-in clips (overlay larger than the canvas); zoom-out letterboxes. format=auto
+        // keeps the transparent canvas alpha so a second video composites over the first.
         val overlay =
-            "overlay=x='(W-w)*($panXExpr)':y='(H-h)*($panYExpr)':shortest=1"
+            "overlay=x='(W-w)*($panXExpr)':y='(H-h)*($panYExpr)':shortest=1:format=auto"
         return FramingStage(media, overlay)
     }
 
     /**
      * Writes [prefix] + framing + [suffix] as one clip chain into [filters]. Static framing is a
-     * single comma-joined node; animated framing inserts a black canvas and overlays the zooming
-     * sprite onto it (FFmpeg 8 crop has no `eval=frame`).
+     * single comma-joined node; animated framing inserts a transparent canvas and overlays the
+     * zooming sprite onto it (FFmpeg 8 crop has no `eval=frame`).
      */
     internal fun appendFramedClipGraph(
         filters: MutableList<String>,
@@ -2345,7 +2436,9 @@ object FFmpegService {
         val fg = "v_frfg_$uniqueId"
         val bg = "v_frbg_$uniqueId"
         filters.add("[$inputLabel]${mediaChain.joinToString(",")}[$fg]")
-        filters.add("color=c=black:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS[$bg]")
+        filters.add(
+            "color=c=black@0.0:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS,format=yuva420p[$bg]"
+        )
         val rest = suffix.joinToString(",")
         filters.add(
             if (rest.isEmpty()) "[$bg][$fg]$overlay[$outputTag]"
@@ -2482,8 +2575,8 @@ object FFmpegService {
      * inter-line spacing plus the runtime single-line `text_h`.
      *
      * Otherwise overflowing text keeps the automatic read-through scroll (two blank lines of lead-in
-     * and lead-out); text that fits stays centered (the offset collapses to ~0). Returns "" when
-     * there is no duration to scroll across.
+     * and lead-out); text that fits is shifted by [TextConfig.position] (0 = top, 50 = center,
+     * 100 = bottom). Returns "" when there is no duration to scroll across and position is center.
      */
     internal fun textElementYScrollExpr(
         config: TextConfig,
@@ -2491,24 +2584,42 @@ object FFmpegService {
         lineCount: Int,
         lineSpacing: Double
     ): String {
-        if (duration <= 0.0 || lineCount <= 0) return ""
+        if (lineCount <= 0) return ""
         val blockConstPx = (lineCount - 1) * lineSpacing
         val blockHeightExpr = "(${blockConstPx.ff()}+text_h)"
-        val progress = "min(t/${duration.ff()},1)"
-        return if (config.scrollEnabled) {
+        if (config.scrollEnabled) {
+            if (duration <= 0.0) return ""
+            val progress = "min(t/${duration.ff()},1)"
             val startFrac = (config.scrollStartPercent
                 .coerceIn(TEXT_SCROLL_MIN_PERCENT, TEXT_SCROLL_MAX_PERCENT) / 100.0).ff()
             val endFrac = (config.scrollEndPercent
                 .coerceIn(TEXT_SCROLL_MIN_PERCENT, TEXT_SCROLL_MAX_PERCENT) / 100.0).ff()
             val startOffset = "(h*0.5+h*$startFrac+($blockHeightExpr)*0.5)"
             val endOffset = "(-h*0.5-h*$endFrac-($blockHeightExpr)*0.5)"
-            "+($startOffset+($endOffset-$startOffset)*$progress)"
-        } else {
-            val overflowExpr = "max(0,$blockHeightExpr-h)"
-            val padPerSideExpr = "2*${lineSpacing.ff()}*gt($blockHeightExpr,h)"
-            val scrollExtentExpr = "($overflowExpr+2*$padPerSideExpr)"
-            "+($overflowExpr*0.5+$padPerSideExpr-$progress*$scrollExtentExpr)"
+            return "+($startOffset+($endOffset-$startOffset)*$progress)"
         }
+        val overflowExpr = if (duration > 0.0) {
+            val progress = "min(t/${duration.ff()},1)"
+            val overflow = "max(0,$blockHeightExpr-h)"
+            val padPerSideExpr = "2*${lineSpacing.ff()}*gt($blockHeightExpr,h)"
+            val scrollExtentExpr = "($overflow+2*$padPerSideExpr)"
+            "+($overflow*0.5+$padPerSideExpr-$progress*$scrollExtentExpr)"
+        } else {
+            ""
+        }
+        return overflowExpr + textElementYPositionExpr(config, blockHeightExpr)
+    }
+
+    /**
+     * Extra `drawtext` y-offset (+down) for still TEXT that fits the frame. 0 = top, 50 = center,
+     * 100 = bottom — the same mapping as [textPositionTranslationY]. Zero when the block overflows
+     * (read-through owns that motion) or when position is the default center.
+     */
+    internal fun textElementYPositionExpr(config: TextConfig, blockHeightExpr: String): String {
+        val pos = config.position.coerceIn(TEXT_POSITION_MIN, TEXT_POSITION_MAX)
+        if (pos == TEXT_POSITION_CENTER) return ""
+        val bias = ((pos - TEXT_POSITION_CENTER) / TEXT_POSITION_CENTER.toDouble()).ff()
+        return "+($bias*((h-$blockHeightExpr)/2)*lte($blockHeightExpr,h))"
     }
 
     /**

@@ -613,24 +613,37 @@ class AppViewModel : ViewModel() {
         val current = timeline?.tracks ?: emptyList()
         viewModelScope.launch {
             try {
-                val insertIndex = trackInsertIndex(current, type)
-                NetworkService.createTrack(
-                    movieId,
-                    Track(generateId(), movieId, type, zIndex = insertIndex)
-                )
-                // Make room: bump zIndex on every track that sits at or after the insertion point.
-                val shifted = shiftedZIndexesAfterInsert(current.size, insertIndex)
-                current.forEachIndexed { index, twc ->
-                    val newZ = shifted[index]
-                    if (twc.track.zIndex != newZ) {
-                        NetworkService.updateTrack(movieId, twc.track.copy(zIndex = newZ))
-                    }
-                }
+                insertTrackOfType(movieId, type, current)
                 refreshTimeline()
             } catch (e: Exception) {
                 errorMessage = "Failed to add track: ${e.message}"
             }
         }
+    }
+
+    /**
+     * Creates a track of [type] after the last existing lane of that kind and shifts later
+     * tracks' zIndex up so order stays contiguous. Shared by the "＋ Track" menu and library
+     * adds that need a new empty lane.
+     */
+    private suspend fun insertTrackOfType(
+        movieId: String,
+        type: TrackType,
+        current: List<TrackWithClips>,
+    ): Track {
+        val insertIndex = trackInsertIndex(current, type)
+        val created = NetworkService.createTrack(
+            movieId,
+            Track(generateId(), movieId, type, zIndex = insertIndex)
+        )
+        val shifted = shiftedZIndexesAfterInsert(current.size, insertIndex)
+        current.forEachIndexed { index, twc ->
+            val newZ = shifted[index]
+            if (twc.track.zIndex != newZ) {
+                NetworkService.updateTrack(movieId, twc.track.copy(zIndex = newZ))
+            }
+        }
+        return created
     }
 
     /** Renames a track (blank name falls back to the type's default label in the UI). */
@@ -702,7 +715,10 @@ class AppViewModel : ViewModel() {
      * Adds [asset] to a compatible track, at [atSeconds] when given (e.g. a drag-and-drop
      * position on the timeline) or at the current playhead position otherwise. When
      * [targetTrackId] names a compatible track (a drop aimed at a specific row), the clip lands
-     * on that exact track — so media can be dropped on any track of the matching type.
+     * on that exact track — so media can be dropped on any track of the matching type. Otherwise
+     * the first track of that type with no clip overlapping the placement window is preferred
+     * (so an image isn't stacked on a video already under the playhead). If every matching lane
+     * is occupied there, a new track of that type is created.
      */
     fun addAssetToTimeline(asset: Asset, atSeconds: Float? = null, targetTrackId: String? = null) {
         val movieId = currentMovie?.id ?: return
@@ -710,19 +726,22 @@ class AppViewModel : ViewModel() {
         val targetTrackType = compatibleTrackType(asset.type)
         viewModelScope.launch {
             try {
+                val duration = if (asset.durationSeconds > 0) asset.durationSeconds else 5.0
+                val start = (atSeconds ?: playhead).coerceAtLeast(0f)
                 val targeted = targetTrackId
                     ?.let { id -> tracks.firstOrNull { it.track.id == id && it.track.type == targetTrackType } }
                     ?.track
-                val track = targeted ?: tracks.firstOrNull { it.track.type == targetTrackType }?.track ?: run {
-                    val zIndex = (tracks.maxOfOrNull { it.track.zIndex } ?: -1) + 1
-                    NetworkService.createTrack(movieId, Track(generateId(), movieId, targetTrackType, zIndex))
-                }
-                val duration = if (asset.durationSeconds > 0) asset.durationSeconds else 5.0
+                val track = targeted ?: preferredTrackForAsset(
+                    tracks,
+                    targetTrackType,
+                    atSeconds = start,
+                    durationSeconds = duration.toFloat(),
+                )?.track ?: insertTrackOfType(movieId, targetTrackType, tracks)
                 val clip = Clip(
                     id = generateId(),
                     trackId = track.id,
                     assetId = asset.id,
-                    timelineStart = (atSeconds ?: playhead).coerceAtLeast(0f),
+                    timelineStart = start,
                     trimIn = 0f,
                     trimOut = duration.toFloat(),
                     effectsConfig = "{}"

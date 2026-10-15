@@ -53,6 +53,9 @@ import app.moviestudio.AppViewModel
 import app.moviestudio.AssetType
 import app.moviestudio.CaptionConfig
 import app.moviestudio.Clip
+import app.moviestudio.TEXT_POSITION_CENTER
+import app.moviestudio.TEXT_POSITION_MAX
+import app.moviestudio.TEXT_POSITION_MIN
 import app.moviestudio.TEXT_SCROLL_MAX_PERCENT
 import app.moviestudio.TEXT_SCROLL_MIN_PERCENT
 import app.moviestudio.TextConfig
@@ -73,6 +76,7 @@ import app.moviestudio.VolumePoint
 import app.moviestudio.clipCarriesAudio
 import app.moviestudio.displayName
 import app.moviestudio.parseEffectsConfig
+import app.moviestudio.textPositionTranslationY
 import app.moviestudio.textScrollTranslationY
 import app.moviestudio.volumeAt
 import kotlin.math.abs
@@ -624,11 +628,12 @@ internal fun FramingToggleChip(
 }
 
 /**
- * Text style editor for a first-class TEXT element: font, size, text color, a background color
- * (with transparency) and an optional credits-style scroll. Both colors reuse the preset swatches
- * + [CustomColorPickerDialog] the caption editor uses; the background offers a fully-transparent
- * option so lower clips / the black stage show through. When scroll is on, the preview crawls the
- * sample from the chosen start (percentage off the bottom) to the chosen end (percentage off the top).
+ * Text style editor for a first-class TEXT element: font, size, vertical position (0–100), text
+ * color, a background color (with transparency) and an optional credits-style scroll. Both colors
+ * reuse the preset swatches + [CustomColorPickerDialog] the caption editor uses; the background
+ * offers a fully-transparent option so lower clips / the black stage show through. When scroll is
+ * on, the preview crawls the sample from the chosen start (percentage off the bottom) to the chosen
+ * end (percentage off the top) and the static position is ignored so the two don't fight.
  */
 @Composable
 fun TextEditorDialog(
@@ -660,6 +665,12 @@ fun TextEditorDialog(
                     startPercentOffBottom = config.scrollStartPercent,
                     endPercentOffTop = config.scrollEndPercent,
                     progress = scrollProgress
+                )
+            } else if (!config.scrollEnabled && previewTextHeight > 0) {
+                textPositionTranslationY(
+                    frameHeightPx = constraints.maxHeight.toFloat(),
+                    textHeightPx = previewTextHeight.toFloat(),
+                    position = config.position
                 )
             } else {
                 0f
@@ -700,9 +711,30 @@ fun TextEditorDialog(
         LabeledSlider(
             label = "Size",
             value = config.fontSizeSp.toFloat(),
-            valueRange = 16f..160f,
+            valueRange = 6f..160f,
             valueText = "${config.fontSizeSp}",
             onValueChange = { config = config.copy(fontSizeSp = it.roundToInt()) }
+        )
+        LabeledSlider(
+            label = "Position",
+            value = config.position.toFloat(),
+            valueRange = TEXT_POSITION_MIN.toFloat()..TEXT_POSITION_MAX.toFloat(),
+            valueText = "${config.position}",
+            enabled = !config.scrollEnabled,
+            onValueChange = {
+                config = config.copy(
+                    position = it.roundToInt().coerceIn(TEXT_POSITION_MIN, TEXT_POSITION_MAX)
+                )
+            }
+        )
+        Text(
+            if (config.scrollEnabled) {
+                "Scroll owns vertical placement while it is on. 0 is the top of the frame, $TEXT_POSITION_CENTER is center, $TEXT_POSITION_MAX is the bottom."
+            } else {
+                "0 is the top of the frame, $TEXT_POSITION_CENTER is center, $TEXT_POSITION_MAX is the bottom."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         SectionLabel("Text color")

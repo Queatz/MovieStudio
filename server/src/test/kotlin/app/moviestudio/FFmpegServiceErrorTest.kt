@@ -762,6 +762,23 @@ class FFmpegServiceErrorTest {
         return Triple(bytes[0].toInt() and 0xFF, bytes[1].toInt() and 0xFF, bytes[2].toInt() and 0xFF)
     }
 
+    private fun sampleRgbAt(video: File, timeSeconds: Double, x: Int, y: Int): Triple<Int, Int, Int> {
+        val pb = ProcessBuilder(
+            MediaUtil.ffmpegBinary,
+            "-ss", timeSeconds.toString(),
+            "-i", video.absolutePath,
+            "-frames:v", "1",
+            "-vf", "crop=1:1:$x:$y,format=rgb24",
+            "-f", "rawvideo",
+            "pipe:1"
+        ).redirectError(ProcessBuilder.Redirect.PIPE)
+        val proc = pb.start()
+        val bytes = proc.inputStream.readNBytes(3)
+        proc.waitFor()
+        assertEquals(3, bytes.size, "expected 3 RGB bytes from ${video.name} at t=$timeSeconds ($x,$y)")
+        return Triple(bytes[0].toInt() and 0xFF, bytes[1].toInt() and 0xFF, bytes[2].toInt() and 0xFF)
+    }
+
     private fun sampleCenterRgb(video: File, timeSeconds: Double): Triple<Int, Int, Int> {
         val pb = ProcessBuilder(
             MediaUtil.ffmpegBinary,
@@ -1017,7 +1034,11 @@ class FFmpegServiceErrorTest {
             canvasHeight = 1080
         )
         assertTrue(filters.any { it.startsWith("scale=iw*") }, "zoom-out must scale the cover sprite, got: $filters")
-        assertTrue(filters.any { it.startsWith("pad=1920:1080") }, "zoom-out must pad to the canvas, got: $filters")
+        assertTrue(filters.any { it == "format=yuva420p" }, "zoom-out pad needs alpha, got: $filters")
+        assertTrue(
+            filters.any { it.startsWith("pad=1920:1080") && it.endsWith(":black@0") },
+            "zoom-out letterbox must be transparent so lower tracks show through, got: $filters"
+        )
         assertFalse(filters.any { it.contains("eval=frame") }, "static zoom must not use eval=frame, got: $filters")
     }
 
@@ -1042,6 +1063,7 @@ class FFmpegServiceErrorTest {
         )
         val overlay = assertNotNull(stage.overlayFilter, "animated framing must overlay onto a canvas")
         assertTrue(overlay.startsWith("overlay=x='(W-w)*"), "overlay must pan with (W-w)*pan, got: $overlay")
+        assertTrue(overlay.contains("format=auto"), "animated overlay must keep canvas alpha, got: $overlay")
         assertFalse(overlay.contains("eval="), "overlay x/y are already per-frame, got: $overlay")
     }
 
@@ -1083,6 +1105,236 @@ class FFmpegServiceErrorTest {
                 label = "framing-animated-smoke"
             )
             assertTrue(out.exists() && out.length() > 0L, "animated framing chain must produce output")
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun overlayClipOntoVideoEmitsYuvaAutoOverlayAndSetsar() {
+        // Two overlapping videos used the opaque yuv420 overlay path, so the upper clip either
+        // vanished or painted black letterbox over the lower one. The per-clip overlay must keep
+        // alpha, normalize SAR, and blend with format=auto — matching the live preview.
+        val clip = Clip(
+            id = "up", trackId = "t", assetId = "v",
+            timelineStart = 0f, trimIn = 0f, trimOut = 1f,
+            effectsConfig = """{"zoom":0.5,"offsetX":50.0,"offsetY":50.0}"""
+        )
+        val asset = Asset(
+            id = "v", type = AssetType.VIDEO, ossUrl = "http://example/v.mp4",
+            durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null
+        )
+        val filters = mutableListOf<String>()
+        FFmpegService.overlayClipOntoVideo(
+            filters = filters,
+            currentVideoTag = "0:v",
+            clip = clip,
+            trackClips = listOf(clip),
+            assetsById = mapOf("v" to asset),
+            assetInputMap = mapOf("v" to 2),
+            canvasWidth = 320,
+            canvasHeight = 180,
+            chain = 0
+        )
+        val graph = filters.joinToString(";")
+        assertTrue(graph.contains("format=yuva420p"), "overlay clip must carry alpha, got: $graph")
+        assertTrue(graph.contains("setsar=1"), "overlay clip must normalize SAR, got: $graph")
+        assertTrue(
+            graph.contains("overlay=eof_action=repeat:format=auto"),
+            "stacked videos must alpha-blend with format=auto, got: $graph"
+        )
+        assertTrue(graph.contains("black@0"), "zoom-out letterbox must be transparent, got: $graph")
+    }
+
+    @Test
+    fun stackedZoomedOutVideoCompositesOverLowerTrack() {
+        // Red full-frame bed + blue overlay at 50% zoom, centered. Center must be the upper
+        // video (not missing); corners must stay the lower video (not opaque black).
+        val temp = java.nio.file.Files.createTempDirectory("ms_video_overlay_").toFile()
+        try {
+            val lower = Clip(
+                id = "low", trackId = "t0", assetId = "red",
+                timelineStart = 0f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}"
+            )
+            val upper = Clip(
+                id = "up", trackId = "t1", assetId = "blue",
+                timelineStart = 0f, trimIn = 0f, trimOut = 1f,
+                effectsConfig = """{"zoom":0.5,"offsetX":50.0,"offsetY":50.0}"""
+            )
+            val assets = mapOf(
+                "red" to Asset(
+                    id = "red", type = AssetType.VIDEO, ossUrl = "http://x/red.mp4",
+                    durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null
+                ),
+                "blue" to Asset(
+                    id = "blue", type = AssetType.VIDEO, ossUrl = "http://x/blue.mp4",
+                    durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null
+                )
+            )
+            val filters = mutableListOf<String>()
+            FFmpegService.overlayClipOntoVideo(
+                filters, "0:v", lower, listOf(lower), assets, mapOf("red" to 1), 320, 180, 0
+            )
+            FFmpegService.overlayClipOntoVideo(
+                filters, "v_overlaid_low", upper, listOf(upper), assets, mapOf("blue" to 2), 320, 180, 0
+            )
+            val out = File(temp, "out.mp4")
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=black:s=320x180:r=30:d=1",
+                    "-f", "lavfi", "-i", "color=c=red:s=640x360:r=30:d=1",
+                    "-f", "lavfi", "-i", "color=c=blue:s=480x480:r=30:d=1",
+                    "-filter_complex", filters.joinToString(";"),
+                    "-map", "[v_overlaid_up]", "-an",
+                    "-frames:v", "8",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    out.absolutePath
+                ),
+                label = "stacked-video-overlay"
+            )
+            val (cr, cg, cb) = sampleRgbAt(out, 0.1, 160, 90)
+            assertTrue(
+                cb > 80 && cb > cr + 40 && cb > cg + 40,
+                "center should be the upper (blue) video, got rgb=$cr,$cg,$cb"
+            )
+            val (rr, rg, rb) = sampleRgbAt(out, 0.1, 8, 8)
+            assertTrue(
+                rr > 80 && rr > rb + 40 && rr > rg + 40,
+                "corner should stay the lower (red) video, not black letterbox, got rgb=$rr,$rg,$rb"
+            )
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun stackedImageOverVideoComposites() {
+        // A still on a higher video track used to vanish: overlayClipOntoVideo always ran `trim`
+        // on the looped PNG, which often produced zero frames. Center must be the image.
+        val temp = java.nio.file.Files.createTempDirectory("ms_image_over_video_").toFile()
+        try {
+            val imgBlue = File(temp, "blue.png")
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=blue:s=320x180:d=0.1",
+                    "-frames:v", "1", imgBlue.absolutePath
+                ),
+                label = "test-png"
+            )
+            val lower = Clip(
+                id = "low", trackId = "t0", assetId = "red",
+                timelineStart = 0f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}"
+            )
+            val upper = Clip(
+                id = "up", trackId = "t1", assetId = "blue",
+                timelineStart = 0f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}"
+            )
+            val assets = mapOf(
+                "red" to Asset(
+                    id = "red", type = AssetType.VIDEO, ossUrl = "http://x/red.mp4",
+                    durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null
+                ),
+                "blue" to Asset(
+                    id = "blue", type = AssetType.IMAGE, ossUrl = "http://x/blue.png",
+                    durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null
+                )
+            )
+            val filters = mutableListOf<String>()
+            FFmpegService.overlayClipOntoVideo(
+                filters, "0:v", lower, listOf(lower), assets, mapOf("red" to 1), 320, 180, 0
+            )
+            FFmpegService.overlayClipOntoVideo(
+                filters, "v_overlaid_low", upper, listOf(upper), assets, mapOf("blue" to 2), 320, 180, 0
+            )
+            val graph = filters.joinToString(";")
+            assertFalse(
+                graph.contains("[2:v]trim="),
+                "image overlay must not trim the still, got: $graph"
+            )
+            val out = File(temp, "out.mp4")
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=black:s=320x180:r=30:d=1",
+                    "-f", "lavfi", "-i", "color=c=red:s=320x180:r=30:d=1",
+                    "-loop", "1", "-t", "1", "-i", imgBlue.absolutePath,
+                    "-filter_complex", graph,
+                    "-map", "[v_overlaid_up]", "-an",
+                    "-frames:v", "8",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    out.absolutePath
+                ),
+                label = "stacked-image-over-video"
+            )
+            val (cr, cg, cb) = sampleRgbAt(out, 0.1, 160, 90)
+            assertTrue(
+                cb > 80 && cb > cr + 40 && cb > cg + 40,
+                "center should be the upper (blue) image, got rgb=$cr,$cg,$cb"
+            )
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun stackedVideoPanOffsetMatchesPreviewLeftAlign() {
+        // zoom 0.5 + panX 0 pins the overlay sprite to the left edge (preview/JS:
+        // left = (frameW - dispW) * (panX/100)). Right side of the frame must still be the bed.
+        val temp = java.nio.file.Files.createTempDirectory("ms_video_pan_").toFile()
+        try {
+            val lower = Clip(
+                id = "low", trackId = "t0", assetId = "red",
+                timelineStart = 0f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}"
+            )
+            val upper = Clip(
+                id = "up", trackId = "t1", assetId = "blue",
+                timelineStart = 0f, trimIn = 0f, trimOut = 1f,
+                effectsConfig = """{"zoom":0.5,"offsetX":0.0,"offsetY":50.0}"""
+            )
+            val assets = mapOf(
+                "red" to Asset(
+                    id = "red", type = AssetType.VIDEO, ossUrl = "http://x/red.mp4",
+                    durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null
+                ),
+                "blue" to Asset(
+                    id = "blue", type = AssetType.VIDEO, ossUrl = "http://x/blue.mp4",
+                    durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null
+                )
+            )
+            val filters = mutableListOf<String>()
+            FFmpegService.overlayClipOntoVideo(
+                filters, "0:v", lower, listOf(lower), assets, mapOf("red" to 1), 320, 180, 0
+            )
+            FFmpegService.overlayClipOntoVideo(
+                filters, "v_overlaid_low", upper, listOf(upper), assets, mapOf("blue" to 2), 320, 180, 0
+            )
+            val out = File(temp, "out.mp4")
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=black:s=320x180:r=30:d=1",
+                    "-f", "lavfi", "-i", "color=c=red:s=320x180:r=30:d=1",
+                    "-f", "lavfi", "-i", "color=c=blue:s=320x180:r=30:d=1",
+                    "-filter_complex", filters.joinToString(";"),
+                    "-map", "[v_overlaid_up]", "-an",
+                    "-frames:v", "8",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    out.absolutePath
+                ),
+                label = "stacked-video-pan"
+            )
+            val (lr, lg, lb) = sampleRgbAt(out, 0.1, 40, 90)
+            assertTrue(
+                lb > 80 && lb > lr + 40,
+                "left side should be the left-aligned overlay, got rgb=$lr,$lg,$lb"
+            )
+            val (rr, rg, rb) = sampleRgbAt(out, 0.1, 280, 90)
+            assertTrue(
+                rr > 80 && rr > rb + 40,
+                "right side should stay the lower track, got rgb=$rr,$rg,$rb"
+            )
         } finally {
             temp.deleteRecursively()
         }
@@ -1158,6 +1410,21 @@ class FFmpegServiceErrorTest {
         assertTrue(expr.contains("gt("), "overflow scroll must stay when crawl is off, got: $expr")
         assertTrue(expr.contains("max(0,"), "overflow is clamped at zero so fitting text stays centered, got: $expr")
         assertEquals("", FFmpegService.textElementYScrollExpr(still, duration = 0.0, lineCount = 3, lineSpacing = 40.0))
+    }
+
+    @Test
+    fun textScrollExprPinsFittingTextToPositionAndIgnoresItWhileScrolling() {
+        val top = TextConfig(position = 0)
+        val topExpr = FFmpegService.textElementYScrollExpr(top, duration = 4.0, lineCount = 1, lineSpacing = 40.0)
+        assertTrue(topExpr.contains("lte("), "position must only apply when the block fits, got: $topExpr")
+        assertTrue(topExpr.contains("-1*"), "position 0 is a -1 bias from center, got: $topExpr")
+        // Overflow read-through still runs alongside so tall text is not pinned off-screen.
+        assertTrue(topExpr.contains("gt("), "overflow scroll must remain when position is set, got: $topExpr")
+
+        val scrolling = TextConfig(scrollEnabled = true, position = 0, scrollStartPercent = 25, scrollEndPercent = 40)
+        val scrollExpr = FFmpegService.textElementYScrollExpr(scrolling, duration = 4.0, lineCount = 1, lineSpacing = 40.0)
+        assertFalse(scrollExpr.contains("lte("), "credits crawl must ignore static position, got: $scrollExpr")
+        assertTrue(scrollExpr.contains("h*0.25"), "crawl start must still be used, got: $scrollExpr")
     }
 
     @Test
@@ -1266,6 +1533,168 @@ class FFmpegServiceErrorTest {
             stream.use {
                 assertTrue(it.readBytes().isNotEmpty(), "bundled font must not be empty: $font")
             }
+        }
+    }
+
+    @Test
+    fun higherPreRenderedTrackIsCompositedAfterALowerPerClipTrack() {
+        // A one-clip base video stays on the per-clip path; a 3+ clip PiP track is pre-rendered.
+        // Compositing every pre-render first painted the base video last and hid track 1.
+        val pip = """{"zoom":0.5,"offsetX":100.0,"offsetY":0.0}"""
+        val lower = Clip(
+            id = "low", trackId = "t0", assetId = "red",
+            timelineStart = 0f, trimIn = 0f, trimOut = 4f, effectsConfig = "{}"
+        )
+        val upper = listOf(0, 1, 2).map { i ->
+            Clip(
+                id = "up$i", trackId = "t1", assetId = if (i == 1) "green" else "blue",
+                timelineStart = i.toFloat(), trimIn = 0f, trimOut = 1f, effectsConfig = pip
+            )
+        }
+        val top = Clip(
+            id = "top", trackId = "t2", assetId = "gold",
+            timelineStart = 0f, trimIn = 0f, trimOut = 1f, effectsConfig = "{}"
+        )
+        val assets = listOf("red", "blue", "green", "gold").associate { id ->
+            id to Asset(
+                id = id,
+                type = if (id == "blue") AssetType.IMAGE else AssetType.VIDEO,
+                ossUrl = "http://x/$id",
+                durationSeconds = 4.0, movieId = "m", tags = emptyList(), aiPrompt = null
+            )
+        }
+        val filters = mutableListOf<String>()
+        val tag = FFmpegService.appendVideoTracksInZOrder(
+            filters = filters,
+            videoTracksSorted = listOf(
+                Track("t0", "m", TrackType.VIDEO, 0),
+                Track("t1", "m", TrackType.VIDEO, 1),
+                Track("t2", "m", TrackType.VIDEO, 2)
+            ),
+            clipsByTrack = mapOf("t0" to listOf(lower), "t1" to upper, "t2" to listOf(top)),
+            assetsById = assets,
+            preRenderedTrackIds = setOf("t1"),
+            trackInputMap = mapOf("t1" to 3),
+            assetInputMap = mapOf("red" to 1, "gold" to 4),
+            canvasWidth = 320,
+            canvasHeight = 180,
+            currentVideoTag = "0:v",
+            chain = 0
+        ).videoTag
+        val graph = filters.joinToString(";")
+        assertTrue(
+            graph.contains("[v_overlaid_low][3:v]overlay"),
+            "pre-rendered track 1 must overlay the lower per-clip video, not the canvas, got: $graph"
+        )
+        assertTrue(
+            graph.contains("[v_preroll_t1][v_trimmed_top]overlay"),
+            "a still-higher per-clip track must sit above the pre-rendered track, got: $graph"
+        )
+        assertEquals("v_overlaid_top", tag)
+        val prerollAt = graph.indexOf("[v_overlaid_low][3:v]overlay")
+        val coveredAt = graph.indexOf("[0:v][3:v]overlay")
+        assertTrue(prerollAt >= 0 && coveredAt < 0, "track 1 must not be painted under the base video")
+    }
+
+    @Test
+    fun preRenderedZoomedImageAndVideoSitOnTopOfLowerVideo() {
+        // The real export path: one full-frame video on track 0 (per-clip) and a 3-clip zoomed
+        // track 1 (pre-rendered). The PiP must show, and its letterbox must stay the lower video.
+        val temp = java.nio.file.Files.createTempDirectory("ms_pip_over_video_").toFile()
+        try {
+            val imgBlue = File(temp, "blue.png")
+            val vidGreen = File(temp, "green.mp4")
+            val vidRed = File(temp, "red.mp4")
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=blue:s=320x180:d=0.1",
+                    "-frames:v", "1", imgBlue.absolutePath
+                ),
+                label = "test-png"
+            )
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=green:s=320x180:r=30:d=1",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    vidGreen.absolutePath
+                ),
+                label = "test-green"
+            )
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=red:s=320x180:r=30:d=4",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    vidRed.absolutePath
+                ),
+                label = "test-red"
+            )
+            val pip = """{"zoom":0.5,"offsetX":100.0,"offsetY":0.0}"""
+            val upper = listOf(
+                Clip(id = "img0", trackId = "t1", assetId = "blue", timelineStart = 0f, trimIn = 0f, trimOut = 1f, effectsConfig = pip),
+                Clip(id = "vid1", trackId = "t1", assetId = "green", timelineStart = 1f, trimIn = 0f, trimOut = 1f, effectsConfig = pip),
+                Clip(id = "img2", trackId = "t1", assetId = "blue", timelineStart = 2f, trimIn = 0f, trimOut = 1f, effectsConfig = pip)
+            )
+            val lower = Clip(
+                id = "low", trackId = "t0", assetId = "red",
+                timelineStart = 0f, trimIn = 0f, trimOut = 4f, effectsConfig = "{}"
+            )
+            val assets = mapOf(
+                "red" to Asset(id = "red", type = AssetType.VIDEO, ossUrl = "http://x/red.mp4", durationSeconds = 4.0, movieId = "m", tags = emptyList(), aiPrompt = null),
+                "blue" to Asset(id = "blue", type = AssetType.IMAGE, ossUrl = "http://x/blue.png", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null),
+                "green" to Asset(id = "green", type = AssetType.VIDEO, ossUrl = "http://x/green.mp4", durationSeconds = 1.0, movieId = "m", tags = emptyList(), aiPrompt = null)
+            )
+            val upperFile = FFmpegService.renderTrackViaSegmentFiles(
+                tempDir = temp, trackId = "t1", trackClips = upper,
+                assetsById = assets, downloadedAssets = mapOf("blue" to imgBlue, "green" to vidGreen),
+                totalDuration = 4.0, canvasWidth = 320, canvasHeight = 180
+            )
+            assertTrue(upperFile.extension == "mov", "zoomed track must keep alpha, got ${upperFile.name}")
+            val filters = mutableListOf<String>()
+            val tag = FFmpegService.appendVideoTracksInZOrder(
+                filters = filters,
+                videoTracksSorted = listOf(
+                    Track("t0", "m", TrackType.VIDEO, 0),
+                    Track("t1", "m", TrackType.VIDEO, 1)
+                ),
+                clipsByTrack = mapOf("t0" to listOf(lower), "t1" to upper),
+                assetsById = assets,
+                preRenderedTrackIds = setOf("t1"),
+                trackInputMap = mapOf("t1" to 2),
+                assetInputMap = mapOf("red" to 1),
+                canvasWidth = 320,
+                canvasHeight = 180,
+                currentVideoTag = "0:v",
+                chain = 0
+            ).videoTag
+            val out = File(temp, "out.mp4")
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=black:s=320x180:r=30:d=4",
+                    "-i", vidRed.absolutePath,
+                    "-i", upperFile.absolutePath,
+                    "-filter_complex", filters.joinToString(";"),
+                    "-map", "[$tag]", "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-t", "4",
+                    out.absolutePath
+                ),
+                label = "pip-over-base"
+            )
+            // offsetX 100 / offsetY 0 pins a zoom-0.5 sprite to the top-right. Letterbox is the base.
+            val (ir, ig, ib) = sampleRgbAt(out, 0.3, 300, 8)
+            assertTrue(ib > 80 && ib > ir + 40, "top-right at t=0.3 should be the upper image, got rgb=$ir,$ig,$ib")
+            val (lr, lg, lb) = sampleRgbAt(out, 0.3, 8, 8)
+            assertTrue(lr > 80 && lr > lb + 40, "letterbox at t=0.3 should be the lower video, got rgb=$lr,$lg,$lb")
+            val (vr, vg, vb) = sampleRgbAt(out, 1.3, 300, 8)
+            assertTrue(vg > 80 && vg > vr + 40, "top-right at t=1.3 should be the upper video, got rgb=$vr,$vg,$vb")
+            val (gr, gg, gb) = sampleRgbAt(out, 3.5, 160, 90)
+            assertTrue(gr > 80 && gr > gb + 40, "gap at t=3.5 must not cover the lower video, got rgb=$gr,$gg,$gb")
+        } finally {
+            temp.deleteRecursively()
         }
     }
 }

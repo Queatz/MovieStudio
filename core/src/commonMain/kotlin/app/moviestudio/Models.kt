@@ -998,6 +998,12 @@ const val TRANSPARENT_COLOR: String = "#00000000"
  * the render height so the preview matches the export), and [backgroundColor] the fill drawn behind
  * the text — transparent by default, so lower clips / the black stage show through.
  *
+ * [position] is the vertical placement of still (non-scrolling) text, 0–100: 0 pins the block to
+ * the top of the frame, 50 (the default) centers it, 100 pins it to the bottom. See
+ * [textPositionTranslationY]. When [scrollEnabled] is set, the crawl owns vertical placement and
+ * [position] is ignored so the two don't fight. Overflowing still text also keeps its automatic
+ * read-through scroll (which already starts at the top).
+ *
  * When [scrollEnabled] is set, the text crawls upward across the clip instead of staying put.
  * [scrollStartPercent] is how far (as a percentage of the frame height) below the bottom edge the
  * top of the text begins, and [scrollEndPercent] is how far above the top edge the bottom of the
@@ -1015,6 +1021,8 @@ data class TextConfig(
     val fontItalic: Boolean = false,
     val fontSizeSp: Int = 48,
     val backgroundColor: String = TRANSPARENT_COLOR,
+    // Vertical placement of still text (0 = top, 50 = center, 100 = bottom). Ignored while scrolling.
+    val position: Int = TEXT_POSITION_CENTER,
     // Credits-style crawl. Off by default so existing text stays centered (overflowing text still
     // auto-scrolls so it can be read; an enabled crawl replaces that).
     val scrollEnabled: Boolean = false,
@@ -1029,6 +1037,29 @@ data class TextConfig(
 /** Scroll offsets are a percentage of the frame height, clamped to this range. */
 const val TEXT_SCROLL_MIN_PERCENT: Int = -50
 const val TEXT_SCROLL_MAX_PERCENT: Int = 100
+
+/** Vertical placement of still TEXT elements: 0 = top of the frame, 50 = center, 100 = bottom. */
+const val TEXT_POSITION_MIN: Int = 0
+const val TEXT_POSITION_MAX: Int = 100
+const val TEXT_POSITION_CENTER: Int = 50
+
+/**
+ * Vertical translation in pixels (+down) that moves a *centered* text block of height [textHeightPx]
+ * inside a frame of height [frameHeightPx] so [position] 0 pins it to the top, 50 keeps it centered,
+ * and 100 pins it to the bottom. Out-of-range values clamp. Returns 0 when the block overflows the
+ * frame (the automatic read-through / credits crawl owns that motion) or when the frame has no
+ * height. Shared by the live preview and the FFmpeg export so placement can't drift between them.
+ */
+fun textPositionTranslationY(
+    frameHeightPx: Float,
+    textHeightPx: Float,
+    position: Int
+): Float {
+    if (frameHeightPx <= 0f || textHeightPx <= 0f || textHeightPx > frameHeightPx) return 0f
+    val p = position.coerceIn(TEXT_POSITION_MIN, TEXT_POSITION_MAX)
+    return ((p - TEXT_POSITION_CENTER) / TEXT_POSITION_CENTER.toFloat()) *
+            ((frameHeightPx - textHeightPx) / 2f)
+}
 
 /**
  * Vertical translation in pixels (+down) that moves a *centered* text block of height [textHeightPx]
