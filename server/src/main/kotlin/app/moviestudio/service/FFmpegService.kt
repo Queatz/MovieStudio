@@ -1065,25 +1065,49 @@ object FFmpegService {
         preserveAlpha: Boolean = false
     ) {
         val text = (asset.description ?: asset.aiPrompt ?: "")
-        val lines = wrapText(text, 34, 4)
-        val draws = lines.mapIndexed { index, line ->
-            val yExpr =
-                "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * (canvasHeight / 12.0)).ff()}"
-            "drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
-                "fontcolor=white:fontsize=${canvasHeight / 14}:x=(w-text_w)/2:y=$yExpr"
-        }
         // effects reserved for future text-element styling in the pre-render path.
         @Suppress("UNUSED_PARAMETER")
         val _effects = effects
         val frames = frameCount.coerceAtLeast(1)
         val dur = frames / RENDER_FPS.toDouble() + 0.1
+        val fontSize = (canvasHeight / 14).coerceAtLeast(12)
+        val emojiPng = if (containsEmoji(text)) {
+            rasterizeTextWithEmoji(
+                text = text,
+                fontFamily = null,
+                fontUrl = null,
+                fontSizePx = fontSize,
+                colorHex = "#FFFFFF",
+                wrapWidthPx = (canvasWidth * 0.85).toInt().coerceAtLeast(16)
+            )
+        } else {
+            null
+        }
         val args = mutableListOf(
             MediaUtil.ffmpegBinary, "-y",
             "-f", "lavfi",
-            "-i", "color=c=black:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS:d=${dur.ff()}",
-            "-vf", draws.joinToString(","),
-            "-frames:v", frames.toString()
+            "-i", "color=c=black:s=${canvasWidth}x${canvasHeight}:r=$RENDER_FPS:d=${dur.ff()}"
         )
+        if (emojiPng != null) {
+            args.add("-filter_complex")
+            args.add(
+                "movie='${escapeFilterPath(emojiPng.absolutePath)}',format=rgba," +
+                    "loop=loop=-1:size=1:start=0[t];" +
+                    "[0:v][t]overlay=x='(W-w)/2':y='(H-h)/2':shortest=1:format=auto"
+            )
+        } else {
+            val lines = wrapText(text, 34, 4)
+            val draws = lines.mapIndexed { index, line ->
+                val yExpr =
+                    "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * (canvasHeight / 12.0)).ff()}"
+                "drawtext=${fontFileArg()}text='${escapeDrawtext(line)}':" +
+                    "fontcolor=white:fontsize=$fontSize:x=(w-text_w)/2:y=$yExpr"
+            }
+            args.add("-vf")
+            args.add(draws.joinToString(","))
+        }
+        args.add("-frames:v")
+        args.add(frames.toString())
         appendSegmentEncoder(args, preserveAlpha)
         args.add(outFile.absolutePath)
         runFfmpegChecked(args, label = "placeholder-segment ${asset.id}")
@@ -1341,11 +1365,37 @@ object FFmpegService {
         outputTag: String
     ) {
         val text = (asset.description ?: asset.aiPrompt ?: "")
+        val head =
+            "color=c=black@0.0:s=${canvasWidth}x${canvasHeight}:r=30:d=${duration.ff()},format=yuva420p"
+        val fontSize = (canvasHeight / 14).coerceAtLeast(12)
+        val emojiPng = if (containsEmoji(text)) {
+            rasterizeTextWithEmoji(
+                text = text,
+                fontFamily = null,
+                fontUrl = null,
+                fontSizePx = fontSize,
+                colorHex = "#FFFFFF",
+                wrapWidthPx = (canvasWidth * 0.85).toInt().coerceAtLeast(16)
+            )
+        } else {
+            null
+        }
+        if (emojiPng != null) {
+            val bg = "v_ph_bg_${asset.id}"
+            val txt = "v_ph_png_${asset.id}"
+            filters.add("$head[$bg]")
+            filters.add(
+                "movie='${escapeFilterPath(emojiPng.absolutePath)}',format=rgba," +
+                    "loop=loop=-1:size=1:start=0[$txt]"
+            )
+            filters.add(
+                "[$bg][$txt]overlay=x='(W-w)/2':y='(H-h)/2':shortest=1:format=auto,setsar=1,fps=30[$outputTag]"
+            )
+            return
+        }
         val lines = wrapText(text, 34, 4)
         val parts = mutableListOf<String>()
-        parts.add(
-            "color=c=black@0.0:s=${canvasWidth}x${canvasHeight}:r=30:d=${duration.ff()},format=yuva420p"
-        )
+        parts.add(head)
         lines.forEachIndexed { index, line ->
             val yExpr =
                 "(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * (canvasHeight / 12.0)).ff()}"
@@ -1376,44 +1426,37 @@ object FFmpegService {
     ) {
         val textCfg = effects.text ?: TextConfig()
         val rawText = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "" }
-        val fontSize =
-            (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(1, canvasHeight)
-        val wrapWidth = textSafeAreaWrapWidth(canvasWidth, fontSize)
-        val lines = wrapText(rawText, wrapWidth, 40)
-        val fontColor = ffmpegDrawtextColor(textCfg.color)
         val bgColor = ffmpegColorHex(textCfg.backgroundColor)
         val bgAlpha = ffmpegColorAlpha(textCfg.backgroundColor)
-        val lineSpacing = textLineSpacing(fontSize)
-        val xExpr = textSafeAreaXExpr(canvasWidth)
 
-        // Credits crawl when enabled; otherwise the automatic overflow read-through. Clip-local `t`.
-        val scrollExpr = textElementYScrollExpr(textCfg, duration, lines.size, lineSpacing)
-
-        val layer = mutableListOf<String>()
-        lines.forEachIndexed { index, line ->
-            val yExpr =
-                "'(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * lineSpacing).ff()}$scrollExpr'"
-            layer.add(
-                "drawtext=${fontFileArg(textCfg.fontFamily, textCfg.fontUrl)}text='${escapeDrawtext(line)}':" +
-                    "fontcolor=$fontColor:fontsize=$fontSize:x=$xExpr:y=$yExpr"
-            )
-        }
+        val afterPaint = mutableListOf<String>()
         val transition = effects.transition
         val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
         // Clip-local transition window (start=0).
-        buildTransitionFilters(layer, transition, transitionDur, 0.0, canvasWidth, canvasHeight)
+        buildTransitionFilters(afterPaint, transition, transitionDur, 0.0, canvasWidth, canvasHeight)
 
         val pad = displayDur - duration
         if (pad > 0.001) {
-            layer.add("tpad=stop_mode=clone:stop_duration=${pad.ff()}")
+            afterPaint.add("tpad=stop_mode=clone:stop_duration=${pad.ff()}")
         }
-        layer.add("format=yuva420p")
-        layer.add("setsar=1")
-        layer.add("fps=30")
+        afterPaint.add("format=yuva420p")
+        afterPaint.add("setsar=1")
+        afterPaint.add("fps=30")
 
         val head =
             "color=c=$bgColor@${bgAlpha.ff()}:s=${canvasWidth}x${canvasHeight}:r=30:d=${(displayDur + 0.05).ff()},format=yuva420p"
-        filters.add("$head,${layer.joinToString(",")}[$outputTag]")
+        appendStyledTextCanvas(
+            filters = filters,
+            outputTag = outputTag,
+            uniqueId = clip.id,
+            rawText = rawText,
+            textCfg = textCfg,
+            duration = duration,
+            canvasWidth = canvasWidth,
+            canvasHeight = canvasHeight,
+            head = head,
+            afterPaint = afterPaint
+        )
     }
 
     internal data class OverlayStepResult(val videoTag: String, val chain: Int)
@@ -1752,52 +1795,32 @@ object FFmpegService {
     ): String {
         val textCfg = effects.text ?: TextConfig()
         val rawText = (asset.description ?: asset.aiPrompt ?: "").ifBlank { "" }
-        // Font size is authored relative to a TEXT_REFERENCE_HEIGHT-tall canvas (same as the preview).
-        val fontSize = (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(1, canvasHeight)
-        // Wrap within a horizontally padded safe area (mirrors the preview's horizontal padding on
-        // TextClip) so wrapped lines never reach/overflow the frame's edges. Vertically the block is
-        // allowed to grow past the canvas (a generous line cap keeps the full text) — that overflow
-        // is exactly what the scroll below animates, mirroring the preview's unbounded TextClip.
-        val wrapWidth = textSafeAreaWrapWidth(canvasWidth, fontSize)
-        val lines = wrapText(rawText, wrapWidth, 40)
-        val fontColor = ffmpegDrawtextColor(textCfg.color)
         val bgColor = ffmpegColorHex(textCfg.backgroundColor)
         val bgAlpha = ffmpegColorAlpha(textCfg.backgroundColor)
-        // Natural, uncompressed line spacing so a tall block genuinely overflows the canvas and
-        // scrolls. Compressing it to fit (as we used to) kept every block inside the frame, so the
-        // scroll term below was always ~0 and the text never moved.
-        val lineSpacing = textLineSpacing(fontSize)
-        val xExpr = textSafeAreaXExpr(canvasWidth)
 
-        // Vertical offset added to every centered line. Credits scroll (when enabled) crawls from
-        // a percentage of the frame below the bottom edge to a percentage above the top edge.
-        // Otherwise overflowing text keeps the automatic read-through scroll. `t` is clip-local
-        // (this layer is PTS-shifted to `start` only afterwards).
-        val scrollExpr = textElementYScrollExpr(textCfg, duration, lines.size, lineSpacing)
-
-        val layer = mutableListOf<String>()
-        // Draw each wrapped line, centered, stacking symmetrically around the vertical center (plus
-        // the shared scroll offset above). The x position is clamped into the horizontally padded
-        // safe area as a hard guarantee against overflow (the wrap estimate above is only a
-        // heuristic and actual glyph metrics can vary).
-        lines.forEachIndexed { index, line ->
-            val yExpr = "'(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * lineSpacing).ff()}$scrollExpr'"
-            layer.add(
-                "drawtext=${fontFileArg(textCfg.fontFamily, textCfg.fontUrl)}text='${escapeDrawtext(line)}':" +
-                    "fontcolor=$fontColor:fontsize=$fontSize:x=$xExpr:y=$yExpr"
-            )
-        }
+        val afterPaint = mutableListOf<String>()
         // Transition-in over whatever plays beneath (clip-local 0..transitionDur).
         val transition = effects.transition
         val transitionDur = transition?.durationSeconds?.coerceIn(0.05, duration) ?: 0.0
-        val overlayExtra = buildTransitionFilters(layer, transition, transitionDur, start, canvasWidth, canvasHeight)
+        val overlayExtra = buildTransitionFilters(afterPaint, transition, transitionDur, start, canvasWidth, canvasHeight)
         // Shift the layer's PTS so it appears at the clip's timeline position.
-        layer.add("setpts=PTS+${start.ff()}/TB")
+        afterPaint.add("setpts=PTS+${start.ff()}/TB")
 
         // A canvas-sized color source is this layer's background (transparent when bgAlpha = 0).
         val head = "color=c=$bgColor@${bgAlpha.ff()}:s=${canvasWidth}x${canvasHeight}:r=30:d=${(duration + 1.0).ff()},format=yuva420p"
         val layerTag = "v_text_layer_${clip.id}"
-        filters.add("$head,${layer.joinToString(",")}[$layerTag]")
+        appendStyledTextCanvas(
+            filters = filters,
+            outputTag = layerTag,
+            uniqueId = clip.id,
+            rawText = rawText,
+            textCfg = textCfg,
+            duration = duration,
+            canvasWidth = canvasWidth,
+            canvasHeight = canvasHeight,
+            head = head,
+            afterPaint = afterPaint
+        )
 
         val nextVideoTag = "v_overlaid_text_${clip.id}"
         filters.add(
@@ -2322,6 +2345,254 @@ object FFmpegService {
             logger.warn("Failed to extract bundled font '$fontFamily': ${e.message}")
             null
         }
+    }
+
+    /**
+     * The COLR/CPAL Noto Color Emoji file bundled next to Asap/Yuyu. FFmpeg's drawtext cannot
+     * paint color-emoji fonts (CBDT strikes crash with "invalid library handle" / SIGSEGV;
+     * COLR glyphs come out blank), so this is only fed to Pango/Cairo which can — never passed
+     * as a drawtext `fontfile`.
+     */
+    private fun emojiFontFile(): String? {
+        bundledFontPaths["Noto Color Emoji"]?.let { return it }
+        return try {
+            val stream = FFmpegService::class.java.getResourceAsStream("/fonts/noto_color_emoji.ttf")
+                ?: return null
+            val tempFile = File.createTempFile("moviestudio_font_NotoColorEmoji_", ".ttf")
+            tempFile.deleteOnExit()
+            stream.use { input -> tempFile.outputStream().use { output -> input.copyTo(output) } }
+            val path = tempFile.absolutePath
+            bundledFontPaths["Noto Color Emoji"] = path
+            path
+        } catch (e: Exception) {
+            logger.warn("Failed to extract bundled emoji font: ${e.message}")
+            null
+        }
+    }
+
+    private val magickBinary: String? by lazy {
+        val configured = System.getenv("MAGICK_PATH")
+        if (!configured.isNullOrBlank()) return@lazy configured
+        for (name in listOf("magick", "convert")) {
+            try {
+                val proc = ProcessBuilder(name, "-version").redirectErrorStream(true).start()
+                val finished = proc.waitFor(8, java.util.concurrent.TimeUnit.SECONDS)
+                if (!finished) proc.destroyForcibly()
+                else if (proc.exitValue() == 0) return@lazy name
+            } catch (_: Exception) {
+            }
+        }
+        null
+    }
+
+    /**
+     * True when [text] contains emoji / emoji-presentation characters. Those cannot be drawn by
+     * FFmpeg `drawtext` (missing glyphs or a crashing color-emoji font), so the render path
+     * rasterizes them with Pango instead.
+     */
+    internal fun containsEmoji(text: String): Boolean =
+        text.codePoints().anyMatch { isEmojiCodePoint(it) }
+
+    internal fun isEmojiCodePoint(cp: Int): Boolean = when (cp) {
+        0x200D, 0xFE0E, 0xFE0F, 0x20E3 -> true
+        in 0x1F1E6..0x1F1FF -> true
+        in 0x1F000..0x1FAFF -> true
+        in 0x2600..0x27BF -> true
+        in 0x2300..0x23FF -> true
+        in 0x2B50..0x2B55 -> true
+        in 0x25AA..0x25FE -> true
+        else -> false
+    }
+
+    /** Escapes [text] for a Pango markup payload (not an XML attribute). */
+    internal fun escapePango(text: String): String = text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+
+    /**
+     * Rasterizes [text] to a transparent PNG using ImageMagick's Pango delegate, with the
+     * clip's typeface plus the bundled Noto Color Emoji as a fontconfig fallback. Returns null
+     * when magick/pango isn't available so the caller can fall back to drawtext.
+     */
+    internal fun rasterizeTextWithEmoji(
+        text: String,
+        fontFamily: String?,
+        fontUrl: String?,
+        fontSizePx: Int,
+        colorHex: String,
+        wrapWidthPx: Int
+    ): File? {
+        val magick = magickBinary ?: return null
+        val emojiFont = emojiFontFile() ?: return null
+        val textFont = resolveFontFilePath(fontFamily, fontUrl)
+        val work = Files.createTempDirectory("ms_emoji_pango_").toFile()
+        return try {
+            val fontsDir = File(work, "fonts").apply { mkdirs() }
+            File(emojiFont).copyTo(File(fontsDir, "noto_color_emoji.ttf"), overwrite = true)
+            if (textFont != null) {
+                val src = File(textFont)
+                src.copyTo(File(fontsDir, src.name), overwrite = true)
+            }
+            val conf = File(work, "fonts.conf")
+            conf.writeText(
+                """
+                <?xml version="1.0"?>
+                <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+                <fontconfig>
+                  <dir>${fontsDir.absolutePath}</dir>
+                  <cachedir>${File(work, "cache").absolutePath}</cachedir>
+                  <match target="pattern">
+                    <edit name="family" mode="append" binding="weak">
+                      <string>Noto Color Emoji</string>
+                    </edit>
+                  </match>
+                </fontconfig>
+                """.trimIndent()
+            )
+            val family = when {
+                !fontFamily.isNullOrBlank() && !fontFamily.equals("Default", ignoreCase = true) ->
+                    fontFamily.replace("'", "")
+                else -> "DejaVu Sans"
+            }
+            val rgb = ffmpegColorHex(colorHex).removePrefix("0x")
+            val markup =
+                "<span font_desc='$family ${fontSizePx.coerceAtLeast(1)}px' fgcolor='#$rgb'>" +
+                    "${escapePango(text)}</span>"
+            val out = File.createTempFile("moviestudio_text_emoji_", ".png")
+            out.deleteOnExit()
+            val pb = ProcessBuilder(
+                magick,
+                "-background", "none",
+                "-size", "${wrapWidthPx.coerceAtLeast(16)}x",
+                "-define", "pango:align=center",
+                "pango:$markup",
+                out.absolutePath
+            ).redirectErrorStream(true)
+            pb.environment()["FONTCONFIG_FILE"] = conf.absolutePath
+            val proc = pb.start()
+            val log = proc.inputStream.bufferedReader().readText()
+            val code = proc.waitFor()
+            if (code != 0 || !out.exists() || out.length() == 0L) {
+                logger.warn("Pango emoji rasterize failed (exit $code): ${log.take(400)}")
+                out.delete()
+                null
+            } else {
+                out
+            }
+        } catch (e: Exception) {
+            logger.warn("Pango emoji rasterize failed: ${e.message}")
+            null
+        } finally {
+            work.deleteRecursively()
+        }
+    }
+
+    /**
+     * Overlay `y=` for a Pango-rasterized text PNG. Uses FFmpeg overlay's `H` (frame) / `h`
+     * (sprite) so credits crawl, overflow read-through, and still position match the drawtext
+     * expressions in [textElementYScrollExpr].
+     */
+    internal fun textElementOverlayYExpr(
+        config: TextConfig,
+        duration: Double,
+        lineSpacing: Double
+    ): String {
+        if (config.scrollEnabled) {
+            if (duration <= 0.0) return "(H-h)/2"
+            val progress = "min(t/${duration.ff()},1)"
+            val startFrac = (config.scrollStartPercent
+                .coerceIn(TEXT_SCROLL_MIN_PERCENT, TEXT_SCROLL_MAX_PERCENT) / 100.0).ff()
+            val endFrac = (config.scrollEndPercent
+                .coerceIn(TEXT_SCROLL_MIN_PERCENT, TEXT_SCROLL_MAX_PERCENT) / 100.0).ff()
+            val startY = "(H+H*$startFrac)"
+            val endY = "(-h-H*$endFrac)"
+            return "($startY+($endY-$startY)*$progress)"
+        }
+        val overflowExpr = if (duration > 0.0) {
+            val progress = "min(t/${duration.ff()},1)"
+            val overflow = "max(0,h-H)"
+            val padPerSide = "2*${lineSpacing.ff()}*gt(h,H)"
+            "+($overflow*0.5+$padPerSide-$progress*($overflow+2*$padPerSide))"
+        } else {
+            ""
+        }
+        val pos = config.position.coerceIn(TEXT_POSITION_MIN, TEXT_POSITION_MAX)
+        val posExpr = if (pos == TEXT_POSITION_CENTER) {
+            ""
+        } else {
+            val bias = ((pos - TEXT_POSITION_CENTER) / TEXT_POSITION_CENTER.toDouble()).ff()
+            "+($bias*((H-h)/2)*lte(h,H))"
+        }
+        return "(H-h)/2$overflowExpr$posExpr"
+    }
+
+    /**
+     * Paints [rawText] onto the color canvas [head] and appends [afterPaint]. Emoji is rasterized
+     * via Pango and overlaid; everything else stays on drawtext so non-emoji exports are unchanged.
+     */
+    private fun appendStyledTextCanvas(
+        filters: MutableList<String>,
+        outputTag: String,
+        uniqueId: String,
+        rawText: String,
+        textCfg: TextConfig,
+        duration: Double,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        head: String,
+        afterPaint: List<String>
+    ) {
+        val fontSize =
+            (textCfg.fontSizeSp * canvasHeight / TEXT_REFERENCE_HEIGHT).toInt().coerceIn(1, canvasHeight)
+        val wrapWidth = textSafeAreaWrapWidth(canvasWidth, fontSize)
+        val lineSpacing = textLineSpacing(fontSize)
+        val xExpr = textSafeAreaXExpr(canvasWidth)
+        val fontColor = ffmpegDrawtextColor(textCfg.color)
+        val emojiPng = if (containsEmoji(rawText)) {
+            rasterizeTextWithEmoji(
+                text = rawText,
+                fontFamily = textCfg.fontFamily,
+                fontUrl = textCfg.fontUrl,
+                fontSizePx = fontSize,
+                colorHex = textCfg.color,
+                wrapWidthPx = (canvasWidth - 2 * textSafeAreaPadding(canvasWidth)).coerceAtLeast(16)
+            )
+        } else {
+            null
+        }
+        if (emojiPng != null) {
+            val bg = "v_text_bg_$uniqueId"
+            val txt = "v_text_png_$uniqueId"
+            val padding = textSafeAreaPadding(canvasWidth)
+            val x = "max($padding,min(W-w-$padding,(W-w)/2))"
+            val y = textElementOverlayYExpr(textCfg, duration, lineSpacing)
+            filters.add("$head[$bg]")
+            filters.add(
+                "movie='${escapeFilterPath(emojiPng.absolutePath)}',format=rgba," +
+                    "loop=loop=-1:size=1:start=0[$txt]"
+            )
+            val overlay = "[$bg][$txt]overlay=x='$x':y='$y':shortest=1:format=auto"
+            val rest = afterPaint.joinToString(",")
+            filters.add(if (rest.isEmpty()) "$overlay[$outputTag]" else "$overlay,$rest[$outputTag]")
+            return
+        }
+        val lines = wrapText(rawText, wrapWidth, 40)
+        val scrollExpr = textElementYScrollExpr(textCfg, duration, lines.size, lineSpacing)
+        val paint = mutableListOf<String>()
+        lines.forEachIndexed { index, line ->
+            val yExpr =
+                "'(h-text_h)/2+${((index - (lines.size - 1) / 2.0) * lineSpacing).ff()}$scrollExpr'"
+            paint.add(
+                "drawtext=${fontFileArg(textCfg.fontFamily, textCfg.fontUrl)}text='${escapeDrawtext(line)}':" +
+                    "fontcolor=$fontColor:fontsize=$fontSize:x=$xExpr:y=$yExpr"
+            )
+        }
+        val chain = paint + afterPaint
+        filters.add(
+            if (chain.isEmpty()) "$head[$outputTag]"
+            else "$head,${chain.joinToString(",")}[$outputTag]"
+        )
     }
 
     /**

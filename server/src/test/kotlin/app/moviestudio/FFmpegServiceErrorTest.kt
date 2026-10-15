@@ -1527,12 +1527,91 @@ class FFmpegServiceErrorTest {
         // The render uses the app-bundled Asap/Yuyu fonts (matching the preview) by extracting them
         // from the server's classpath resources for FFmpeg drawtext. If they were not packaged with
         // the server the render would silently fall back to a system font — the bug this guards.
-        for (font in listOf("/fonts/asap.ttf", "/fonts/yuyu.ttf")) {
+        for (font in listOf("/fonts/asap.ttf", "/fonts/yuyu.ttf", "/fonts/noto_color_emoji.ttf")) {
             val stream = FFmpegService::class.java.getResourceAsStream(font)
             assertNotNull(stream, "bundled font resource must be on the server classpath: $font")
             stream.use {
                 assertTrue(it.readBytes().isNotEmpty(), "bundled font must not be empty: $font")
             }
+        }
+    }
+
+    @Test
+    fun containsEmojiDetectsSupplementalPlanesAndIgnoresAscii() {
+        assertTrue(FFmpegService.containsEmoji("Hello 😀"))
+        assertTrue(FFmpegService.containsEmoji("🍕 party"))
+        assertTrue(FFmpegService.containsEmoji("🇺🇸"))
+        assertFalse(FFmpegService.containsEmoji("Hello world"))
+        assertFalse(FFmpegService.containsEmoji("100% [clip]"))
+    }
+
+    @Test
+    fun escapePangoEscapesMarkupMetacharacters() {
+        assertEquals("a &amp; b &lt;c&gt;", FFmpegService.escapePango("a & b <c>"))
+    }
+
+    @Test
+    fun textElementOverlayYExprCentersAndCrawls() {
+        val still = FFmpegService.textElementOverlayYExpr(TextConfig(), duration = 4.0, lineSpacing = 40.0)
+        assertTrue(still.startsWith("(H-h)/2"), still)
+        assertTrue(still.contains("max(0,h-H)"), "overflow read-through, got: $still")
+
+        val crawl = FFmpegService.textElementOverlayYExpr(
+            TextConfig(scrollEnabled = true, scrollStartPercent = 25, scrollEndPercent = 40),
+            duration = 4.0,
+            lineSpacing = 40.0
+        )
+        assertTrue(crawl.contains("H+H*0.25") || crawl.contains("H+H*0.25"), crawl)
+        assertTrue(crawl.contains("-h-H*0.4") || crawl.contains("-h-H*0.4"), crawl)
+        assertTrue(crawl.contains("min(t/4,1)"), crawl)
+    }
+
+    @Test
+    fun pangoRasterizeThenOverlayKeepsColorEmoji() {
+        // drawtext cannot paint COLR/CBDT emoji fonts (blank or SIGSEGV). The export rasterizes
+        // via Pango with the bundled Noto Color Emoji font, then overlays the PNG.
+        val png = requireNotNull(
+            FFmpegService.rasterizeTextWithEmoji(
+                text = "Hi 😀",
+                fontFamily = "Asap",
+                fontUrl = null,
+                fontSizePx = 64,
+                colorHex = "#FFFFFF",
+                wrapWidthPx = 400
+            )
+        ) { "ImageMagick pango must rasterize color emoji" }
+        assertTrue(png.exists() && png.length() > 0L)
+
+        val temp = java.nio.file.Files.createTempDirectory("ms_emoji_overlay_").toFile()
+        try {
+            val out = File(temp, "out.mp4")
+            FFmpegService.runFfmpegChecked(
+                listOf(
+                    MediaUtil.ffmpegBinary, "-y",
+                    "-f", "lavfi", "-i", "color=c=0x202020:s=640x360:r=30:d=0.4",
+                    "-filter_complex",
+                    "movie='${FFmpegService.escapeFilterPath(png.absolutePath)}',format=rgba," +
+                        "loop=loop=-1:size=1:start=0[t];" +
+                        "[0:v][t]overlay=x='(W-w)/2':y='(H-h)/2':shortest=1:format=auto",
+                    "-frames:v", "4",
+                    "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    out.absolutePath
+                ),
+                label = "emoji-overlay"
+            )
+            // The grinning-face glyph is yellow; a tofu box or missing glyph would stay near gray.
+            var colorful = false
+            for (x in listOf(280, 300, 320, 340, 360)) {
+                val (r, g, b) = sampleRgbAt(out, 0.1, x, 180)
+                if (r > 140 && g > 100 && b < 90) {
+                    colorful = true
+                    break
+                }
+            }
+            assertTrue(colorful, "expected a yellow emoji glyph near the center, not a missing-glyph box")
+        } finally {
+            temp.deleteRecursively()
         }
     }
 
