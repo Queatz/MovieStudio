@@ -31,6 +31,10 @@ actual fun requestVideoFullscreen() {
     // No-op on desktop: the preview video element is a browser feature.
 }
 
+actual fun requestImageFullscreen(url: String) {
+    // No-op on desktop: fullscreen image viewing is a browser feature.
+}
+
 actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double, zoom: Double) {
     // No-op on desktop: the preview video element is a browser feature.
 }

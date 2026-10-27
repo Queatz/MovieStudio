@@ -504,6 +504,11 @@ private fun AssetMediaPreview(asset: Asset) {
                     .clip(RoundedCornerShape(10.dp)),
                 contentScale = ContentScale.Fit
             )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                GhostPillButton("⛶ Fullscreen", compact = true) {
+                    app.moviestudio.requestImageFullscreen(asset.ossUrl)
+                }
+            }
             Spacer(Modifier.height(10.dp))
         }
         AssetType.VIDEO -> {

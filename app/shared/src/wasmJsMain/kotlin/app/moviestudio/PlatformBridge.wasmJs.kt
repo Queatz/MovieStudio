@@ -354,29 +354,86 @@ actual fun printDocument(html: String) {
 () => {
     const video = document.getElementById('compose-video-preview');
     if (!video) return;
+    const req = video.requestFullscreen || video.webkitRequestFullscreen || video.webkitEnterFullscreen;
+    if (!req) return;
     // Native controls make sense in fullscreen (Compose transport is hidden there); pointer
     // events must be enabled so the user can actually use them.
     video.controls = true;
     video.style.pointerEvents = 'auto';
-    const req = video.requestFullscreen || video.webkitRequestFullscreen || video.webkitEnterFullscreen;
-    if (req) { try { req.call(video); } catch (e) {} }
+    // The normal editor framing sizes the video with a cover-fit and object-fit:fill. In
+    // fullscreen, use the viewport as the frame and let object-fit preserve the media ratio.
+    video.style.left = '0px';
+    video.style.top = '0px';
+    video.style.width = '100%';
+    video.style.height = '100%';
+    video.style.objectFit = 'contain';
+    video.style.transform = 'none';
+    const restore = () => {
+        video.controls = false;
+        video.style.pointerEvents = 'none';
+        if (window.__msLayoutPreviewVideo) window.__msLayoutPreviewVideo();
+    };
     // Restore the decorative-overlay behavior once fullscreen is dismissed.
     const onChange = () => {
-        if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-            video.controls = false;
-            video.style.pointerEvents = 'none';
+        if (document.fullscreenElement !== video && document.webkitFullscreenElement !== video) {
+            restore();
             document.removeEventListener('fullscreenchange', onChange);
             document.removeEventListener('webkitfullscreenchange', onChange);
         }
     };
     document.addEventListener('fullscreenchange', onChange);
     document.addEventListener('webkitfullscreenchange', onChange);
+    try {
+        const result = req.call(video);
+        if (result && result.catch) {
+            result.catch(() => {
+                restore();
+                document.removeEventListener('fullscreenchange', onChange);
+                document.removeEventListener('webkitfullscreenchange', onChange);
+            });
+        }
+    } catch (e) {
+        restore();
+        document.removeEventListener('fullscreenchange', onChange);
+        document.removeEventListener('webkitfullscreenchange', onChange);
+    }
 }
 """)
 private external fun jsRequestVideoFullscreen()
 
 actual fun requestVideoFullscreen() {
     jsRequestVideoFullscreen()
+}
+
+@JsFun("""
+(url) => {
+    const image = document.createElement('img');
+    image.src = url;
+    image.alt = '';
+    image.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;object-fit:contain;background:#000;z-index:2147483647;';
+    document.body.appendChild(image);
+    const req = image.requestFullscreen || image.webkitRequestFullscreen;
+    const cleanup = () => {
+        document.removeEventListener('fullscreenchange', onChange);
+        document.removeEventListener('webkitfullscreenchange', onChange);
+        if (image.parentNode) image.parentNode.removeChild(image);
+    };
+    const onChange = () => {
+        if (document.fullscreenElement !== image && document.webkitFullscreenElement !== image) cleanup();
+    };
+    if (!req) { cleanup(); return; }
+    document.addEventListener('fullscreenchange', onChange);
+    document.addEventListener('webkitfullscreenchange', onChange);
+    try {
+        const result = req.call(image);
+        if (result && result.catch) result.catch(cleanup);
+    } catch (e) { cleanup(); }
+}
+""")
+private external fun jsRequestImageFullscreen(url: String)
+
+actual fun requestImageFullscreen(url: String) {
+    jsRequestImageFullscreen(url)
 }
 
 // ------------------------------------------------------------------ preview object-position
@@ -389,6 +446,15 @@ actual fun requestVideoFullscreen() {
         const v = document.getElementById('compose-video-preview');
         const wrap = document.getElementById('compose-video-preview-wrap');
         if (!v) { return; }
+        if (document.fullscreenElement === v || document.webkitFullscreenElement === v) {
+            v.style.left = '0px';
+            v.style.top = '0px';
+            v.style.width = '100%';
+            v.style.height = '100%';
+            v.style.objectFit = 'contain';
+            v.style.transform = 'none';
+            return;
+        }
         const pose = window.__msFramingPose || { x: 50, y: 50, zoom: 1 };
         let px = pose.x;
         let py = pose.y;

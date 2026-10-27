@@ -930,7 +930,10 @@ fun VideoPreview(
             )
         }
         Spacer(Modifier.height(6.dp))
-        GhostPillButton(if (playing) "⏸ Pause" else "▶ Play", compact = true) { playing = !playing }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            GhostPillButton(if (playing) "⏸ Pause" else "▶ Play", compact = true) { playing = !playing }
+            GhostPillButton("⛶ Fullscreen", compact = true) { app.moviestudio.requestVideoFullscreen() }
+        }
     }
 }
 

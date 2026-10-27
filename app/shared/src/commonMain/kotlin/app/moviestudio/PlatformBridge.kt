@@ -157,6 +157,9 @@ expect fun printDocument(html: String)
  */
 expect fun requestVideoFullscreen()
 
+/** Opens [url] in a native fullscreen image viewer on web targets; no-op where unavailable. */
+expect fun requestImageFullscreen(url: String)
+
 /**
  * Lays out the Default preview `<video>` as a [framingSprite]: cover-fit × zoom, panned,
  * clipped by the overflow-hidden wrap. [xPercent]/[yPercent] are 0-100 where 50/50 is
