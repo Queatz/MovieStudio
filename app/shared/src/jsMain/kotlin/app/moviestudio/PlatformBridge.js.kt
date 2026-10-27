@@ -351,93 +351,29 @@ actual fun printDocument(html: String) {
     jsPrintDocument(html)
 }
 
-// ------------------------------------------------------------------------------------ fullscreen
+// ---------------------------------------------------------------------- dialog preview framing
 
-private fun jsRequestVideoFullscreen(): Unit = js("""
+private fun jsSetPreviewLetterbox(enabled: Boolean): Unit = js("""
+    (function(enabled) {
+        window.__msPreviewLetterbox = enabled;
+        if (window.__msLayoutPreviewVideo) { window.__msLayoutPreviewVideo(); }
+    })(enabled)
+""")
+
+actual fun setPreviewLetterbox(enabled: Boolean) {
+    jsSetPreviewLetterbox(enabled)
+}
+
+private fun jsPreviewVideoAspectRatio(): Float = js("""
     (function() {
         var video = document.getElementById('compose-video-preview');
-        if (!video) return;
-        var req = video.requestFullscreen || video.webkitRequestFullscreen || video.webkitEnterFullscreen;
-        if (!req) return;
-        // Native controls make sense in fullscreen (Compose transport is hidden there); pointer
-        // events must be enabled so the user can actually use them.
-        video.controls = true;
-        video.style.pointerEvents = 'auto';
-        // The normal editor framing sizes the video with a cover-fit and object-fit:fill. In
-        // fullscreen, use the viewport as the frame and let object-fit preserve the media ratio.
-        video.style.left = '0px';
-        video.style.top = '0px';
-        video.style.width = '100%';
-        video.style.height = '100%';
-        video.style.objectFit = 'contain';
-        video.style.transform = 'none';
-        var restore = function() {
-            video.controls = false;
-            video.style.pointerEvents = 'none';
-            if (window.__msLayoutPreviewVideo) { window.__msLayoutPreviewVideo(); }
-        };
-        // Restore the decorative-overlay behavior once fullscreen is dismissed.
-        var onChange = function() {
-            if (document.fullscreenElement !== video && document.webkitFullscreenElement !== video) {
-                restore();
-                document.removeEventListener('fullscreenchange', onChange);
-                document.removeEventListener('webkitfullscreenchange', onChange);
-            }
-        };
-        document.addEventListener('fullscreenchange', onChange);
-        document.addEventListener('webkitfullscreenchange', onChange);
-        try {
-            var result = req.call(video);
-            if (result && result.catch) {
-                result.catch(function() {
-                    restore();
-                    document.removeEventListener('fullscreenchange', onChange);
-                    document.removeEventListener('webkitfullscreenchange', onChange);
-                });
-            }
-        } catch (e) {
-            restore();
-            document.removeEventListener('fullscreenchange', onChange);
-            document.removeEventListener('webkitfullscreenchange', onChange);
-        }
+        return video && video.videoWidth && video.videoHeight
+            ? video.videoWidth / video.videoHeight
+            : 16 / 9;
     })()
 """)
 
-actual fun requestVideoFullscreen() {
-    jsRequestVideoFullscreen()
-}
-
-private fun jsRequestImageFullscreen(url: String): Unit = js("""
-    (function(url) {
-        var image = document.createElement('img');
-        image.src = url;
-        image.alt = '';
-        image.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;object-fit:contain;background:#000;z-index:2147483647;';
-        document.body.appendChild(image);
-        var req = image.requestFullscreen || image.webkitRequestFullscreen;
-        var cleanup = function() {
-            document.removeEventListener('fullscreenchange', onChange);
-            document.removeEventListener('webkitfullscreenchange', onChange);
-            if (image.parentNode) { image.parentNode.removeChild(image); }
-        };
-        var onChange = function() {
-            if (document.fullscreenElement !== image && document.webkitFullscreenElement !== image) {
-                cleanup();
-            }
-        };
-        if (!req) { cleanup(); return; }
-        document.addEventListener('fullscreenchange', onChange);
-        document.addEventListener('webkitfullscreenchange', onChange);
-        try {
-            var result = req.call(image);
-            if (result && result.catch) { result.catch(cleanup); }
-        } catch (e) { cleanup(); }
-    })(url)
-""")
-
-actual fun requestImageFullscreen(url: String) {
-    jsRequestImageFullscreen(url)
-}
+actual fun previewVideoAspectRatio(): Float = jsPreviewVideoAspectRatio()
 
 // ------------------------------------------------------------------ preview object-position
 
@@ -449,7 +385,7 @@ private fun jsSetPreviewObjectPosition(x: Double, y: Double, zoom: Double): Unit
             var v = document.getElementById('compose-video-preview');
             var wrap = document.getElementById('compose-video-preview-wrap');
             if (!v) { return; }
-            if (document.fullscreenElement === v || document.webkitFullscreenElement === v) {
+            if (window.__msPreviewLetterbox) {
                 v.style.left = '0px';
                 v.style.top = '0px';
                 v.style.width = '100%';

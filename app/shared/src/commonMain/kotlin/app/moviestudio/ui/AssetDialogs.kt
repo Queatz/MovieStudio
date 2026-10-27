@@ -493,6 +493,7 @@ private fun downloadFileNameFor(asset: Asset): String {
 @Composable
 private fun AssetMediaPreview(asset: Asset) {
     if (asset.isDescriptionOnly || asset.ossUrl.isBlank()) return
+    var imageFullscreen by remember(asset.id, asset.ossUrl) { mutableStateOf(false) }
     when (asset.type) {
         AssetType.IMAGE -> {
             AsyncImage(
@@ -506,7 +507,17 @@ private fun AssetMediaPreview(asset: Asset) {
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 GhostPillButton("⛶ Fullscreen", compact = true) {
-                    app.moviestudio.requestImageFullscreen(asset.ossUrl)
+                    imageFullscreen = true
+                }
+            }
+            if (imageFullscreen) {
+                MediaFullscreenOverlay(onDismiss = { imageFullscreen = false }) { overlayModifier ->
+                    AsyncImage(
+                        model = asset.ossUrl,
+                        contentDescription = asset.description ?: asset.aiPrompt,
+                        modifier = overlayModifier,
+                        contentScale = ContentScale.Fit
+                    )
                 }
             }
             Spacer(Modifier.height(10.dp))

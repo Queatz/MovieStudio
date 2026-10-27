@@ -5,10 +5,12 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
@@ -72,11 +74,14 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import app.moviestudio.AiChatMessage
 import app.moviestudio.NetworkService
 import app.moviestudio.UploadState
 import app.moviestudio.isFromIme
 import app.moviestudio.VideoPlayer
+import app.moviestudio.previewVideoAspectRatio
+import app.moviestudio.setPreviewLetterbox
 import app.moviestudio.startRealtimeSpeechInput
 import app.moviestudio.stopRealtimeSpeechInput
 import coil3.compose.AsyncImage
@@ -892,50 +897,163 @@ fun ImageThumbnail(
 fun VideoPreview(
     url: String,
     modifier: Modifier = Modifier,
-    height: Dp = 180.dp
+    height: Dp = 180.dp,
+    sourceAspectRatio: Float? = null
 ) {
     var playing by remember(url) { mutableStateOf(false) }
     var playhead by remember(url) { mutableStateOf(0f) }
+    var aspectRatio by remember(url, sourceAspectRatio) {
+        mutableStateOf(sourceAspectRatio?.validVideoAspectRatio() ?: 16f / 9f)
+    }
+    var fullscreen by remember(url) { mutableStateOf(false) }
     // Claim the shared <video> overlay for as long as this preview is on screen, so PreviewPanel
     // keeps it visible even though this preview lives inside a dialog (see [VideoPreviewTracker]).
     DisposableEffect(Unit) {
         VideoPreviewTracker.onPreviewMounted()
-        onDispose { VideoPreviewTracker.onPreviewUnmounted() }
+        setPreviewLetterbox(true)
+        onDispose {
+            VideoPreviewTracker.onPreviewUnmounted()
+            setPreviewLetterbox(VideoPreviewTracker.anyActive)
+        }
     }
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Bounded, aspect-correct frame (16:9), centered within the available width.
-        Box(
-            modifier = Modifier
-                .height(height)
-                .aspectRatio(16f / 9f)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color.Black),
-            contentAlignment = Alignment.Center
-        ) {
+        AspectRatioPreviewFrame(aspectRatio, height, Modifier.fillMaxWidth()) { frameModifier ->
+            if (!fullscreen) {
+                VideoPlayer(
+                    url = url,
+                    isPlaying = playing,
+                    playhead = playhead,
+                    onTimeUpdate = { playhead = it },
+                    modifier = frameModifier,
+                    onReady = {
+                        aspectRatio = sourceAspectRatio?.validVideoAspectRatio()
+                            ?: previewVideoAspectRatio().validVideoAspectRatio()
+                    },
+                    // Reset to the start on natural end so the button reads "Play" again and the next
+                    // tap restarts the clip instead of trying to resume from (and re-triggering) the end.
+                    onEnded = {
+                        playing = false
+                        playhead = 0f
+                    }
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            GhostPillButton(if (playing) "⏸ Pause" else "▶ Play", compact = true) { playing = !playing }
+            GhostPillButton("⛶ Fullscreen", compact = true) { fullscreen = true }
+        }
+    }
+    if (fullscreen) {
+        MediaFullscreenOverlay(
+            onDismiss = { fullscreen = false },
+            isPlaying = playing,
+            onTogglePlayback = { playing = !playing }
+        ) { overlayModifier ->
             VideoPlayer(
                 url = url,
                 isPlaying = playing,
                 playhead = playhead,
                 onTimeUpdate = { playhead = it },
-                modifier = Modifier.fillMaxSize(),
-                // Reset to the start on natural end so the button reads "Play" again and the next
-                // tap restarts the clip instead of trying to resume from (and re-triggering) the end.
+                modifier = overlayModifier.padding(top = 64.dp),
+                onReady = {
+                    aspectRatio = sourceAspectRatio?.validVideoAspectRatio()
+                        ?: previewVideoAspectRatio().validVideoAspectRatio()
+                },
                 onEnded = {
                     playing = false
                     playhead = 0f
                 }
             )
         }
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            GhostPillButton(if (playing) "⏸ Pause" else "▶ Play", compact = true) { playing = !playing }
-            GhostPillButton("⛶ Fullscreen", compact = true) { app.moviestudio.requestVideoFullscreen() }
+    }
+}
+
+@Composable
+internal fun AspectRatioPreviewFrame(
+    aspectRatio: Float,
+    maxHeight: Dp,
+    modifier: Modifier = Modifier,
+    content: @Composable (Modifier) -> Unit
+) {
+    val ratio = aspectRatio.validVideoAspectRatio()
+    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+        val frameWidth = minOf(maxWidth, maxHeight * ratio)
+        val frameHeight = frameWidth / ratio
+        Box(
+            Modifier
+                .width(frameWidth)
+                .height(frameHeight)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color.Black)
+        ) {
+            content(Modifier.fillMaxSize())
         }
     }
 }
+
+@Composable
+fun MediaFullscreenOverlay(
+    onDismiss: () -> Unit,
+    isPlaying: Boolean? = null,
+    onTogglePlayback: (() -> Unit)? = null,
+    content: @Composable (Modifier) -> Unit
+) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .focusRequester(focusRequester)
+                .focusable()
+                .onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown && event.key == Key.Spacebar && onTogglePlayback != null) {
+                        onTogglePlayback()
+                        true
+                    } else {
+                        false
+                    }
+                }
+        ) {
+            content(Modifier.fillMaxSize())
+            Row(
+                modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (isPlaying != null && onTogglePlayback != null) {
+                    RoundIconButton(
+                        glyph = if (isPlaying) "⏸" else "▶",
+                        contentDescription = if (isPlaying) "Pause preview" else "Play preview",
+                        size = 42.dp,
+                        background = Color(0x99000000),
+                        tint = Color.White,
+                        onClick = onTogglePlayback
+                    )
+                }
+                RoundIconButton(
+                    glyph = "✕",
+                    contentDescription = "Exit fullscreen preview",
+                    size = 42.dp,
+                    background = Color(0x99000000),
+                    tint = Color.White,
+                    onClick = onDismiss
+                )
+            }
+        }
+    }
+}
+
+private fun Float.validVideoAspectRatio(): Float = takeIf { it > 0f && it.isFinite() } ?: (16f / 9f)
 
 /**
  * Live upload progress bar shown while a device upload is in flight (file pick, reference image,

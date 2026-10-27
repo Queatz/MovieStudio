@@ -150,15 +150,11 @@ expect fun downloadTextFile(content: String, fileName: String)
  */
 expect fun printDocument(html: String)
 
-/**
- * Requests native fullscreen playback for the movie preview's video element (the same shared
- * `<video>` the [app.moviestudio.VideoPlayer] drives). Used to watch a finished render
- * distraction-free. No-op on platforms without a fullscreen-capable video element.
- */
-expect fun requestVideoFullscreen()
+/** Makes the shared web `<video>` letterbox instead of using editor cover framing for dialog previews. */
+expect fun setPreviewLetterbox(enabled: Boolean)
 
-/** Opens [url] in a native fullscreen image viewer on web targets; no-op where unavailable. */
-expect fun requestImageFullscreen(url: String)
+/** Returns the loaded shared web video element's natural aspect ratio, or 16:9 before metadata is available. */
+expect fun previewVideoAspectRatio(): Float
 
 /**
  * Lays out the Default preview `<video>` as a [framingSprite]: cover-fit × zoom, panned,

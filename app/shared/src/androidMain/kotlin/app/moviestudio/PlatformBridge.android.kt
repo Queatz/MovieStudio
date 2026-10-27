@@ -27,13 +27,11 @@ actual fun printDocument(html: String) {
     // No-op on Android.
 }
 
-actual fun requestVideoFullscreen() {
-    // No-op on Android: the preview video element is a browser feature.
+actual fun setPreviewLetterbox(enabled: Boolean) {
+    // No-op on Android: the shared preview video element is a browser feature.
 }
 
-actual fun requestImageFullscreen(url: String) {
-    // No-op on Android: fullscreen image viewing is a browser feature.
-}
+actual fun previewVideoAspectRatio(): Float = 16f / 9f
 
 actual fun setPreviewObjectPosition(xPercent: Double, yPercent: Double, zoom: Double) {
     // No-op on Android: the preview video element is a browser feature.

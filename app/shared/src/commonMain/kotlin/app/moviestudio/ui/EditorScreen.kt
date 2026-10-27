@@ -51,8 +51,9 @@ import app.moviestudio.JobType
 import app.moviestudio.RenderRecord
 import app.moviestudio.SUPPORTED_ASPECT_RATIOS
 import app.moviestudio.VideoPlayer
+import app.moviestudio.aspectRatioToFloat
 import app.moviestudio.displayName
-import app.moviestudio.requestVideoFullscreen
+import app.moviestudio.setPreviewLetterbox
 import app.moviestudio.triggerDownload
 import app.moviestudio.updateAudioPlayback
 
@@ -407,7 +408,12 @@ private fun RenderProgressDialog(viewModel: AppViewModel) {
             if (url != null) {
                 val fileName = downloadFileNameForRender(viewModel.currentMovie?.title ?: "movie", url)
                 Spacer(Modifier.height(12.dp))
-                RenderReplayPlayer(url, fileName, videoHeight = 230.dp)
+                RenderReplayPlayer(
+                    url,
+                    fileName,
+                    videoHeight = 230.dp,
+                    aspectRatio = aspectRatioToFloat(viewModel.currentMovie?.aspectRatio ?: "16:9")
+                )
                 Spacer(Modifier.height(12.dp))
                 DialogActions {
                     PillButton("Done") { viewModel.clearRenderJob() }
@@ -444,40 +450,41 @@ private fun downloadFileNameForRender(movieTitle: String, url: String): String {
  * the movie never tries to start before its first frame is ready.
  */
 @Composable
-private fun RenderReplayPlayer(url: String, fileName: String, videoHeight: Dp) {
+private fun RenderReplayPlayer(url: String, fileName: String, videoHeight: Dp, aspectRatio: Float) {
     // Gate playback on load: start paused and only begin once the movie is ready, so we never
     // attempt to play an empty/unloaded <video> element (which shows a black flash / stutter).
     var ready by remember(url) { mutableStateOf(false) }
     var playing by remember(url) { mutableStateOf(false) }
     var position by remember(url) { mutableStateOf(0f) }
+    var fullscreen by remember(url) { mutableStateOf(false) }
     // This player uses the same shared native <video> overlay as the inline preview, and it always
     // lives inside a dialog ("Render complete" / Renders history). PreviewPanel hides that overlay
     // whenever a dialog is open, which would blank the frame here while audio keeps playing — so
     // claim it via VideoPreviewTracker for as long as this player is mounted (see [VideoPreview]).
     DisposableEffect(Unit) {
         VideoPreviewTracker.onPreviewMounted()
-        onDispose { VideoPreviewTracker.onPreviewUnmounted() }
+        setPreviewLetterbox(true)
+        onDispose {
+            VideoPreviewTracker.onPreviewUnmounted()
+            setPreviewLetterbox(VideoPreviewTracker.anyActive)
+        }
     }
     Column(Modifier.fillMaxWidth()) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(videoHeight)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color.Black)
-        ) {
-            VideoPlayer(
-                url = url,
-                isPlaying = playing,
-                playhead = position,
-                onTimeUpdate = { position = it },
-                onReady = {
-                    // The movie is loaded — start it now (and enable the transport controls).
-                    ready = true
-                    playing = true
-                },
-                modifier = Modifier.fillMaxSize()
-            )
+        AspectRatioPreviewFrame(aspectRatio, videoHeight, Modifier.fillMaxWidth()) { frameModifier ->
+            if (!fullscreen) {
+                VideoPlayer(
+                    url = url,
+                    isPlaying = playing,
+                    playhead = position,
+                    onTimeUpdate = { position = it },
+                    onReady = {
+                        // The movie is loaded — start it now (and enable the transport controls).
+                        ready = true
+                        playing = true
+                    },
+                    modifier = frameModifier
+                )
+            }
         }
         Spacer(Modifier.height(10.dp))
         // Transport, fullscreen and download controls, sitting below the movie frame.
@@ -501,7 +508,7 @@ private fun RenderReplayPlayer(url: String, fileName: String, videoHeight: Dp) {
                 size = 34.dp,
                 background = MaterialTheme.colorScheme.surfaceVariant,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
-            ) { requestVideoFullscreen() }
+            ) { fullscreen = true }
             RoundIconButton(
                 "⬇",
                 contentDescription = "Download movie",
@@ -509,6 +516,25 @@ private fun RenderReplayPlayer(url: String, fileName: String, videoHeight: Dp) {
                 background = MaterialTheme.colorScheme.surfaceVariant,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             ) { triggerDownload(url, fileName) }
+        }
+    }
+    if (fullscreen) {
+        MediaFullscreenOverlay(
+            onDismiss = { fullscreen = false },
+            isPlaying = playing,
+            onTogglePlayback = { playing = !playing }
+        ) { overlayModifier ->
+            VideoPlayer(
+                url = url,
+                isPlaying = playing,
+                playhead = position,
+                onTimeUpdate = { position = it },
+                onReady = {
+                    ready = true
+                    playing = true
+                },
+                modifier = overlayModifier.padding(top = 64.dp)
+            )
         }
     }
 }
@@ -532,7 +558,8 @@ private fun RendersHistoryDialog(viewModel: AppViewModel, onDismiss: () -> Unit)
                 RenderReplayPlayer(
                     current,
                     downloadFileNameForRender(movieTitle, current),
-                    videoHeight = 250.dp
+                    videoHeight = 250.dp,
+                    aspectRatio = aspectRatioToFloat(viewModel.currentMovie?.aspectRatio ?: "16:9")
                 )
                 Spacer(Modifier.height(10.dp))
                 GhostPillButton("← All renders", compact = true) { replayUrl = null }
